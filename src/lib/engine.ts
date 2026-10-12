@@ -1,15 +1,109 @@
-import type { Campaign, Evaluation, LearningState, Task, TaskProgress } from '../../shared/types';
-import { evaluationSchema } from '../../shared/schema';
+import type { Campaign, CampaignSnapshot, DailySchedule, Evaluation, LearningState, LessonContent, RewardBundle, Task, TaskAttempt, TaskProgress } from '../../shared/types';
+import { evaluationSchema, lessonContentSchema } from '../../shared/schema';
 
 export function getTasks(campaign: Campaign): Task[] { return campaign.stages.flatMap(stage => stage.tasks); }
+
+function stageGateIds(stage: Campaign['stages'][number]): string[] {
+  if (stage.gateTaskIds) return stage.gateTaskIds;
+  return stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id);
+}
+
+export function createProgressForCampaign(campaign: Campaign): LearningState['progress'] {
+  return Object.fromEntries(getTasks(campaign).map(task => [task.id, { completedObjectives: [], evidence: '', status: 'idle' as const }]));
+}
 
 export function isTaskUnlocked(campaign: Campaign, progress: LearningState['progress'], taskId: string): boolean {
   const stageIndex = campaign.stages.findIndex(stage => stage.tasks.some(task => task.id === taskId));
   if (stageIndex < 0) return false;
   const task = campaign.stages[stageIndex].tasks.find(task => task.id === taskId)!;
   const completed = (id: string) => Object.hasOwn(progress, id) && progress[id].status === 'completed';
-  return campaign.stages.slice(0, stageIndex).every(stage => stage.tasks.every(item => completed(item.id)))
-    && task.prerequisites.every(completed);
+  return campaign.stages.slice(0, stageIndex).every(stage => stageGateIds(stage).every(completed))
+    && [...task.prerequisites, ...(task.unlockAfter ?? [])].every(completed);
+}
+
+export function buildDailySchedule(campaign: Campaign, progress: LearningState['progress'], reviews: LearningState['reviews'], date: string, adjustment?: 'half' | 'more' | 'skip-known' | 'too-hard'): DailySchedule {
+  const budget = Math.max(1, Math.floor(campaign.dailyMinutes * (adjustment === 'half' ? 0.5 : adjustment === 'more' ? 1.5 : 1)));
+  const due = reviews.filter(card => Date.parse(card.dueAt) <= Date.parse(`${date}T23:59:59.999Z`));
+  const reviewIds = new Set(due.map(card => card.taskId));
+  const tasks = getTasks(campaign);
+  const ready = tasks.filter(task => progress[task.id]?.status !== 'completed' && isTaskUnlocked(campaign, progress, task.id));
+  const core = ready.filter(task => (task.track ?? 'main') === 'main');
+  const branches = ready.filter(task => (task.track ?? 'main') === 'branch');
+  const items: DailySchedule['items'] = [];
+  let remaining = budget;
+  for (const card of due) {
+    if (remaining <= 0) break;
+    const task = tasks.find(item => item.id === card.taskId);
+    const minutes = Math.min(remaining, Math.max(3, Math.min(8, Math.ceil(budget * 0.15))));
+    items.push({ taskId: card.taskId, kind: 'review', minutes, required: true, deliverable: `闭卷回答：${task?.recallQuestion ?? '写下记得的关键概念，再核对'}` }); remaining -= minutes;
+  }
+  const focus = core[0];
+  if (focus && remaining > 0) {
+    const focusMinutes = Math.min(remaining, focus.minutes);
+    const lessonMinutes = Math.max(1, Math.floor(focusMinutes * 0.4));
+    const practiceMinutes = focusMinutes - lessonMinutes;
+    items.push({ taskId: focus.id, kind: 'lesson', minutes: lessonMinutes, required: true, deliverable: `学习并记录：${focus.title}` });
+    if (practiceMinutes > 0) items.push({ taskId: focus.id, kind: 'practice', minutes: practiceMinutes, required: true, deliverable: focus.acceptance });
+    remaining -= focusMinutes;
+  }
+  if (adjustment !== 'half' && adjustment !== 'too-hard' && adjustment !== 'skip-known' && remaining > 0 && branches.length) {
+    const branch = branches[0]; const minutes = Math.min(remaining, branch.minutes);
+    items.push({ taskId: branch.id, kind: 'practice', minutes, required: false, deliverable: branch.acceptance }); remaining -= minutes;
+  }
+  if (items.length === 0 && reviewIds.size === 0 && core[0] && budget > 0) items.push({ taskId: core[0].id, kind: 'lesson', minutes: Math.min(budget, core[0].minutes), required: true, deliverable: core[0].acceptance });
+  const totalMinutes = items.reduce((sum, item) => sum + item.minutes, 0);
+  return { date, theme: focus?.title ?? (due.length ? '间隔复习：先回忆，再核对' : '行动线已完成，选择一条支线探索'), items, totalMinutes, outcome: focus?.acceptance ?? '独立复述本阶段产出与仍待验证的问题。', nextUnlock: focus ? `完成「${focus.title}」后检查下一主线节点` : '查看下一阶段解锁条件', revision: 1 };
+}
+
+export function getTaskReward(task: Task): RewardBundle {
+  const item = task.kind === 'boss' ? [{ itemId: `${task.id}-field-notes`, name: '验证记录徽记', description: '完成综合任务后获得的原创学习收藏品。', rarity: 'rare' as const, icon: '✦', quantity: 1 }] : [];
+  return { xp: task.xp, coins: Math.max(1, Math.ceil(task.xp / 10)), items: item };
+}
+
+function applyReward(state: LearningState, task: Task, reward: RewardBundle, kind: 'mission' | 'chain' | 'stage' | 'season', now: Date, sourceId = task.id): LearningState {
+  const idempotencyKey = `${state.campaign.id}-${sourceId}-${task.id}-${kind}`.replace(/[^\p{L}\p{N}_-]/gu, '-').slice(0, 120);
+  if ((state.rewardLedger ?? []).some(entry => entry.idempotencyKey === idempotencyKey)) return state;
+  const entry = { id: `reward-${idempotencyKey}`.slice(0, 128), taskId: task.id, at: timestamp(now), reward, kind, idempotencyKey };
+  const inventory = { ...(state.inventory ?? {}) };
+  for (const item of reward.items) {
+    const owned = inventory[item.itemId];
+    inventory[item.itemId] = { item, quantity: (owned?.quantity ?? 0) + item.quantity, acquiredAt: owned?.acquiredAt ?? entry.at, sources: [...(owned?.sources ?? []), entry.id] };
+  }
+  return { ...state, wallet: { currency: '学习币', balance: (state.wallet?.balance ?? 0) + reward.coins }, inventory,
+    rewardLedger: [...(state.rewardLedger ?? []), entry] };
+}
+
+export function switchCampaign(state: LearningState, campaign: Campaign): LearningState {
+  const snapshot: CampaignSnapshot = { campaign: state.campaign, progress: state.progress, reviews: state.reviews, notes: state.notes, content: state.content, schedules: state.schedules, lastTaskId: state.lastTaskId };
+  const existing = state.history?.find(item => item.campaign.id === campaign.id);
+  const history = [...(state.history ?? []).filter(item => item.campaign.id !== campaign.id && item.campaign.id !== state.campaign.id), snapshot];
+  if (existing) return { ...state, ...existing, version: 2, history };
+  const seeded = Object.fromEntries(getTasks(campaign).filter(task => task.teaching).map(task => [task.id, task.teaching!]));
+  return { ...state, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, content: seeded, schedules: {}, version: 2, history };
+}
+
+export function cacheLesson(state: LearningState, taskId: string, value: LessonContent, regenerate = false): LearningState {
+  const task = getTasks(state.campaign).find(item => item.id === taskId);
+  if (!task) throw new Error('任务不存在');
+  const lesson = lessonContentSchema.parse(value);
+  const current = state.content?.[taskId] ?? task.teaching;
+  if (current && !regenerate) return state;
+  return { ...state, content: { ...(state.content ?? {}), [taskId]: lesson }, contentHistory: { ...(state.contentHistory ?? {}), ...(current ? { [taskId]: [...(state.contentHistory?.[taskId] ?? []), current] } : {}) } };
+}
+
+export function recordAttempt(state: LearningState, taskId: string, attempt: Omit<TaskAttempt, 'at'>, now = new Date()): LearningState {
+  taskAndProgress(state, taskId);
+  if (!Number.isInteger(attempt.hintLevelsUsed) || attempt.hintLevelsUsed < 0 || attempt.hintLevelsUsed > 5) throw new Error('提示使用级别无效');
+  return { ...state, attempts: { ...(state.attempts ?? {}), [taskId]: [...(state.attempts?.[taskId] ?? []), { ...attempt, at: timestamp(now) }] } };
+}
+
+export function recordGridOutcome(state: LearningState, gridId: string, artifact: string, now = new Date()): LearningState {
+  const grid = state.campaign.nineGrid?.find(item => item.id === gridId);
+  if (!grid) throw new Error('九格成果不存在');
+  if (Array.from(artifact.trim()).length < 20) throw new Error('请提交至少 20 字的作品或验证记录');
+  const verified = grid.unlockTaskIds.every(id => state.progress[id]?.status === 'completed' && state.progress[id]?.verification === 'ai');
+  if (!verified) throw new Error('对应能力链尚未全部通过 AI 验证');
+  return { ...state, gridOutcomes: { ...(state.gridOutcomes ?? {}), [gridId]: { artifact, verifiedAt: timestamp(now), taskIds: grid.unlockTaskIds } } };
 }
 
 function taskAndProgress(state: LearningState, id: string): [Task, TaskProgress] {
@@ -24,7 +118,7 @@ function assertEditable(progress: TaskProgress): void {
   if (progress.status === 'completed') throw new Error('已完成任务的证据与目标已归档，不能修改');
 }
 function clearEvaluation(progress: TaskProgress): TaskProgress {
-  const { evaluation: _evaluation, verification: _verification, completedAt: _completedAt, ...rest } = progress;
+  const { evaluation: _evaluation, verification: _verification, completedAt: _completedAt, selfChecked: _selfChecked, evaluationSource: _evaluationSource, ...rest } = progress;
   return rest;
 }
 function timestamp(now: Date): string {
@@ -61,10 +155,18 @@ export function setEvidence(state: LearningState, taskId: string, evidence: stri
   return replaceProgress(state, taskId, { ...clearEvaluation(progress), evidence });
 }
 
-export function setEvaluation(state: LearningState, taskId: string, evaluation: Evaluation): LearningState {
+export function setEvaluation(state: LearningState, taskId: string, evaluation: Evaluation, source: 'self' | 'ai' = 'ai'): LearningState {
   const [, progress] = taskAndProgress(state, taskId);
   assertEditable(progress);
-  return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation) });
+  return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation), evaluationSource: source });
+}
+
+export function markSelfChecked(state: LearningState, taskId: string): LearningState {
+  const [, progress] = taskAndProgress(state, taskId);
+  assertEditable(progress);
+  if (progress.evidence.trim().length < 20) throw new Error('提交至少 20 个字符的答案或成果后再做自我检查');
+  const { evaluation: _evaluation, verification: _verification, ...rest } = progress;
+  return replaceProgress(state, taskId, { ...rest, selfChecked: true });
 }
 
 export function completeTask(state: LearningState, taskId: string, verification: 'self' | 'ai', now = new Date()): LearningState {
@@ -72,19 +174,27 @@ export function completeTask(state: LearningState, taskId: string, verification:
   if (progress.status === 'completed') return state;
   if (verification !== 'self' && verification !== 'ai') throw new Error('验收方式无效');
   if (!isTaskUnlocked(state.campaign, state.progress, taskId)) throw new Error('请先完成前置任务与前一阶段');
-  if (!task.objectives.every(objective => progress.completedObjectives.includes(objective.id))) throw new Error('请先完成所有目标');
   if (Array.from(progress.evidence.trim()).length < 20) throw new Error('请提交至少 20 个字符的行动证据');
-  if (verification === 'ai' && (!progress.evaluation?.passed || progress.evaluation.score < 70)) throw new Error('AI 验收未通过，需达到 70 分');
+  if (verification === 'ai' && (!progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai')) throw new Error('AI 验收未通过，需达到 70 分且保存核验来源');
   const completedAt = timestamp(now);
   const stageIndex = state.campaign.stages.findIndex(stage => stage.tasks.some(item => item.id === taskId));
-  const required = [...state.campaign.stages.slice(0, stageIndex).flatMap(stage => stage.tasks.map(item => item.id)), ...task.prerequisites];
+  const required = [...state.campaign.stages.slice(0, stageIndex).flatMap(stageGateIds), ...task.prerequisites, ...(task.unlockAfter ?? [])];
   if (required.some(id => Date.parse(state.progress[id]?.completedAt ?? '') > now.getTime())) {
     throw new Error('完成时间不能早于前置任务，请检查设备时间');
   }
   const next = replaceProgress(state, taskId, { ...progress, status: 'completed', verification, completedAt });
-  return { ...next, reviews: [...state.reviews.filter(card => card.taskId !== taskId), {
+  let rewarded: LearningState = { ...next, reviews: [...state.reviews.filter(card => card.taskId !== taskId), {
     taskId, dueAt: dueAfter(now, 1), interval: 1, ease: 2.5, repetitions: 0, history: [],
-  }] };
+  }], version: 2 };
+  const missionReward = getTaskReward(task);
+  rewarded = applyReward(rewarded, task, { ...missionReward, items: verification === 'ai' ? missionReward.items : [] }, 'mission', now);
+  const completedIds = new Set(getTasks(rewarded.campaign).filter(item => rewarded.progress[item.id]?.status === 'completed').map(item => item.id));
+  const stage = rewarded.campaign.stages[stageIndex];
+  for (const chain of stage.chains ?? []) if (chain.taskIds.every(id => completedIds.has(id))) rewarded = applyReward(rewarded, task, chain.completionReward ?? { xp: Math.max(10, chain.taskIds.length * 20), coins: chain.track === 'main' ? 5 : 3, items: [] }, 'chain', now, chain.id);
+  if (stageGateIds(stage).every(id => completedIds.has(id))) rewarded = applyReward(rewarded, task, stage.reward ?? { xp: 100, coins: 8, items: [] }, 'stage', now, stage.id);
+  const allMainlineAiVerified = rewarded.campaign.stages.every(item => stageGateIds(item).every(id => completedIds.has(id) && rewarded.progress[id]?.verification === 'ai'));
+  if (allMainlineAiVerified) rewarded = applyReward(rewarded, task, { xp: 500, coins: 100, items: [{ itemId: `${rewarded.campaign.id}-season-insignia`, name: '赛季能力徽章', description: '通过赛季主线独立 AI 验收后授予。', rarity: 'legendary', icon: '⬡', quantity: 1 }] }, 'season', now, rewarded.campaign.id);
+  return rewarded;
 }
 
 export function getStats(state: LearningState, now = new Date()): {
@@ -95,14 +205,14 @@ export function getStats(state: LearningState, now = new Date()): {
   const completed = completedTasks.length;
   const total = tasks.length;
   return {
-    xp: completedTasks.reduce((sum, task) => sum + task.xp, 0), completed, total,
-    slots: total === 0 ? 0 : Math.floor(completed / total * 9),
+    xp: state.rewardLedger?.length ? state.rewardLedger.reduce((sum, entry) => sum + entry.reward.xp, 0) : completedTasks.reduce((sum, task) => sum + task.xp, 0), completed, total,
+    slots: state.campaign.nineGrid?.filter(grid => Boolean(state.gridOutcomes?.[grid.id]) && grid.unlockTaskIds.every(id => state.progress[id]?.status === 'completed')).length ?? 0,
     due: state.reviews.filter(card => state.progress[card.taskId]?.status === 'completed' && Date.parse(card.dueAt) <= now.getTime()).length,
-    stageCompleted: state.campaign.stages.map(stage => stage.tasks.length > 0 && stage.tasks.every(task => state.progress[task.id]?.status === 'completed')),
+    stageCompleted: state.campaign.stages.map(stage => stageGateIds(stage).length > 0 && stageGateIds(stage).every(id => state.progress[id]?.status === 'completed')),
   };
 }
 
-export function rateReview(state: LearningState, taskId: string, rating: number, now = new Date()): LearningState {
+export function rateReview(state: LearningState, taskId: string, rating: number, now = new Date(), response: { answer?: string; hintUsed?: boolean } = {}): LearningState {
   if (!Number.isInteger(rating) || rating < 1 || rating > 4) throw new Error('复习评分必须是 1 到 4 的整数');
   const [, progress] = taskAndProgress(state, taskId);
   const card = state.reviews.find(card => card.taskId === taskId);
@@ -117,6 +227,6 @@ export function rateReview(state: LearningState, taskId: string, rating: number,
   const repetitions = rating === 1 ? 0 : card.repetitions + 1;
   const interval = rating === 1 || repetitions === 1 ? 1 : repetitions === 2 ? 6
     : Math.min(36500, Math.max(card.interval + 1, Math.round(card.interval * ease)));
-  const updated = { ...card, interval, ease, repetitions, dueAt: dueAfter(now, interval), history: [...card.history, { at, rating }] };
+  const updated = { ...card, interval, ease, repetitions, dueAt: dueAfter(now, interval), history: [...card.history, { at, rating, ...(response.answer !== undefined ? { answer: response.answer.slice(0, 10000) } : {}), ...(response.hintUsed !== undefined ? { hintUsed: response.hintUsed } : {}) }] };
   return { ...state, reviews: state.reviews.map(card => card.taskId === taskId ? updated : card) };
 }

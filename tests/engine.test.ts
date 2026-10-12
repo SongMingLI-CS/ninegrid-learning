@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Campaign, Evaluation, LearningState, Task } from '../shared/types';
 import { campaignSchema, evaluationSchema, goalInputSchema, learningStateSchema, taskSchema } from '../shared/schema';
-import { activateTask, completeTask, getStats, getTasks, isTaskUnlocked, rateReview, setEvaluation, setEvidence, updateObjective } from '../src/lib/engine';
-import { createInitialState, exportState, importState, loadState, saveState } from '../src/lib/storage';
+import { activateTask, buildDailySchedule, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, rateReview, setEvaluation, setEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
+import { createInitialState, exportState, importState, loadState, saveState, saveStateSafely } from '../src/lib/storage';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
+import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 
 const NOW = new Date('2026-10-13T08:00:00.000Z');
 const EVIDENCE = '我运行了程序，记录输入、实际输出与报错，并解释了结果和修改原因。';
@@ -41,7 +42,7 @@ describe('progression and verification', () => {
     expect(isTaskUnlocked(state.campaign, state.progress, 'c')).toBe(true);
   });
   it('rejects locked completion even if evidence is supplied', () => {
-    const state = fresh();
+    let state = fresh();
     state.progress.c = { status: 'active', completedObjectives: ['c-o'], evidence: EVIDENCE };
     expect(() => completeTask(state, 'c', 'self', NOW)).toThrow();
   });
@@ -66,10 +67,9 @@ describe('progression and verification', () => {
     expect(() => updateObjective(active, 'a', 'b-o')).toThrow();
     expect(() => setEvidence(active, 'missing', EVIDENCE)).toThrow();
   });
-  it('requires all objectives and at least twenty non-whitespace evidence characters', () => {
+  it('requires at least twenty non-whitespace evidence characters without forcing hidden checklist state', () => {
     const state = setEvidence(fresh(), 'a', EVIDENCE);
-    expect(() => completeTask(state, 'a', 'self', NOW)).toThrow();
-    const checked = updateObjective(state, 'a', 'a-o');
+    const checked = state;
     for (const evidence of ['', ' '.repeat(50), '少于二十字', ` ${'x'.repeat(19)} `]) {
       expect(() => completeTask(setEvidence(checked, 'a', evidence), 'a', 'self', NOW)).toThrow();
     }
@@ -103,14 +103,14 @@ describe('progression and verification', () => {
     expect(() => updateObjective(state, 'a', 'a-o')).toThrow();
     expect(() => setEvidence(state, 'a', '新的证据')).toThrow();
     expect(() => setEvaluation(state, 'a', PASS)).toThrow();
-    expect(getStats(state, NOW)).toMatchObject({ xp: 100, completed: 1, total: 3, slots: 3, due: 0, stageCompleted: [false, false] });
+    expect(getStats(state, NOW)).toMatchObject({ xp: 100, completed: 1, total: 3, slots: 0, due: 0, stageCompleted: [false, false] });
   });
   it('computes nine slots and stage completion from actual completed tasks', () => {
     let state = done(fresh(), 'a');
     state = done(state, 'b');
-    expect(getStats(state, NOW)).toMatchObject({ xp: 200, completed: 2, slots: 6, stageCompleted: [true, false] });
+    expect(getStats(state, NOW)).toMatchObject({ xp: 300, completed: 2, slots: 0, stageCompleted: [true, false] });
     state = done(state, 'c');
-    expect(getStats(state, new Date('2026-10-14T08:00:00Z'))).toEqual({ xp: 300, completed: 3, total: 3, slots: 9, due: 3, stageCompleted: [true, true] });
+    expect(getStats(state, new Date('2026-10-14T08:00:00Z'))).toEqual({ xp: 500, completed: 3, total: 3, slots: 0, due: 3, stageCompleted: [true, true] });
   });
 });
 
@@ -141,6 +141,12 @@ describe('transparent simplified review scheduling', () => {
 });
 
 describe('schemas and safe state import', () => {
+  it('validates the complete beginner NumPy walkthrough against the campaign schema', () => {
+    const parsed = campaignSchema.parse(NUMPY_DEMO_CAMPAIGN);
+    expect(parsed.nineGrid).toHaveLength(9);
+    expect(parsed.stages.every(stage => stage.chains?.some(chain => chain.track === 'main'))).toBe(true);
+    expect(parsed.stages.some(stage => stage.chains?.some(chain => chain.track === 'branch'))).toBe(true);
+  });
   it('validates sensible input and evaluation ranges and removes extra metadata', () => {
     expect(goalInputSchema.safeParse({ goal: '学 Python', level: '入门', days: 7, dailyMinutes: 30, ultimateReward: '脚本' }).success).toBe(true);
     expect(goalInputSchema.safeParse({ goal: '', level: '入门', days: 0, dailyMinutes: -1, ultimateReward: '' }).success).toBe(false);
@@ -179,7 +185,7 @@ describe('schemas and safe state import', () => {
   it.each(['json', 'version', 'foreign-progress', 'objective', 'duplicate-objective', 'evidence', 'prerequisite', 'evaluation', 'review', 'duplicate-review', 'missing-review', 'review-history', 'unfinished-review', 'verification', 'date'])('rejects invalid imported state %s', kind => {
     const state = done(fresh(), 'a');
     if (kind === 'json') { expect(() => importState('{broken')).toThrow(); return; }
-    if (kind === 'version') (state as unknown as { version: number }).version = 2;
+    if (kind === 'version') (state as unknown as { version: number }).version = 99;
     if (kind === 'foreign-progress') state.progress.foreign = state.progress.a;
     if (kind === 'objective') state.progress.a.completedObjectives = ['b-o'];
     if (kind === 'duplicate-objective') state.progress.a.completedObjectives = ['a-o', 'a-o'];
@@ -221,12 +227,12 @@ describe('demo and browser storage', () => {
       for (const objective of task.objectives) state = updateObjective(state, task.id, objective.id);
       state = completeTask(setEvidence(state, task.id, EVIDENCE), task.id, 'self', NOW);
     }
-    expect(getStats(state, NOW)).toMatchObject({ completed: 12, total: 12, slots: 9, stageCompleted: [true, true, true, true] });
+    expect(getStats(state, NOW)).toMatchObject({ completed: 12, total: 12, slots: 0, stageCompleted: [true, true, true, true] });
     expect(importState(exportState(state))).toEqual(state);
   });
   it('loads and exports safely without a browser', () => {
     vi.stubGlobal('window', undefined);
-    expect(loadState().version).toBe(1);
+    expect(loadState().version).toBe(2);
     expect(() => saveState(fresh())).not.toThrow();
   });
   it('preserves damaged stored JSON until an explicit save', () => {
@@ -234,7 +240,8 @@ describe('demo and browser storage', () => {
     const localStorage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); } };
     vi.stubGlobal('window', { localStorage });
     saveState(fresh());
-    expect(loadState()).toEqual(fresh());
+    expect(loadState().campaign).toEqual(fresh().campaign);
+    expect(loadState().progress).toEqual(fresh().progress);
     const key = [...data.keys()][0];
     data.set(key, '{damaged original');
     expect(getStats(loadState(), NOW).total).toBe(12);
@@ -243,11 +250,75 @@ describe('demo and browser storage', () => {
     expect(() => saveState(invalid)).toThrow();
     expect(data.get(key)).toBe('{damaged original');
     saveState(fresh());
-    expect(loadState()).toEqual(fresh());
+    expect(loadState().campaign).toEqual(fresh().campaign);
+    expect(loadState().progress).toEqual(fresh().progress);
   });
   it('recovers reads when browser storage access is blocked', () => {
     vi.stubGlobal('window', { get localStorage() { throw new Error('blocked'); } });
-    expect(loadState().version).toBe(1);
+    expect(loadState().version).toBe(2);
     expect(() => saveState(fresh())).toThrow();
+  });
+});
+
+describe('course branches, schedules, rewards, and multiple campaigns', () => {
+  it('initializes progress for every generated mission through one factory', () => {
+    const campaign = fresh().campaign;
+    const progress = createProgressForCampaign(campaign);
+    expect(Object.keys(progress)).toHaveLength(3);
+    expect(progress.a).toEqual({ completedObjectives: [], evidence: '', status: 'idle' });
+  });
+  it('lets optional branches unlock from a mainline node without blocking the next phase', () => {
+    let state = fresh();
+    const [a, b] = state.campaign.stages[0].tasks;
+    const branch = task('branch', ['a']); branch.track = 'branch'; branch.chainId = 'explore';
+    state.campaign.stages[0].tasks.push(branch);
+    state.progress.branch = { completedObjectives: [], evidence: '', status: 'idle' };
+    state.campaign.stages[0].mainlineTaskIds = ['a', 'b'];
+    state.campaign.stages[0].chains = [{ id: 'main-chain', title: '主线', track: 'main', taskIds: ['a', 'b'] }, { id: 'explore', title: '应用支线', track: 'branch', taskIds: ['branch'] }];
+    state.campaign.stages[1].tasks[0].prerequisites = ['b'];
+    state = done(state, 'a');
+    expect(isTaskUnlocked(state.campaign, state.progress, 'branch')).toBe(true);
+    expect(isTaskUnlocked(state.campaign, state.progress, 'c')).toBe(false);
+    state = done(state, 'b');
+    expect(isTaskUnlocked(state.campaign, state.progress, 'c')).toBe(true);
+    expect(state.progress.branch.status).toBe('idle');
+  });
+  it('does not reactivate or mutate an already completed task', () => {
+    const completed = done(fresh(), 'a');
+    expect(activateTask(completed, 'a')).toBe(completed);
+  });
+  it('awards deterministic mission, wallet and item rewards exactly once', () => {
+    const first = done(fresh(), 'a');
+    const again = completeTask(first, 'a', 'self', NOW);
+    expect(first.rewardLedger).toHaveLength(1);
+    expect(first.wallet?.balance).toBeGreaterThan(0);
+    expect(again.rewardLedger).toEqual(first.rewardLedger);
+    expect(again.wallet).toEqual(first.wallet);
+  });
+  it('keeps review answers and hint use as review evidence', () => {
+    const state = done(fresh(), 'a');
+    const reviewed = rateReview(state, 'a', 2, NOW, { answer: 'ndarray shape describes dimensions', hintUsed: true });
+    expect(reviewed.reviews[0].history[0]).toMatchObject({ answer: 'ndarray shape describes dimensions', hintUsed: true });
+  });
+  it('fits required recall and mainline work inside the user time budget', () => {
+    const campaign = fresh().campaign;
+    campaign.dailyMinutes = 18;
+    const schedule = buildDailySchedule(campaign, fresh().progress, [], '2026-10-13');
+    expect(schedule.totalMinutes).toBeLessThanOrEqual(18);
+    expect(schedule.items.some(item => item.required)).toBe(true);
+  });
+  it('switches between archived learning goals without losing progress', () => {
+    const original = done(fresh(), 'a');
+    const second = structuredClone(original.campaign); second.id = 'second'; second.goal = '第二条学习路线';
+    const switched = switchCampaign(original, second);
+    expect(switched.campaign.id).toBe('second');
+    expect(switched.progress.a.status).toBe('idle');
+    const restored = switchCampaign(switched, original.campaign);
+    expect(restored.progress.a.status).toBe('completed');
+    expect(restored.history?.some(record => record.campaign.id === 'second')).toBe(true);
+  });
+  it('returns save failures as a result the UI can surface', () => {
+    vi.stubGlobal('window', { get localStorage() { throw new Error('blocked'); } });
+    expect(saveStateSafely(fresh()).ok).toBe(false);
   });
 });
