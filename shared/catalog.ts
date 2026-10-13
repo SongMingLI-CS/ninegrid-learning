@@ -36,7 +36,7 @@ const descriptions: Record<CollectionCategory, string> = {
 export const COLLECTION_CATALOG: CollectionItem[] = sets.flatMap(({ rarity, names, display, sell }) => names.map((name, index) => {
   const category = categoryFor(name, index + sets.findIndex(set => set.rarity === rarity) * 2);
   const id = `${rarity}-${String(index + 1).padStart(2, '0')}`;
-  return { id, name, category, rarity, size: ['1×1','1×2','2×2','2×3'][index % 4], imageKey: id,
+  return { id, name, category, rarity, size: ['1×1','1×2','2×2','2×3'][index % 4], imageKey: index === 0 ? rarity : id,
     description: `${name} 用于野外的${category}检查与回收整理。${descriptions[category]}`, displayValue: display + index * 37, sellPrice: sell + index * 11,
     limited: false, sellable: true, seasonId: null, version: 1 };
 }));

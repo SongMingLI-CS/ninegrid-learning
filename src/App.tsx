@@ -4,7 +4,7 @@ import {
   ChevronDown, ChevronLeft, ChevronRight, CircleCheck, CircleHelp, Clock3, Crosshair,
   FileText, Fingerprint, Flame, Headphones, KeyRound, Layers2, LockKeyhole, Maximize2, Backpack,
   Menu, Orbit, Play, Plus, Radio, RotateCcw, Search, Send, Settings2, ShieldCheck,
-  Sparkles, SquareArrowOutUpRight, Target, TerminalSquare, Trophy, X, Zap,
+  Sparkles, SquareArrowOutUpRight, Swords, Target, TerminalSquare, Trophy, UserRound, X, Zap,
 } from 'lucide-react';
 import type { Campaign, GoalInput, LearningState, Task, TaskProgress } from '../shared/types';
 import { planCurriculumBudget, type CurriculumOutline } from '../shared/curriculum';
@@ -18,6 +18,9 @@ import type { VerifiedVideo } from '../server/youtube';
 import { AccountGate, type AccountUser } from './components/AccountGate';
 import { InventoryScreen } from './components/InventoryScreen';
 const WarehouseScreen = lazy(() => import('./components/WarehouseScreen').then(module => ({ default: module.WarehouseScreen })));
+const ShopScreen = lazy(() => import('./components/ShopScreen').then(module => ({ default: module.ShopScreen })));
+const ChallengesScreen = lazy(() => import('./components/ChallengesScreen').then(module => ({ default: module.ChallengesScreen })));
+const ProfileScreen = lazy(() => import('./components/ProfileScreen').then(module => ({ default: module.ProfileScreen })));
 import { apiFetch } from './lib/api';
 import { setStorageScope } from './lib/storage';
 import { NUMPY_DEMO_CAMPAIGN } from './lib/numpyDemo';
@@ -25,7 +28,8 @@ import { extractGoalPreferences, type ExtractedGoalPreferences } from './lib/goa
 import { reconcileServerState, savePendingDraft, readPendingDraft, clearPendingDraft, discardPendingDraft } from './lib/serverSync';
 import { getDailyBudgetMinutes, markVideoWatched, scheduleVideo as addVideoToSchedule } from './lib/videoSchedule';
 
-type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews' | 'inventory';
+type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews' | 'inventory' | 'shop' | 'challenges' | 'profile';
+const pathTab = (path: string): Tab | undefined => ({ '/inventory':'inventory','/shop':'shop','/challenges':'challenges','/profile':'profile' } as Record<string,Tab>)[path];
 type Notification = { title: string; body?: string; tone?: 'success' | 'warning' } | null;
 type Connection = { configured: boolean; model: string; accounts?: boolean };
 type GenerationDraft = { id?: string; revision?: number; status?: string; finalCampaign?: Campaign; input: GoalInput; outline?: CurriculumOutline; stages: Record<string, Record<string, Campaign['stages'][number]['tasks']>> };
@@ -66,7 +70,7 @@ function App() {
   const [state, setState] = useState<LearningState>(() => loaded.isNew ? switchCampaign(loaded.state, NUMPY_DEMO_CAMPAIGN) : loaded.state);
   const [selectedStage, setSelectedStage] = useState(0);
   const [selectedTaskId, setSelectedTaskId] = useState(loaded.state.lastTaskId ?? state.campaign.stages[0]?.tasks[0]?.id ?? '');
-  const [tab, setTab] = useState<Tab>(() => window.location.pathname === '/inventory' ? 'inventory' : 'missions');
+  const [tab, setTab] = useState<Tab>(() => pathTab(window.location.pathname) ?? 'missions');
   const [goalOpen, setGoalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -274,7 +278,7 @@ function App() {
         }
         serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, conflicted };
         setState(restored); setSelectedTaskId(restored.lastTaskId ?? restored.campaign.stages[0]?.tasks[0]?.id ?? '');
-        setSelectedStage(0); if (window.location.pathname !== '/inventory') setTab('missions'); serverHydrated.current = true;
+        setSelectedStage(0); if (!pathTab(window.location.pathname)) setTab('missions'); else setTab(pathTab(window.location.pathname)!); serverHydrated.current = true;
         setSaveError(conflicted ? '服务器已有较新版本，已恢复本机未发送草稿；请导出草稿或明确选择服务器版本，当前不会覆盖服务器。' : ''); setSyncStatus(conflicted ? 'conflict' : pending ? 'saving' : 'saved'); setScopedUserId(accountUser.id);
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -693,7 +697,7 @@ function App() {
         const xp = outcome.rewards.reduce((sum, entry) => sum + entry.reward.xp, 0);
         const coins = outcome.rewards.reduce((sum, entry) => sum + entry.reward.coins, 0);
         const items = outcome.rewards.flatMap(entry => entry.reward.items.map(item => item.name));
-        flash({ title: outcome.alreadyCompleted ? '任务已结算过，奖励不会重复发放' : '成果已由服务器归档', body: `本次新获得 +${xp} XP · +${coins} 学习币${items.length ? ` · ${items.join('、')}` : ''}。自行完成与 AI 验证分开记录。`, tone: 'success' });
+        flash({ title: outcome.alreadyCompleted ? '任务已结算过，奖励不会重复发放' : '成果已由服务器归档', body: `本次新获得 +${xp} XP · +${coins} 哈弗币${items.length ? ` · 收藏 ${items.join('、')}` : ''}。自行完成与 AI 验证分开记录；物品已进入仓库。`, tone: 'success' });
         return;
       }
       const next = completeTask(submitted, targetId, verification);
@@ -724,14 +728,18 @@ function App() {
     finally { event.target.value = ''; }
   };
 
-  const completeReview = (answer = reviewAnswer, hintUsed = reviewHintUsed) => {
+  const completeReview = async (answer = reviewAnswer, hintUsed = reviewHintUsed) => {
     const reviewTaskId = selectedReviewTaskId ?? nextReview?.taskId;
     if (!reviewTaskId) return;
     if (answer.trim().length < 8) { flash({ title: '先写下自己的回忆', body: '至少写几个关键点，再核对和安排下一次复习。', tone: 'warning' }); return; }
-    update(rateReview(state, reviewTaskId, reviewRating, new Date(), { answer, hintUsed }));
+    let rewardCoins=0;
+    if(accountUser&&serverArchive.current){
+      try{const result=await queueServerRequest(async archive=>{const response=await apiFetch(`/api/seasons/${archive.id}/reviews/settle`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:archive.revision,taskId:reviewTaskId,rating:reviewRating,answer,hintUsed})});const payload=await response.json();if(!response.ok)throw new Error(payload.error==='REVIEW_NOT_DUE'?'这条复习已处理或尚未到期，请刷新赛季。':payload.error??'复习结算失败');archive.revision=payload.season.revision;update(payload.season.state as LearningState);rewardCoins=payload.reward?.coins??0;return true;});void result;await refreshServerRewards();}
+      catch(error){flash({title:'复习没有结算',body:error instanceof Error?error.message:'请刷新后重试。',tone:'warning'});return;}
+    }else update(rateReview(state, reviewTaskId, reviewRating, new Date(), { answer, hintUsed }));
     setSelectedReviewTaskId(undefined);
     setReviewRating(3); setReviewAnswer(''); setReviewHintUsed(false); setReviewRevealed(false);
-    flash({ title: '记忆维护完成', body: '下一次复习已按你的回忆情况重新排期。', tone: 'success' });
+    flash({ title: '记忆维护完成', body: `下一次复习已重新排期。${rewardCoins?`有效回忆奖励 +${rewardCoins} 哈弗币。`:''}`, tone: 'success' });
   };
 
   const switchToCampaign = (id: string) => {
@@ -748,9 +756,9 @@ function App() {
   const renderedStageTasks = hideCompletedTasks ? visibleStageTasks.filter(item => state.progress[item.id]?.status !== 'completed') : visibleStageTasks;
 
   useEffect(() => {
-    const syncRoute = () => setTab(window.location.pathname === '/inventory' ? 'inventory' : 'missions');
+    const syncRoute = () => setTab(pathTab(window.location.pathname) ?? 'missions');
     window.addEventListener('popstate', syncRoute);
-    if (window.location.pathname === '/inventory') setTab('inventory');
+    if (pathTab(window.location.pathname)) setTab(pathTab(window.location.pathname)!);
     return () => window.removeEventListener('popstate', syncRoute);
   }, [authLoaded, accountUser?.id]);
 
@@ -769,7 +777,16 @@ function App() {
     } catch (error) { flash({ title: '退出登录失败', body: error instanceof Error ? error.message : '请重试。', tone: 'warning' }); }
   };
 
-  if (tab === 'inventory' && accountUser) return <Suspense fallback={<main className="account-gate"><div className="account-panel">正在打开个人仓库…</div></main>}><WarehouseScreen account={accountUser.email} onExit={() => { window.history.pushState({}, '', '/'); setTab('missions'); }} onLogout={() => void logout()} /></Suspense>;
+  const navigateRoute = (path: string) => { window.history.pushState({}, '', path); setTab(pathTab(path) ?? 'missions'); };
+  const exitStandalone = () => navigateRoute('/');
+
+  if (accountUser && ['inventory','shop','challenges','profile'].includes(tab)) {
+    return <Suspense fallback={<main className="account-gate"><div className="account-panel">正在打开页面…</div></main>}>
+      {tab==='inventory' ? <WarehouseScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()}/> :
+       tab==='shop' ? <ShopScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
+       tab==='challenges' ? <ChallengesScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
+       <ProfileScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/>}</Suspense>;
+  }
 
   return (
     <main className="app-shell">
@@ -787,7 +804,7 @@ function App() {
           <button className={`nav-link ${tab === 'workspace' ? 'active' : ''}`} onClick={() => { setTab('workspace'); setMobileNav(false); }}><BookOpen size={15}/>学习工作区</button>
           <button className={`nav-link ${tab === 'archive' ? 'active' : ''}`} onClick={() => { setTab('archive'); setMobileNav(false); }}><Layers2 size={15} />情报档案</button>
           <button className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} onClick={() => { setTab('reviews'); setMobileNav(false); }}><Radio size={15} />复习信号室 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</button>
-          {accountUser && <button className={`nav-link ${tab === 'inventory' ? 'active' : ''}`} onClick={() => { window.history.pushState({}, '', '/inventory'); setTab('inventory'); setMobileNav(false); }}><Backpack size={15}/>个人仓库</button>}
+          {accountUser && <><button className={`nav-link ${tab === 'inventory' ? 'active' : ''}`} onClick={() => { navigateRoute('/inventory'); setMobileNav(false); }}><Backpack size={15}/>仓库</button><button className={`nav-link ${tab === 'shop' ? 'active' : ''}`} onClick={() => { navigateRoute('/shop'); setMobileNav(false); }}><KeyRound size={15}/>商城</button><button className={`nav-link ${tab === 'challenges' ? 'active' : ''}`} onClick={() => { navigateRoute('/challenges'); setMobileNav(false); }}><Swords size={15}/>挑战</button><button className={`nav-link ${tab === 'profile' ? 'active' : ''}`} onClick={() => { navigateRoute('/profile'); setMobileNav(false); }}><UserRound size={15}/>主页</button></>}
         </nav>
         <div className="topbar-actions">
           {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录" aria-label="退出登录">{accountUser.email} · 退出</button>}

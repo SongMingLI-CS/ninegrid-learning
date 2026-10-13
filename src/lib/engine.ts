@@ -1,5 +1,6 @@
 import type { Campaign, CampaignSnapshot, DailySchedule, Evaluation, LearningState, LessonContent, RewardBundle, Task, TaskAttempt, TaskProgress } from '../../shared/types';
 import { evaluationSchema, lessonContentSchema } from '../../shared/schema';
+import { COLLECTION_CATALOG } from '../../shared/catalog';
 
 export function getTasks(campaign: Campaign): Task[] { return campaign.stages.flatMap(stage => stage.tasks); }
 
@@ -201,8 +202,13 @@ export function completeTask(state: LearningState, taskId: string, verification:
     const verificationItems = getTaskReward(task).items;
     if (verificationItems.length) promoted = applyReward(promoted, task, { xp: 0, coins: 0, items: verificationItems }, 'verification', now);
     const ids = new Set(getTasks(promoted.campaign).filter(item => promoted.progress[item.id]?.status === 'completed').map(item => item.id));
+    const ownerStage=promoted.campaign.stages.find(stage=>stage.tasks.some(item=>item.id===taskId));
+    if(ownerStage){
+      for(const chain of ownerStage.chains??[]) if(chain.taskIds.every(id=>ids.has(id)&&promoted.progress[id]?.verification==='ai')&&chain.completionReward?.items.length){promoted=applyReward(promoted,task,{xp:0,coins:0,items:chain.completionReward.items},'verification',now,`chain-${chain.id}`);}
+      if(stageGateIds(ownerStage).every(id=>ids.has(id)&&promoted.progress[id]?.verification==='ai')&&ownerStage.reward?.items.length)promoted=applyReward(promoted,task,{xp:0,coins:0,items:ownerStage.reward.items},'verification',now,`stage-${ownerStage.id}`);
+    }
     const allMainlineAiVerified = promoted.campaign.stages.every(stage => stageGateIds(stage).every(id => ids.has(id) && promoted.progress[id]?.verification === 'ai'));
-    if (allMainlineAiVerified) promoted = applyReward(promoted, task, { xp: 500, coins: 100, items: [{ itemId: `${promoted.campaign.id}-season-insignia`, name: '赛季能力徽章', description: '通过赛季主线独立 AI 验收后授予。', rarity: 'legendary', icon: '⬡', quantity: 1 }] }, 'season', now, promoted.campaign.id);
+    if (allMainlineAiVerified) { const item=COLLECTION_CATALOG.find(entry=>entry.rarity==='large-red')!; promoted = applyReward(promoted, task, { xp: 500, coins: 100, items: [{ itemId:item.id, name:item.name, description:item.description, rarity:'legendary', icon:'⬡', quantity:1 }] }, 'season', now, promoted.campaign.id); }
     return promoted;
   }
   if (verification !== 'self' && verification !== 'ai') throw new Error('验收方式无效');
@@ -234,7 +240,7 @@ export function completeTask(state: LearningState, taskId: string, verification:
     rewarded = applyReward(rewarded, task, { ...stageReward, items: independentlyVerified ? stageReward.items : [] }, 'stage', now, stage.id);
   }
   const allMainlineAiVerified = rewarded.campaign.stages.every(item => stageGateIds(item).every(id => completedIds.has(id) && rewarded.progress[id]?.verification === 'ai'));
-  if (allMainlineAiVerified) rewarded = applyReward(rewarded, task, { xp: 500, coins: 100, items: [{ itemId: `${rewarded.campaign.id}-season-insignia`, name: '赛季能力徽章', description: '通过赛季主线独立 AI 验收后授予。', rarity: 'legendary', icon: '⬡', quantity: 1 }] }, 'season', now, rewarded.campaign.id);
+  if (allMainlineAiVerified) { const item=COLLECTION_CATALOG.find(entry=>entry.rarity==='large-red')!; rewarded = applyReward(rewarded, task, { xp: 500, coins: 100, items: [{ itemId:item.id, name:item.name, description:item.description, rarity:'legendary', icon:'⬡', quantity:1 }] }, 'season', now, rewarded.campaign.id); }
   return rewarded;
 }
 

@@ -1,16 +1,18 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import type { Express, Request } from 'express';
 import type { Pool } from 'pg';
 import { COLLECTION_CATALOG } from '../shared/catalog';
+import { BOXES, CHALLENGES, ECONOMY_VERSION, chainCoinsForMinutes, learningCoinsForMinutes, poolExpectedRecovery, poolTotals, rarityBoxItem, validateEconomy, type BoxId, type ChallengeTier, type RewardPoolEntry } from '../shared/economy';
 import { evaluationSchema, learningStateSchema } from '../shared/schema';
 import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
-import { completeTask, isTaskUnlocked, recordGridOutcome } from '../src/lib/engine';
+import { completeTask, isTaskUnlocked, rateReview, recordGridOutcome } from '../src/lib/engine';
 
 type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string };
 type Options = { pool: Pool };
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ownerOf = (req: Request) => (req.session as typeof req.session & { userId?: string }).userId;
+const profileAvatars=new Set(['','/assets/avatars/field.svg','/assets/avatars/compass.svg','/assets/avatars/signal.svg']);
 const publicSeason = (row: Row) => ({ id: row.id, campaignId: row.campaign_id, title: row.title, revision: row.revision, state: row.state, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() });
 export function taskEvidence(state: LearningState, taskId: string): string {
   const progress = state.progress[taskId];
@@ -90,13 +92,28 @@ function normalizeCampaignRewards(campaign: any): void {
   for (const stage of campaign.stages) {
     for (const task of stage.tasks) {
       const xp = Math.min(200, Math.max(10, Math.ceil(task.minutes / 5) * (task.kind === 'boss' ? 8 : task.kind === 'practice' ? 6 : 4)));
-      const coins = Math.max(1, Math.ceil(xp / 10));
+      const coins = learningCoinsForMinutes(task.minutes);
+      const item = task.kind === 'boss' && task.minutes >= 30 ? catalogReward(`task:${task.id}`, 'small-purple') : undefined;
       task.xp = xp;
-      task.reward = { xp, coins, items: task.kind === 'boss' ? [{ itemId: `${task.id}-field-notes`, name: '验证记录徽记', description: '完成综合任务后获得的原创学习收藏品。', rarity: 'rare', icon: '✦', quantity: 1 }] : [] };
+      task.reward = { xp, coins, items: item ? [item] : [] };
     }
-    stage.reward = { xp: 100, coins: 8, items: [] };
-    for (const chain of stage.chains ?? []) chain.completionReward = { xp: Math.min(120, Math.floor(chain.taskIds.reduce((sum: number, id: string) => sum + (stage.tasks.find((task: any) => task.id === id)?.minutes ?? 0), 0) * 0.4)), coins: chain.track === 'main' ? 3 : 1, items: [] };
+    stage.reward = { xp: 100, coins: 20, items: [catalogReward(`stage:${stage.id}`, 'small-gold')] };
+    for (const chain of stage.chains ?? []) { const minutes=chain.taskIds.reduce((sum: number,id: string)=>sum+(stage.tasks.find((task: any)=>task.id===id)?.minutes??0),0);chain.completionReward={xp:Math.min(120,Math.floor(minutes*0.4)),coins:chainCoinsForMinutes(minutes,chain.track),items:chain.track==='main'&&minutes>=120?[catalogReward(`chain:${chain.id}`,'small-purple')]:[]}; }
   }
+}
+function catalogReward(seed: string, rarity: string) {
+  const pool = COLLECTION_CATALOG.filter(item => item.rarity === rarity);
+  const digest = createHash('sha256').update(seed).digest().readUInt32BE(0);
+  const item = pool[digest % pool.length];
+  return { itemId: item.id, name: item.name, description: item.description, rarity: item.rarity.includes('red') ? 'legendary' as const : 'rare' as const, icon: '✦', quantity: 1 };
+}
+function drawCatalogItem(pool: RewardPoolEntry[]) {
+  const ticketInteger = randomInt(1_000_000_000); const ticket = ticketInteger / 1_000_000_000;
+  let cursor = 0;
+  const chosen = pool.find(entry => { cursor += entry.probability; return ticket < cursor; }) ?? pool.at(-1)!;
+  const candidates = COLLECTION_CATALOG.filter(item => item.rarity === chosen.rarity && (!item.limited || Boolean(item.seasonId)));
+  const item = candidates[randomInt(candidates.length)];
+  return { item:{ itemId: item.id, name: item.name, description: item.description, rarity: item.rarity, icon: '✦', quantity: chosen.quantity }, audit:{version:ECONOMY_VERSION,ticket:ticketInteger,ticketScale:1_000_000_000,rarity:chosen.rarity,probability:chosen.probability,itemId:item.id,quantity:chosen.quantity} };
 }
 
 export function mountArchiveRoutes(app: Express, { pool }: Options): void {
@@ -107,6 +124,116 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
         pool.query('SELECT id,season_id,task_id,kind,idempotency_key,reward,created_at FROM reward_ledger WHERE user_id=$1 ORDER BY created_at DESC LIMIT 500', [ownerOf(req)]),
       ]);
       res.json({ wallets: wallet.rows, ledger: ledger.rows });
+    } catch (error) { next(error); }
+  });
+  app.get('/api/shop', async (req, res, next) => {
+    try {
+      const [wallet, operations] = await Promise.all([
+        pool.query('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\'', [ownerOf(req)]),
+        pool.query('SELECT operation_id,kind,result,pool_version,created_at FROM economy_operations WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]),
+      ]);
+      const boxes = Object.values(BOXES).map(box => ({ ...box, expectedRecovery: poolExpectedRecovery(box.pool), poolTotal: poolTotals(box.pool) }));
+      res.json({ version: ECONOMY_VERSION, balance: Number(wallet.rows[0]?.balance ?? 0), boxes, operations: operations.rows, economyCheck: validateEconomy() });
+    } catch (error) { next(error); }
+  });
+  app.post('/api/shop/purchase', async (req, res, next) => {
+    const { operationId, boxId, quantity } = req.body ?? {};
+    if (typeof operationId !== 'string' || !idPattern.test(operationId) || !Object.hasOwn(BOXES, boxId) || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 20) { res.status(400).json({ error: 'INVALID_PURCHASE' }); return; }
+    const box = BOXES[boxId as BoxId]; const total = box.price * quantity; const requestHash = createHash('sha256').update(JSON.stringify({ boxId, quantity, price: box.price, version: ECONOMY_VERSION })).digest('hex');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN'); await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      const existing = await client.query('SELECT request_hash,result FROM economy_operations WHERE user_id=$1 AND operation_id=$2', [ownerOf(req), operationId]);
+      if (existing.rows[0]) { if (existing.rows[0].request_hash !== requestHash) { await client.query('ROLLBACK'); res.status(409).json({ error: 'IDEMPOTENCY_KEY_REUSED' }); return; } await client.query('COMMIT'); res.json({ purchase: existing.rows[0].result, idempotent: true }); return; }
+      const debit = await client.query(`UPDATE wallets SET balance=balance-$1 WHERE user_id=$2 AND currency='learning-coin' AND balance >= $1 RETURNING balance`, [total, ownerOf(req)]);
+      if (!debit.rowCount) { await client.query('ROLLBACK'); res.status(409).json({ error: 'INSUFFICIENT_BALANCE', required: total }); return; }
+      const item = rarityBoxItem(box.id); item.quantity = quantity;
+      await client.query(`INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,$4)
+        ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=inventory_items.quantity+EXCLUDED.quantity`, [ownerOf(req), item.itemId, JSON.stringify(item), quantity]);
+      const result = { operationId, boxId, itemId: item.itemId, title: box.title, quantity, unitPrice: box.price, total, balance: Number(debit.rows[0].balance), version: ECONOMY_VERSION };
+      await client.query('INSERT INTO economy_operations(user_id,operation_id,kind,request_hash,result,pool_version) VALUES($1,$2,\'purchase\',$3,$4,$5)', [ownerOf(req), operationId, requestHash, JSON.stringify(result), ECONOMY_VERSION]);
+      await client.query('INSERT INTO inventory_acquisitions(user_id,item_id,quantity,source_type,source_id) VALUES($1,$2,$3,\'purchase\',$4)', [ownerOf(req),item.itemId,quantity,operationId]);
+      await client.query('COMMIT'); res.status(201).json({ purchase: result, idempotent: false });
+    } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); } finally { client.release(); }
+  });
+  app.post('/api/inventory/open', async (req, res, next) => {
+    const { operationId, boxId, quantity } = req.body ?? {};
+    if (typeof operationId !== 'string' || !idPattern.test(operationId) || !Object.hasOwn(BOXES, boxId) || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 10) { res.status(400).json({ error: 'INVALID_OPENING' }); return; }
+    const box = BOXES[boxId as BoxId]; const item = rarityBoxItem(box.id); const requestHash = createHash('sha256').update(JSON.stringify({ boxId, quantity, version: ECONOMY_VERSION })).digest('hex');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN'); await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      const existing = await client.query('SELECT request_hash,result FROM economy_operations WHERE user_id=$1 AND operation_id=$2', [ownerOf(req), operationId]);
+      if (existing.rows[0]) { if (existing.rows[0].request_hash !== requestHash) { await client.query('ROLLBACK'); res.status(409).json({ error: 'IDEMPOTENCY_KEY_REUSED' }); return; } await client.query('COMMIT'); res.json({ opening: existing.rows[0].result, idempotent: true }); return; }
+      const stock = await client.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2 FOR UPDATE', [ownerOf(req), item.itemId]);
+      if (!stock.rows[0] || Number(stock.rows[0].quantity) < quantity) { await client.query('ROLLBACK'); res.status(409).json({ error: 'INSUFFICIENT_BOXES', available: Number(stock.rows[0]?.quantity ?? 0) }); return; }
+      await client.query('UPDATE inventory_items SET quantity=quantity-$1 WHERE user_id=$2 AND item_id=$3', [quantity, ownerOf(req), item.itemId]);
+      const results = Array.from({ length: quantity }, (_, index) => ({ opening: index + 1, ...drawCatalogItem(box.pool), pool: box.pool }));
+      for (const result of results) {
+        const reward = result.item;
+        await client.query(`INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,$4)
+          ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=inventory_items.quantity+EXCLUDED.quantity`, [ownerOf(req), reward.itemId, JSON.stringify(reward), reward.quantity]);
+        await client.query('INSERT INTO inventory_acquisitions(user_id,item_id,quantity,source_type,source_id) VALUES($1,$2,$3,\'box-open\',$4)', [ownerOf(req),reward.itemId,reward.quantity,operationId]);
+      }
+      const data = { operationId, boxId, boxTitle: box.title, quantity, results, createdAt: new Date().toISOString() };
+      await client.query('INSERT INTO economy_operations(user_id,operation_id,kind,request_hash,result,pool_version) VALUES($1,$2,\'open\',$3,$4,$5)', [ownerOf(req), operationId, requestHash, JSON.stringify(data), ECONOMY_VERSION]);
+      await client.query('COMMIT'); res.status(201).json({ opening: data, idempotent: false });
+    } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); } finally { client.release(); }
+  });
+  app.get('/api/challenges', async (_req, res) => {
+    res.json({ version: ECONOMY_VERSION, tiers: Object.entries(CHALLENGES).map(([id, tier]) => ({ id, ...tier, rewardExpectedRecovery: poolExpectedRecovery(tier.pool), poolTotal: poolTotals(tier.pool) })) });
+  });
+  app.get('/api/challenges/history', async (req,res,next) => {
+    try { const result=await pool.query('SELECT id,season_id,task_id,tier,status,entry_fee,prompt,evidence,evaluation,reward_item,reward_coins,draw_audit,pool_version,started_at,deadline_at,settled_at FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30',[ownerOf(req)]); res.json({challenges:result.rows}); } catch(error){next(error);}
+  });
+  app.post('/api/challenges/enter', async (req, res, next) => {
+    const { seasonId, taskId, tier: tierId } = req.body ?? {};
+    if (typeof seasonId !== 'string' || !idPattern.test(seasonId) || typeof taskId !== 'string' || taskId.length > 128 || !Object.hasOwn(CHALLENGES, tierId)) { res.status(400).json({ error: 'INVALID_CHALLENGE' }); return; }
+    const tier = CHALLENGES[tierId as ChallengeTier]; const client = await pool.connect();
+    try {
+      await client.query('BEGIN'); await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      const season = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [seasonId, ownerOf(req)]);
+      const row = season.rows[0]; const task = row?.state.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === taskId);
+      if (!row || !task) { await client.query('ROLLBACK'); res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
+      if (row.state.progress[taskId]?.status === 'completed' || !isTaskUnlocked(row.state.campaign, row.state.progress, taskId)) { await client.query('ROLLBACK'); res.status(409).json({ error: 'CHALLENGE_TASK_NOT_AVAILABLE' }); return; }
+      const recent = await client.query('SELECT 1 FROM challenge_runs WHERE user_id=$1 AND started_at>now()-interval \'24 hours\' AND status IN (\'active\',\'evaluating\',\'passed\',\'failed\',\'abandoned\') LIMIT 1', [ownerOf(req)]);
+      if (recent.rowCount) { await client.query('ROLLBACK'); res.status(429).json({ error: 'DAILY_CHALLENGE_LIMIT' }); return; }
+      const debit = await client.query(`UPDATE wallets SET balance=balance-$1 WHERE user_id=$2 AND currency='learning-coin' AND balance >= $1 RETURNING balance`, [tier.entryFee, ownerOf(req)]);
+      if (!debit.rowCount) { await client.query('ROLLBACK'); res.status(409).json({ error: 'INSUFFICIENT_BALANCE', required: tier.entryFee }); return; }
+      const id = randomUUID(); const deadline = new Date(Date.now() + (tier.minutes * 2 + 15) * 60_000);
+      const prompt = `基于已学习任务「${task.title}」独立完成挑战。\n\n任务目标：${task.brief}\n\n提交可检查的解释、步骤或作品证据；先提交，再显示标准。`;
+      await client.query('INSERT INTO challenge_runs(id,user_id,season_id,task_id,tier,status,entry_fee,prompt,deadline_at) VALUES($1,$2,$3,$4,$5,\'active\',$6,$7,$8)', [id, ownerOf(req), seasonId, taskId, tierId, tier.entryFee, prompt, deadline]);
+      await client.query('COMMIT'); res.status(201).json({ challenge: { id, seasonId, taskId, tier: tierId, title: tier.title, status: 'active', entryFee: tier.entryFee, prompt, acceptance: task.acceptance, deadlineAt: deadline.toISOString(), hintLimit: tier.hintLimit }, balance: Number(debit.rows[0].balance) });
+    } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); } finally { client.release(); }
+  });
+  app.post('/api/challenges/:id/abandon', async (req, res, next) => {
+    if (!idPattern.test(req.params.id)) { res.status(400).json({ error: 'INVALID_CHALLENGE_ID' }); return; }
+    try { const result = await pool.query(`UPDATE challenge_runs SET status='abandoned',settled_at=now() WHERE id=$1 AND user_id=$2 AND status='active' RETURNING id,status,entry_fee`, [req.params.id, ownerOf(req)]); if (!result.rowCount) { res.status(409).json({ error: 'CHALLENGE_NOT_ACTIVE' }); return; } res.json({ challenge: result.rows[0], refunded: false }); }
+    catch (error) { next(error); }
+  });
+  app.get('/api/profile', async (req, res, next) => {
+    try {
+      const userId = ownerOf(req);
+      const [user, profile, seasons, wallet, items, rewards, challenges] = await Promise.all([
+        pool.query('SELECT email,created_at FROM users WHERE id=$1', [userId]),
+        pool.query('SELECT nickname,avatar_url,bio,is_public FROM user_profiles WHERE user_id=$1', [userId]),
+        pool.query<{ id:string; title:string; state:LearningState; updated_at:Date|string }>('SELECT id,title,state,updated_at FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [userId]),
+        pool.query('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\'', [userId]),
+        pool.query(`SELECT i.item_id,i.definition,i.quantity,i.acquired_at,COALESCE(p.is_showcased,false) is_showcased FROM inventory_items i LEFT JOIN inventory_item_preferences p ON p.user_id=i.user_id AND p.item_id=i.item_id WHERE i.user_id=$1 AND i.quantity>0`, [userId]),
+        pool.query('SELECT reward FROM reward_ledger WHERE user_id=$1', [userId]),
+        pool.query('SELECT id,tier,status,entry_fee,reward_item,reward_coins,draw_audit,pool_version,started_at,settled_at FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [userId]),
+      ]);
+      const kinds = items.rows.filter((item: any) => COLLECTION_CATALOG.some(entry => entry.id === item.item_id)).length;
+      const profileData = profile.rows[0] ?? { nickname: '行动者', avatar_url: '', bio: '', is_public: false };
+      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), seasons: seasons.rows.map((row: any) => {const allTasks=row.state.campaign.stages.flatMap((stage:any)=>stage.tasks);const finalTask=allTasks.at(-1);return { id: row.id, title: row.title, desiredArtifact:row.state.campaign.desiredArtifact??row.state.campaign.ultimateReward, finalProjectEvidence:finalTask&&row.state.progress[finalTask.id]?.status==='completed'?row.state.progress[finalTask.id]?.evidence:null, updatedAt: row.updated_at, completed: Object.values(row.state.progress).filter((progress: any) => progress.status === 'completed').length, total: Object.keys(row.state.progress).length, stages: row.state.campaign.stages.map((stage: any) => ({ title: stage.title, completed: (stage.gateTaskIds ?? stage.mainlineTaskIds ?? []).every((id: string) => row.state.progress[id]?.status === 'completed') })), grid: (row.state.campaign.nineGrid ?? []).map((slot: any) => ({ title: slot.title, evidence: row.state.gridOutcomes?.[slot.id]?.artifact ?? null })) }}), collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, showcased: items.rows.filter((item: any) => item.is_showcased).map((item: any) => ({ ...(COLLECTION_CATALOG.find(def=>def.id===item.item_id)??item.definition), quantity: item.quantity, itemId: item.item_id })), challenges: challenges.rows, private: !profileData.is_public });
+    } catch (error) { next(error); }
+  });
+  app.post('/api/profile', async (req, res, next) => {
+    const body = req.body ?? {};
+    if (typeof body.nickname !== 'string' || body.nickname.trim().length < 1 || body.nickname.trim().length > 32 || typeof body.avatarUrl !== 'string' || !profileAvatars.has(body.avatarUrl) || typeof body.bio !== 'string' || body.bio.length > 240 || body.isPublic !== false) { res.status(400).json({ error: 'INVALID_PROFILE' }); return; }
+    try {
+      const result = await pool.query(`INSERT INTO user_profiles(user_id,nickname,avatar_url,bio,is_public) VALUES($1,$2,$3,$4,false) ON CONFLICT(user_id) DO UPDATE SET nickname=EXCLUDED.nickname,avatar_url=EXCLUDED.avatar_url,bio=EXCLUDED.bio,updated_at=now() RETURNING nickname,avatar_url,bio,is_public`, [ownerOf(req), body.nickname.trim(), body.avatarUrl, body.bio.trim()]);
+      res.json({ profile: result.rows[0] });
     } catch (error) { next(error); }
   });
   app.get('/api/inventory', async (req, res, next) => {
@@ -121,12 +248,19 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       for (const row of ledger.rows as Array<{ season_id: string; task_id: string; reward: { items?: Array<{ itemId: string }> }; created_at: Date | string }>) {
         for (const item of row.reward?.items ?? []) sources.set(item.itemId, [...(sources.get(item.itemId) ?? []), { seasonId: row.season_id, taskId: row.task_id, acquiredAt: row.created_at }]);
       }
+      const acquisitions = await pool.query('SELECT item_id,source_type,source_id,season_id,task_id,created_at FROM inventory_acquisitions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 4000', [ownerOf(req)]);
+      for (const row of acquisitions.rows as Array<{item_id:string;source_type:string;source_id:string;season_id:string|null;task_id:string|null;created_at:Date|string}>) sources.set(row.item_id,[...(sources.get(row.item_id)??[]),{seasonId:row.season_id??row.source_type,taskId:row.task_id??`${row.source_type}:${row.source_id}`,acquiredAt:row.created_at}]);
       const rarity = req.query.rarity;
       const seasonId = req.query.seasonId;
       const filtered = (items.rows as Array<{ item_id: string; definition: Record<string, unknown>; quantity: number; acquired_at: Date | string }>).map(row => ({ ...row, sources: sources.get(row.item_id) ?? [] }))
         .filter(item => (!rarity || item.definition.rarity === rarity) && (!seasonId || item.sources.some(source => source.seasonId === seasonId)));
-      const sales = await pool.query('SELECT operation_id,items,coins,created_at FROM inventory_sales WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]);
-      res.json({ items: filtered, sales: sales.rows });
+      const [sales, economy, challenge, learning] = await Promise.all([
+        pool.query('SELECT operation_id,items,coins,created_at FROM inventory_sales WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]),
+        pool.query('SELECT operation_id,kind,result,pool_version,created_at FROM economy_operations WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]),
+        pool.query('SELECT id,tier,status,entry_fee,reward_item,reward_coins,draw_audit,pool_version,started_at,settled_at FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]),
+        pool.query('SELECT id,season_id,task_id,kind,reward,created_at FROM reward_ledger WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]),
+      ]);
+      res.json({ items: filtered, sales: sales.rows, transactions: [...sales.rows.map(row=>({...row,kind:'sale'})),...economy.rows,...challenge.rows.map(row=>({...row,kind:`challenge_${row.status}`})),...learning.rows].sort((a,b)=>new Date(b.created_at??b.started_at).getTime()-new Date(a.created_at??a.started_at).getTime()).slice(0,100) });
     } catch (error) { next(error); }
   });
 
@@ -152,12 +286,13 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     const operationId = req.body?.operationId;
     const requested = req.body?.items;
     if (typeof operationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(operationId) || !Array.isArray(requested) || requested.length < 1 || requested.length > 155 || requested.some((item: any) => typeof item?.itemId !== 'string' || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 10000) || new Set(requested.map((item: any) => item.itemId)).size !== requested.length) { res.status(400).json({ error: 'INVALID_SALE' }); return; }
+    const requestHash=createHash('sha256').update(JSON.stringify(requested.map((item:any)=>({itemId:item.itemId,quantity:item.quantity})).sort((a:any,b:any)=>a.itemId.localeCompare(b.itemId)))).digest('hex');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
-      const already = await client.query('SELECT operation_id,items,coins,created_at FROM inventory_sales WHERE user_id=$1 AND operation_id=$2', [ownerOf(req), operationId]);
-      if (already.rows[0]) { await client.query('COMMIT'); res.json({ sale: already.rows[0], idempotent: true }); return; }
+      const already = await client.query('SELECT operation_id,items,coins,created_at,request_hash FROM inventory_sales WHERE user_id=$1 AND operation_id=$2', [ownerOf(req), operationId]);
+      if (already.rows[0]) { if(already.rows[0].request_hash&&already.rows[0].request_hash!==requestHash){await client.query('ROLLBACK');res.status(409).json({error:'IDEMPOTENCY_KEY_REUSED'});return;} await client.query('COMMIT'); res.json({ sale: already.rows[0], idempotent: true }); return; }
       const items = [] as Array<{ itemId: string; name: string; quantity: number; unitPrice: number; total: number }>;
       let total = 0;
       for (const requestedItem of requested as Array<{ itemId: string; quantity: number }>) {
@@ -174,8 +309,8 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       for (const item of items) await client.query('UPDATE inventory_items SET quantity=quantity-$1 WHERE user_id=$2 AND item_id=$3', [item.quantity, ownerOf(req), item.itemId]);
       await client.query(`INSERT INTO wallets(user_id,currency,balance) VALUES($1,'learning-coin',$2)
         ON CONFLICT(user_id,currency) DO UPDATE SET balance=wallets.balance+EXCLUDED.balance`, [ownerOf(req), total]);
-      const sale = await client.query(`INSERT INTO inventory_sales(user_id,operation_id,items,coins) VALUES($1,$2,$3,$4)
-        RETURNING operation_id,items,coins,created_at`, [ownerOf(req), operationId, JSON.stringify(items), total]);
+      const sale = await client.query(`INSERT INTO inventory_sales(user_id,operation_id,items,coins,request_hash) VALUES($1,$2,$3,$4,$5)
+        RETURNING operation_id,items,coins,created_at`, [ownerOf(req), operationId, JSON.stringify(items), total,requestHash]);
       await client.query('COMMIT'); res.json({ sale: sale.rows[0], idempotent: false });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
     finally { client.release(); }
@@ -338,6 +473,20 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       res.json({ season: publicSeason(updated.rows[0]), alreadyCompleted: false, rewards: additions });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
     finally { client.release(); }
+  });
+  app.post('/api/seasons/:id/reviews/settle', async (req,res,next) => {
+    const {taskId,rating,answer,hintUsed,revision}=req.body??{};
+    if(!idPattern.test(req.params.id)||typeof taskId!=='string'||!Number.isInteger(rating)||rating<1||rating>4||typeof answer!=='string'||answer.trim().length<8||answer.length>10000||typeof hintUsed!=='boolean'||!Number.isInteger(revision)||revision<1){res.status(400).json({error:'INVALID_REVIEW'});return;}
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);const row=found.rows[0];
+      if(!row){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}if(row.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',revision:row.revision});return;}
+      const card=row.state.reviews.find(item=>item.taskId===taskId);if(!card||row.state.progress[taskId]?.status!=='completed'||Date.parse(card.dueAt)>Date.now()){await client.query('ROLLBACK');res.status(409).json({error:'REVIEW_NOT_DUE'});return;}
+      const key=`review:${row.campaign_id}:${taskId}:${card.history.length+1}`;const coins=rating>=3&&answer.trim().length>=30&&!hintUsed?6:0;const reward={xp:0,coins,items:[]};
+      const next=rateReview(row.state,taskId,rating,new Date(),{answer:answer.trim(),hintUsed});
+      if(coins){const inserted=await client.query(`INSERT INTO reward_ledger(id,user_id,season_id,task_id,kind,idempotency_key,reward) VALUES($1,$2,$3,$4,'review',$5,$6) ON CONFLICT(user_id,idempotency_key) DO NOTHING RETURNING id`,[randomUUID(),ownerOf(req),row.id,taskId,key,JSON.stringify(reward)]);if(inserted.rowCount)await client.query(`INSERT INTO wallets(user_id,currency,balance) VALUES($1,'learning-coin',$2) ON CONFLICT(user_id,currency) DO UPDATE SET balance=wallets.balance+EXCLUDED.balance`,[ownerOf(req),coins]);next.rewardLedger=[...(next.rewardLedger??[]),{id:`review-${key}`,campaignId:row.campaign_id,taskId,at:new Date().toISOString(),reward,kind:'review',idempotencyKey:key}];}
+      const updated=await client.query<Row>('UPDATE seasons SET state=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3 AND revision=$4 RETURNING id,campaign_id,title,revision,state,created_at,updated_at',[JSON.stringify(next),row.id,ownerOf(req),revision]);if(!updated.rows[0]){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT'});return;}await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0]),reward:{...reward,idempotencyKey:key},effective:coins>0});
+    }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
 }
 

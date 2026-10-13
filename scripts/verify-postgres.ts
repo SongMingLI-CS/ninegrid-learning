@@ -18,6 +18,7 @@ import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { createProgressForCampaign } from '../src/lib/engine';
 import type { LearningState } from '../shared/types';
 import { COLLECTION_CATALOG } from '../shared/catalog';
+import { validateEconomy } from '../shared/economy';
 
 const root = await mkdtemp(join(tmpdir(), 'ninegrid-real-postgres-'));
 const password = randomBytes(24).toString('hex');
@@ -77,12 +78,17 @@ const results: string[] = [];
 let pool: Pool;
 let visualBytes = false;
 let testServer: Server | undefined;
+let failChallengeProvider = false;
+let challengeProviderFailureCalls=0;
 const sessionSecret = randomBytes(32).toString('hex');
 const provider: typeof fetch = async (_url, init) => {
   const body = JSON.parse(String(init?.body));
   const content = body.messages[1].content;
+  const system=String(body.messages[0].content??'');
+  if(system.includes('paid, optional learning challenge')&&failChallengeProvider){challengeProviderFailureCalls++;return new Response(JSON.stringify({error:{message:'simulated provider outage'}}),{status:503});}
   visualBytes = Array.isArray(content) && content.some((item: { type?: string; image_url?: { url?: string } }) => item.type === 'image_url' && item.image_url?.url?.startsWith('data:image/webp;base64,'));
-  return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ recognizedText: '2 × 3', analysis: 'Two rows and three columns.', uncertainties: [], nextStep: 'Predict a new shape.' }) } }] }), { status: 200 });
+  const output=system.includes('paid, optional learning challenge')?{passed:true,score:92,feedback:'Mocked evaluation: answer explains the requested transformation and checks the resulting shape.',gaps:[],nextStep:'Try a second input.'}:system.includes('rigorous learning assessor')?{passed:true,score:92,feedback:'Mocked evidence check.',gaps:[],nextStep:'Continue.'}:{ recognizedText: '2 × 3', analysis: 'Two rows and three columns.', uncertainties: [], nextStep: 'Predict a new shape.' };
+  return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(output) } }] }), { status: 200 });
 };
 function newState(campaign = NUMPY_DEMO_CAMPAIGN): LearningState {
   return { version: 2, campaign: structuredClone(campaign), progress: createProgressForCampaign(campaign), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [] };
@@ -100,7 +106,8 @@ try {
   const a = request.agent(testServer); const b = request.agent(testServer);
   const csrf = async (agent: typeof a) => (await agent.get('/api/auth/csrf').expect(200)).body.token as string;
   const register = async (agent: typeof a, email: string) => { const token = await csrf(agent); return (await agent.post('/api/auth/register').set('x-csrf-token', token).send({ email, password: 'independent-test-passphrase-2026' }).expect(201)).body.user; };
-  const userA = await register(a, 'integration-a@example.com'); await register(b, 'integration-b@example.com');
+  const userA = await register(a, 'integration-a@example.com'); const userB=await register(b, 'integration-b@example.com');
+  const economyAudit=validateEconomy(); assert(economyAudit.boxes['small-safe'].expectedRecovery<economyAudit.boxes['small-safe'].price); assert.equal(economyAudit.boxes['small-safe'].poolTotal,1); results.push('exact catalog-based expected recovery and probability validation passes before any economy route');
   const created = await a.post('/api/seasons').set('x-csrf-token', await csrf(a)).send({ state: newState() }).expect(201);
   const draftInput = { goal: NUMPY_DEMO_CAMPAIGN.goal, level: '已学 ndarray、shape、dtype', days: 28, dailyMinutes: 30, ultimateReward: '完成可验证的数据处理作品' };
   const draftResponse = await a.post('/api/generation-drafts').set('x-csrf-token', await csrf(a)).send({ input: draftInput, rulesVersion: 4 }).expect(201);
@@ -127,6 +134,7 @@ try {
   const firstSale = await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId: saleOperation, items: [{ itemId: collectible.id, quantity: 1 }] }).expect(200);
   const saleRetry = await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId: saleOperation, items: [{ itemId: collectible.id, quantity: 1 }] }).expect(200);
   assert.equal(Number(firstSale.body.sale.coins), collectible.sellPrice); assert.equal(saleRetry.body.idempotent, true);
+  await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId:saleOperation,items:[{itemId:collectible.id,quantity:2}]}).expect(409);
   assert.equal((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [userA.id, collectible.id])).rows[0].quantity, 1);
   assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance), collectible.sellPrice);
   assert.equal((await b.get('/api/inventory').expect(200)).body.items.length, 0);
@@ -139,6 +147,23 @@ try {
   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [userA.id, collectible.id])).rows[0].quantity), 0);
   assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance), collectible.sellPrice * 2);
   results.push('PostgreSQL inventory sale commits one fixed-price credit, one quantity debit and one idempotent sale ledger row; accounts stay isolated');
+  await pool.query("UPDATE wallets SET balance=balance+30000 WHERE user_id=$1 AND currency='learning-coin'",[userA.id]);
+  const shopToken=await csrf(a); const shopBefore=Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance);const buyId=randomUUID();
+  const purchase=await a.post('/api/shop/purchase').set('x-csrf-token',shopToken).send({operationId:buyId,boxId:'small-safe',quantity:3}).expect(201);
+  const purchaseRetry=await a.post('/api/shop/purchase').set('x-csrf-token',shopToken).send({operationId:buyId,boxId:'small-safe',quantity:3}).expect(200);
+  assert.equal(purchaseRetry.body.idempotent,true);assert.deepEqual(purchaseRetry.body.purchase,purchase.body.purchase);
+  await a.post('/api/shop/purchase').set('x-csrf-token',shopToken).send({operationId:buyId,boxId:'small-safe',quantity:2}).expect(409);
+  await a.post('/api/shop/purchase').set('x-csrf-token',shopToken).send({operationId:randomUUID(),boxId:'large-safe',quantity:20}).expect(409);
+  assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance),shopBefore-3*850);
+  const boxItemId='box-small-safe-2026-10-v1'; assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userA.id,boxItemId])).rows[0].quantity),3);
+  const openId=randomUUID();const opening=await a.post('/api/inventory/open').set('x-csrf-token',shopToken).send({operationId:openId,boxId:'small-safe',quantity:2}).expect(201);const openingRetry=await a.post('/api/inventory/open').set('x-csrf-token',shopToken).send({operationId:openId,boxId:'small-safe',quantity:2}).expect(200);assert.equal(openingRetry.body.idempotent,true);assert.deepEqual(openingRetry.body.opening.results,opening.body.opening.results);assert.equal(opening.body.opening.results.length,2);assert(opening.body.opening.results.every((row:any)=>row.audit.version&&row.audit.ticketScale===1_000_000_000));
+  await a.post('/api/inventory/open').set('x-csrf-token',shopToken).send({operationId:openId,boxId:'small-safe',quantity:1}).expect(409);
+  const competingOpens=await Promise.all([0,1].map(()=>a.post('/api/inventory/open').set('x-csrf-token',shopToken).send({operationId:randomUUID(),boxId:'small-safe',quantity:1})));assert.deepEqual(competingOpens.map(row=>row.status).sort(),[201,409]);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userA.id,boxItemId])).rows[0].quantity),0);
+  await pool.query("UPDATE wallets SET balance=1000 WHERE user_id=$1 AND currency='learning-coin'",[userA.id]);const competingPurchases=await Promise.all([0,1].map(()=>a.post('/api/shop/purchase').set('x-csrf-token',shopToken).send({operationId:randomUUID(),boxId:'small-safe',quantity:1})));assert.deepEqual(competingPurchases.map(row=>row.status).sort(),[201,409]);assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance),150);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userA.id,boxItemId])).rows[0].quantity),1);
+  await pool.query('UPDATE inventory_items SET quantity=1 WHERE user_id=$1 AND item_id=$2',[userA.id,collectible.id]);const race=[a.post('/api/inventory/sell').set('x-csrf-token',shopToken).send({operationId:randomUUID(),items:[{itemId:collectible.id,quantity:1}]}),a.post('/api/inventory/open').set('x-csrf-token',shopToken).send({operationId:randomUUID(),boxId:'small-safe',quantity:1})];const raceResults=await Promise.all(race);assert.deepEqual(raceResults.map(row=>row.status).sort(),[200,201]);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userA.id,boxItemId])).rows[0].quantity),0);
+  const profileBefore=(await a.get('/api/profile').expect(200)).body;assert.equal(profileBefore.collection.total,155);assert.equal(profileBefore.profile.is_public,false);
+  await a.post('/api/profile').set('x-csrf-token',shopToken).send({nickname:'测试行动者',avatarUrl:'',bio:'本机集成验证',isPublic:false}).expect(200);await a.post('/api/profile').set('x-csrf-token',shopToken).send({nickname:'测试',avatarUrl:'javascript:alert(1)',bio:'',isPublic:false}).expect(400);assert.equal((await b.get('/api/profile').expect(200)).body.profile.nickname,'行动者');
+  results.push('PostgreSQL purchase/open transactions debit atomically, enforce parameter-bound idempotency, preserve audited draws under retries and concurrent opens; profile is private and account-scoped');
   const season = created.body.season; const taskId = season.state.campaign.stages[0].tasks[0].id;
   await b.get(`/api/seasons/${season.id}`).expect(404);
   await b.put(`/api/seasons/${season.id}`).set('x-csrf-token', await csrf(b)).send({ revision: 1, state: season.state }).expect(404);
@@ -165,6 +190,12 @@ try {
   assert.equal(upgraded.state.progress[taskId].verification, 'ai');
   assert.equal((await a.get('/api/wallet')).body.ledger.filter((row: { kind: string }) => row.kind === 'mission').length, 1);
   results.push('changed evidence invalidates prior AI assessment; independent re-evaluation upgrades without base reward duplication (assessment mocked)');
+  await pool.query("INSERT INTO wallets(user_id,currency,balance) VALUES($1,'learning-coin',3000) ON CONFLICT(user_id,currency) DO UPDATE SET balance=EXCLUDED.balance",[userB.id]);
+  const challengeSeason=(await b.post('/api/seasons').set('x-csrf-token',await csrf(b)).send({state:newState({...NUMPY_DEMO_CAMPAIGN,id:randomUUID()})}).expect(201)).body.season;
+  const challengeTask=challengeSeason.state.campaign.stages[0].tasks[0];const challengeEntry=await b.post('/api/challenges/enter').set('x-csrf-token',await csrf(b)).send({seasonId:challengeSeason.id,taskId:challengeTask.id,tier:'ordinary'}).expect(201);const challengeAnswer='For a 3 by 2 array, summing axis 0 combines rows and returns two column totals. I checked the shape and computed values using a small concrete input.';
+  const challengePass=await b.post(`/api/challenges/${challengeEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(b)).send({evidence:challengeAnswer}).expect(200);assert.equal(challengePass.body.challenge.status,'passed');assert.equal(challengePass.body.challenge.evaluation.score,92);const wonId=challengePass.body.challenge.rewardItem.itemId;assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userB.id,wonId])).rows[0].quantity),1);await b.post(`/api/challenges/${challengeEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(b)).send({evidence:challengeAnswer}).expect(200);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userB.id,wonId])).rows[0].quantity),1);
+  await pool.query("UPDATE wallets SET balance=balance+30000 WHERE user_id=$1 AND currency='learning-coin'",[userA.id]);const techSeason=(await a.post('/api/seasons').set('x-csrf-token',await csrf(a)).send({state:newState({...NUMPY_DEMO_CAMPAIGN,id:randomUUID()})}).expect(201)).body.season;const techTask=techSeason.state.campaign.stages[0].tasks[0];const techEntry=await a.post('/api/challenges/enter').set('x-csrf-token',await csrf(a)).send({seasonId:techSeason.id,taskId:techTask.id,tier:'ordinary'}).expect(201);const balanceAfterEntry=Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance);failChallengeProvider=true;const techResponse=await a.post(`/api/challenges/${techEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(a)).send({evidence:challengeAnswer}).expect(502);failChallengeProvider=false;assert.equal(techResponse.body.code,'CHALLENGE_TECHNICAL_REFUND');assert.equal((await pool.query('SELECT status FROM challenge_runs WHERE id=$1',[techEntry.body.challenge.id])).rows[0].status,'technical_refund');assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance),balanceAfterEntry+900);await a.post(`/api/challenges/${techEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(a)).send({evidence:challengeAnswer}).expect(200);assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance),balanceAfterEntry+900);assert.equal(Number((await pool.query('SELECT count(*) FROM challenge_runs WHERE user_id=$1 AND status=\'technical_refund\'',[userA.id])).rows[0].count),1);const recoverySeason=(await a.post('/api/seasons').set('x-csrf-token',await csrf(a)).send({state:newState({...NUMPY_DEMO_CAMPAIGN,id:randomUUID()})}).expect(201)).body.season;await a.post('/api/challenges/enter').set('x-csrf-token',await csrf(a)).send({seasonId:recoverySeason.id,taskId:recoverySeason.state.campaign.stages[0].tasks[0].id,tier:'ordinary'}).expect(201);
+  results.push('PostgreSQL challenge entry fee settles once; mocked server evaluation awards one catalog item; provider failure returns one technical refund without changing campaign progress');
   const anotherBrowser = request.agent(testServer);
   const browserCsrf = await csrf(anotherBrowser);
   await anotherBrowser.post('/api/auth/login').set('x-csrf-token', browserCsrf).send({ email: 'integration-a@example.com', password: 'independent-test-passphrase-2026' }).expect(200);
