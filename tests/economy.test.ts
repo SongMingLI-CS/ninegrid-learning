@@ -1,5 +1,6 @@
 import { describe,expect,it } from 'vitest';
-import { CATALOG_RARITY_COUNTS,COLLECTION_CATALOG } from '../shared/catalog';
+import { existsSync } from 'node:fs';
+import { CATALOG_RARITY_COUNTS,COLLECTION_CATALOG,GENERATED_CATALOG_IMAGE_IDS } from '../shared/catalog';
 import { BOXES,CHALLENGES,chainCompletionCoins,formatHafverCoins,learningCoinsForMinutes,poolExpectedRecovery,poolTotals,validateEconomy } from '../shared/economy';
 
 describe('versioned economy rules',()=>{
@@ -9,6 +10,14 @@ describe('versioned economy rules',()=>{
     expect(COLLECTION_CATALOG.every(item=>item.displayValue>item.sellPrice&&Math.abs(item.sellPrice/item.displayValue-.65)<0.00006)).toBe(true);
     const ranges:Record<string,[number,number]>={'small-purple':[20_000,80_000],'small-gold':[100_000,300_000],'large-gold':[400_000,900_000],'small-red':[600_000,1_000_000],'large-red':[1_000_000,2_000_000]};
     for(const [rarity,[min,max]] of Object.entries(ranges)){const items=COLLECTION_CATALOG.filter(item=>item.rarity===rarity);expect(Math.min(...items.map(item=>item.displayValue))).toBe(min);expect(Math.max(...items.map(item=>item.displayValue))).toBe(max);}
+  });
+  it('ships a distinct detail image and thumbnail for every catalog item',()=>{
+    expect(GENERATED_CATALOG_IMAGE_IDS.size).toBe(COLLECTION_CATALOG.length);
+    for(const item of COLLECTION_CATALOG){
+      expect(GENERATED_CATALOG_IMAGE_IDS.has(item.id),item.id).toBe(true);
+      expect(existsSync(`public/assets/catalog/items/${item.id}.webp`),`${item.id} detail`).toBe(true);
+      expect(existsSync(`public/assets/catalog/thumbs/${item.id}.webp`),`${item.id} thumbnail`).toBe(true);
+    }
   });
   it('validates exact full-pool recovery expectation below each box price',()=>{
     const result=validateEconomy();
