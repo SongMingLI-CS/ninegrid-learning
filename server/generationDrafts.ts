@@ -101,8 +101,8 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       const draft = found.rows[0];
       if (!draft) { await client.query('ROLLBACK'); res.status(404).json({ code: 'DRAFT_NOT_FOUND' }); return; }
       if (draft.activated_season_id) {
-        const season = await client.query('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2', [draft.activated_season_id, ownerOf(req)]);
-        if (season.rows[0]) { await client.query('COMMIT'); res.json({ season: season.rows[0], idempotent: true }); return; }
+        const season = await client.query('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2', [draft.activated_season_id, ownerOf(req)]);
+        if (season.rows[0]) { await client.query(`INSERT INTO user_current_seasons(user_id,season_id) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now()`,[ownerOf(req),season.rows[0].id]); await client.query('COMMIT'); res.json({ season: season.rows[0], idempotent: true }); return; }
       }
       if (draft.status !== 'awaiting-confirmation') { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_NOT_READY' }); return; }
       const checked = campaignSchema.safeParse(draft.final_campaign);
@@ -124,10 +124,10 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       const state: LearningState = { version: 2, campaign, progress: Object.fromEntries(campaign.stages.flatMap(stage => stage.tasks).map(task => [task.id, { completedObjectives: [], evidence: '', status: 'idle' as const }])), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {} };
       let inserted;
       try {
-        inserted = await client.query(`INSERT INTO seasons (id,owner_user_id,campaign_id,title,revision,state) VALUES ($1,$2,$3,$4,1,$5) RETURNING id,campaign_id,title,revision,state,created_at,updated_at`, [randomUUID(), ownerOf(req), campaign.id, campaign.title, JSON.stringify(state)]);
+        inserted = await client.query(`INSERT INTO seasons (id,owner_user_id,campaign_id,title,revision,state) VALUES ($1,$2,$3,$4,1,$5) RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`, [randomUUID(), ownerOf(req), campaign.id, campaign.title, JSON.stringify(state)]);
       } catch (error) {
         if (!(error && typeof error === 'object' && 'code' in error && error.code === '23505')) throw error;
-        inserted = await client.query('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE owner_user_id=$1 AND campaign_id=$2', [ownerOf(req), campaign.id]);
+        inserted = await client.query('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE owner_user_id=$1 AND campaign_id=$2', [ownerOf(req), campaign.id]);
         if (!inserted.rows[0]) throw error;
       }
       if (campaign.seasonalCollectible) {
@@ -144,6 +144,8 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
           VALUES($1,$2,$3,$4,$5,$6,$7,1) ON CONFLICT(season_id) DO NOTHING`,
         [inserted.rows[0].id, ownerOf(req), collectible.id, collectible.rewardKey, JSON.stringify(definition), collectible.finalTaskId, gateTaskIds]);
       }
+      await client.query(`INSERT INTO user_current_seasons(user_id,season_id) VALUES($1,$2)
+        ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now()`,[ownerOf(req),inserted.rows[0].id]);
       // Keep only the compact activation key; the full course already lives in seasons.state.
       await client.query("UPDATE generation_drafts SET status='activated',activated_season_id=$1,input=$4::jsonb,outline=NULL,batches='{}'::jsonb,progress='{}'::jsonb,failure=NULL,final_campaign=NULL,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3", [inserted.rows[0].id, draft.id, ownerOf(req), JSON.stringify({ goal: (draft.input as any).goal, activated: true })]);
       await client.query('COMMIT'); res.status(201).json({ season: inserted.rows[0], idempotent: false });

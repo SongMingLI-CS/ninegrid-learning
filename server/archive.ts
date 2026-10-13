@@ -8,12 +8,12 @@ import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
 import { completeTask, isTaskUnlocked, rateReview, recordGridOutcome } from '../src/lib/engine';
 
-type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string };
+type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string; lifecycle_status?: 'active'|'paused'|'archived' };
 type Options = { pool: Pool };
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ownerOf = (req: Request) => (req.session as typeof req.session & { userId?: string }).userId;
 const profileAvatars=new Set(['','/assets/avatars/field.svg','/assets/avatars/compass.svg','/assets/avatars/signal.svg']);
-const publicSeason = (row: Row) => ({ id: row.id, campaignId: row.campaign_id, title: row.title, revision: row.revision, state: row.state, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() });
+const publicSeason = (row: Row) => ({ id: row.id, campaignId: row.campaign_id, title: row.title, revision: row.revision, state: row.state, lifecycleStatus: row.lifecycle_status ?? 'active', createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() });
 export function taskEvidence(state: LearningState, taskId: string): string {
   const progress = state.progress[taskId];
   if (!progress) return '';
@@ -217,18 +217,19 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   app.get('/api/profile', async (req, res, next) => {
     try {
       const userId = ownerOf(req);
-      const [user, profile, seasons, wallet, items, rewards, challenges, seasonalCollectibles] = await Promise.all([
+      const [user, profile, seasons, wallet, items, rewards, challenges, seasonalCollectibles, currentSelection] = await Promise.all([
         pool.query('SELECT email,created_at FROM users WHERE id=$1', [userId]),
         pool.query('SELECT nickname,avatar_url,bio,is_public FROM user_profiles WHERE user_id=$1', [userId]),
-        pool.query<{ id:string; title:string; state:LearningState; updated_at:Date|string }>('SELECT id,title,state,updated_at FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [userId]),
+        pool.query<{ id:string; title:string; state:LearningState; updated_at:Date|string; created_at:Date|string; lifecycle_status:string }>('SELECT id,title,state,updated_at,created_at,lifecycle_status FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [userId]),
         pool.query('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\'', [userId]),
-        pool.query(`SELECT i.item_id,i.definition,i.quantity,i.acquired_at,COALESCE(p.is_showcased,false) is_showcased FROM inventory_items i LEFT JOIN inventory_item_preferences p ON p.user_id=i.user_id AND p.item_id=i.item_id WHERE i.user_id=$1 AND i.quantity>0`, [userId]),
+        pool.query(`SELECT i.item_id,i.definition,i.quantity,i.acquired_at,COALESCE(p.is_showcased,false) is_showcased,COALESCE(p.showcase_order,0) showcase_order FROM inventory_items i LEFT JOIN inventory_item_preferences p ON p.user_id=i.user_id AND p.item_id=i.item_id WHERE i.user_id=$1 AND i.quantity>0`, [userId]),
         pool.query('SELECT reward FROM reward_ledger WHERE user_id=$1', [userId]),
         pool.query('SELECT id,tier,status,entry_fee,reward_item,reward_coins,draw_audit,pool_version,started_at,settled_at FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [userId]),
         pool.query(`SELECT c.season_id,c.item_id,c.reward_key,c.definition,c.final_task_id,c.claimed_at,s.title,
           EXISTS(SELECT 1 FROM season_collectible_claims x WHERE x.owner_user_id=c.owner_user_id AND x.reward_key=c.reward_key) AS claimed,
           s.state->'progress'->c.final_task_id->>'evidence' AS final_evidence
           FROM season_collectibles c JOIN seasons s ON s.id=c.season_id WHERE c.owner_user_id=$1 ORDER BY c.created_at DESC`, [userId]),
+        pool.query('SELECT season_id FROM user_current_seasons WHERE user_id=$1',[userId]),
       ]);
       const kinds = items.rows.filter((item: any) => COLLECTION_CATALOG.some(entry => entry.id === item.item_id)).length;
       const seasonalByTarget = new Map<string, (typeof seasonalCollectibles.rows)[number]>();
@@ -236,7 +237,31 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
         if (!seasonalByTarget.has(collectible.reward_key)) seasonalByTarget.set(collectible.reward_key, collectible);
       }
       const profileData = profile.rows[0] ?? { nickname: '行动者', avatar_url: '', bio: '', is_public: false };
-      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), seasons: seasons.rows.map((row: any) => {const allTasks=row.state.campaign.stages.flatMap((stage:any)=>stage.tasks);const finalTask=allTasks.at(-1);return { id: row.id, title: row.title, desiredArtifact:row.state.campaign.desiredArtifact??row.state.campaign.ultimateReward, finalProjectEvidence:finalTask&&row.state.progress[finalTask.id]?.status==='completed'?row.state.progress[finalTask.id]?.evidence:null, updatedAt: row.updated_at, completed: Object.values(row.state.progress).filter((progress: any) => progress.status === 'completed').length, total: Object.keys(row.state.progress).length, stages: row.state.campaign.stages.map((stage: any) => ({ title: stage.title, completed: (stage.gateTaskIds ?? stage.mainlineTaskIds ?? []).every((id: string) => row.state.progress[id]?.status === 'completed') })), grid: (row.state.campaign.nineGrid ?? []).map((slot: any) => ({ title: slot.title, evidence: row.state.gridOutcomes?.[slot.id]?.artifact ?? null })) }}), collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, seasonalCollectibles: [...seasonalByTarget.values()], showcased: items.rows.filter((item: any) => item.is_showcased).map((item: any) => ({ ...(COLLECTION_CATALOG.find(def=>def.id===item.item_id)??item.definition), quantity: item.quantity, itemId: item.item_id })), challenges: challenges.rows, private: !profileData.is_public });
+      const profileSeasons=seasons.rows.map((row:any)=>{
+        const allTasks=row.state.campaign.stages.flatMap((stage:any)=>stage.tasks);
+        const mainTasks=allTasks.filter((task:any)=>(task.track??'main')==='main');
+        const completedTasks=allTasks.filter((task:any)=>row.state.progress[task.id]?.status==='completed');
+        const mainCompleted=mainTasks.filter((task:any)=>row.state.progress[task.id]?.status==='completed');
+        const nextTask=mainTasks.find((task:any)=>row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id))??allTasks.find((task:any)=>row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id));
+        const nextStageIndex=nextTask?row.state.campaign.stages.findIndex((stage:any)=>stage.tasks.some((task:any)=>task.id===nextTask.id)):-1;
+        const finalTask=allTasks.at(-1);
+        const mainlineDone=mainCompleted.length===mainTasks.length;
+        const status=mainlineDone?'completed':row.lifecycle_status;
+        const studyDates=[...completedTasks.map((task:any)=>row.state.progress[task.id]?.completedAt),...(row.state.reviews??[]).flatMap((card:any)=>card.history?.map((entry:any)=>entry.at)??[])].filter(Boolean).sort();
+        return {id:row.id,title:row.title,goal:row.state.campaign.goal,createdAt:row.created_at,updatedAt:row.updated_at,lastStudyAt:studyDates.at(-1)??null,
+          desiredArtifact:row.state.campaign.desiredArtifact??row.state.campaign.ultimateReward,
+          finalProjectEvidence:finalTask&&row.state.progress[finalTask.id]?.status==='completed'?row.state.progress[finalTask.id]?.evidence:null,
+          status,completed:completedTasks.length,total:allTasks.length,mainlineCompleted:mainCompleted.length,mainlineTotal:mainTasks.length,
+          selfCompleted:completedTasks.filter((task:any)=>row.state.progress[task.id]?.verification==='self').length,
+          aiCompleted:completedTasks.filter((task:any)=>row.state.progress[task.id]?.verification==='ai').length,
+          currentStageIndex:nextStageIndex,nextTaskId:nextTask?.id??null,nextTaskTitle:nextTask?.title??null,
+          stages:row.state.campaign.stages.map((stage:any)=>({title:stage.title,completed:(stage.gateTaskIds??stage.mainlineTaskIds??[]).every((id:string)=>row.state.progress[id]?.status==='completed')})),
+          grid:(row.state.campaign.nineGrid??[]).map((slot:any)=>({title:slot.title,evidence:row.state.gridOutcomes?.[slot.id]?.artifact??null})),
+        };
+      });
+      const showcased=items.rows.filter((item:any)=>item.is_showcased).sort((a:any,b:any)=>a.showcase_order-b.showcase_order).slice(0,4).map((item:any)=>({...(COLLECTION_CATALOG.find(def=>def.id===item.item_id)??item.definition),quantity:item.quantity,itemId:item.item_id,showcaseOrder:item.showcase_order}));
+      const activity=[...seasons.rows.flatMap((row:any)=>Object.entries(row.state.progress).filter(([,progress]:any)=>progress.status==='completed').map(([taskId,progress]:any)=>({kind:'learning',seasonId:row.id,seasonTitle:row.title,taskId,title:row.state.campaign.stages.flatMap((stage:any)=>stage.tasks).find((task:any)=>task.id===taskId)?.title??taskId,verification:progress.verification??'self',at:progress.completedAt??row.updated_at}))),...challenges.rows.map((run:any)=>({kind:'challenge',id:run.id,tier:run.tier,status:run.status,at:run.settled_at??run.started_at}))].sort((a:any,b:any)=>new Date(b.at).getTime()-new Date(a.at).getTime()).slice(0,40);
+      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), currentSeasonId:currentSelection.rows[0]?.season_id??null,seasons:profileSeasons, collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, seasonalCollectibles: [...seasonalByTarget.values()], showcased,activity, challenges: challenges.rows, private: !profileData.is_public });
     } catch (error) { next(error); }
   });
   app.post('/api/profile', async (req, res, next) => {
@@ -279,7 +304,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
 
   app.post('/api/inventory/preferences', async (req, res, next) => {
     const items = req.body?.items;
-    if (!Array.isArray(items) || items.length < 1 || items.length > 155 || items.some((item: any) => typeof item?.itemId !== 'string' || item.itemId.length > 128 || typeof item.locked !== 'boolean' || typeof item.showcased !== 'boolean')) { res.status(400).json({ error: 'INVALID_INVENTORY_PREFERENCES' }); return; }
+    if (!Array.isArray(items) || items.length < 1 || items.length > 155 || items.some((item: any) => typeof item?.itemId !== 'string' || item.itemId.length > 128 || typeof item.locked !== 'boolean' || typeof item.showcased !== 'boolean' || (item.showcaseOrder !== undefined && (!Number.isInteger(item.showcaseOrder) || item.showcaseOrder < 0 || item.showcaseOrder > 3)))) { res.status(400).json({ error: 'INVALID_INVENTORY_PREFERENCES' }); return; }
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -287,8 +312,8 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       for (const item of items) {
         const owned = await client.query('SELECT 1 FROM inventory_items WHERE user_id=$1 AND item_id=$2 AND quantity>0', [ownerOf(req), item.itemId]);
         if (!owned.rowCount) { await client.query('ROLLBACK'); res.status(404).json({ error: 'ITEM_NOT_OWNED', itemId: item.itemId }); return; }
-        await client.query(`INSERT INTO inventory_item_preferences(user_id,item_id,is_locked,is_showcased) VALUES($1,$2,$3,$4)
-        ON CONFLICT(user_id,item_id) DO UPDATE SET is_locked=EXCLUDED.is_locked,is_showcased=EXCLUDED.is_showcased,updated_at=now()`, [ownerOf(req), item.itemId, item.locked, item.showcased]);
+        await client.query(`INSERT INTO inventory_item_preferences(user_id,item_id,is_locked,is_showcased,showcase_order) VALUES($1,$2,$3,$4,$5)
+        ON CONFLICT(user_id,item_id) DO UPDATE SET is_locked=EXCLUDED.is_locked,is_showcased=EXCLUDED.is_showcased,showcase_order=EXCLUDED.showcase_order,updated_at=now()`, [ownerOf(req), item.itemId, item.locked, item.showcased,item.showcaseOrder??0]);
       }
       await client.query('COMMIT'); res.json({ saved: items.length });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
@@ -332,9 +357,53 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
 
   app.get('/api/seasons', async (req, res, next) => {
     try {
-      const result = await pool.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE owner_user_id = $1 ORDER BY updated_at DESC', [ownerOf(req)]);
-      res.json({ seasons: result.rows.map(publicSeason) });
+      const result = await pool.query<Row & { current_season_id: string | null; selection_revision: number | null }>(`SELECT s.id,s.campaign_id,s.title,s.revision,s.state,s.created_at,s.updated_at,s.lifecycle_status,
+        u.season_id current_season_id,u.revision selection_revision
+        FROM seasons s LEFT JOIN user_current_seasons u ON u.user_id=s.owner_user_id
+        WHERE s.owner_user_id=$1 ORDER BY s.updated_at DESC`, [ownerOf(req)]);
+      res.json({ seasons: result.rows.map(publicSeason), currentSeasonId: result.rows[0]?.current_season_id ?? result.rows.find(row=>row.lifecycle_status!=='archived')?.id ?? null, selectionRevision: result.rows[0]?.selection_revision ?? 0 });
     } catch (error) { next(error); }
+  });
+
+  app.put('/api/seasons/current', async (req,res,next) => {
+    const { seasonId, revision } = req.body ?? {};
+    if (!idPattern.test(seasonId ?? '') || !Number.isInteger(revision) || revision < 0) { res.status(400).json({error:'INVALID_SEASON_SELECTION'}); return; }
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[ownerOf(req)]);
+      const current=await client.query<{revision:number}>('SELECT revision FROM user_current_seasons WHERE user_id=$1 FOR UPDATE',[ownerOf(req)]);
+      const actual=current.rows[0]?.revision??0;
+      if(actual!==revision){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_SELECTION_CONFLICT',revision:actual});return;}
+      const target=await client.query<{id:string}>('SELECT id FROM seasons WHERE id=$1 AND owner_user_id=$2 AND lifecycle_status<>\'archived\' FOR UPDATE',[seasonId,ownerOf(req)]);
+      if(!target.rowCount){await client.query('ROLLBACK');res.status(404).json({error:'SEASON_NOT_AVAILABLE'});return;}
+      const updated=await client.query<{revision:number}>('INSERT INTO user_current_seasons(user_id,season_id,revision) VALUES($1,$2,1) ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now() RETURNING revision',[ownerOf(req),seasonId]);
+      await client.query('UPDATE seasons SET updated_at=now() WHERE id=$1',[seasonId]);
+      await client.query('COMMIT');res.json({currentSeasonId:seasonId,revision:updated.rows[0].revision});
+    } catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);} finally{client.release();}
+  });
+
+  app.patch('/api/seasons/:id/lifecycle', async(req,res,next)=>{
+    const {status,revision}=req.body??{};
+    if(!idPattern.test(req.params.id)||!['active','paused','archived'].includes(status)||!Number.isInteger(revision)||revision<1){res.status(400).json({error:'INVALID_SEASON_LIFECYCLE'});return;}
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
+      const old=found.rows[0];if(!old){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}
+      if(old.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',season:publicSeason(old)});return;}
+      if(old.lifecycle_status==='archived'&&status!=='archived'){await client.query('ROLLBACK');res.status(409).json({error:'ARCHIVED_SEASON_READ_ONLY'});return;}
+      const updated=await client.query<Row>(`UPDATE seasons SET lifecycle_status=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3 RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`,[status,req.params.id,ownerOf(req)]);
+      if(status==='archived'){
+        const current=await client.query('SELECT season_id FROM user_current_seasons WHERE user_id=$1 FOR UPDATE',[ownerOf(req)]);
+        if(current.rows[0]?.season_id===req.params.id){
+          const fallback=await client.query<{id:string}>('SELECT id FROM seasons WHERE owner_user_id=$1 AND id<>$2 AND lifecycle_status<>\'archived\' ORDER BY updated_at DESC LIMIT 1',[ownerOf(req),req.params.id]);
+          if(fallback.rows[0]) await client.query('UPDATE user_current_seasons SET season_id=$1,revision=revision+1,updated_at=now() WHERE user_id=$2',[fallback.rows[0].id,ownerOf(req)]);
+          else await client.query('DELETE FROM user_current_seasons WHERE user_id=$1',[ownerOf(req)]);
+        }
+      }
+      await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0])});
+    }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
 
   app.post('/api/legacy-import', async (req, res, next) => {
@@ -399,6 +468,8 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const result = await pool.query<Row>(`INSERT INTO seasons (id,owner_user_id,campaign_id,title,revision,state)
         VALUES ($1,$2,$3,$4,1,$5) RETURNING id,campaign_id,title,revision,state,created_at,updated_at`,
       [id, ownerOf(req), state.campaign.id, state.campaign.title, JSON.stringify(state)]);
+      await pool.query(`INSERT INTO user_current_seasons(user_id,season_id) VALUES($1,$2)
+        ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now()`,[ownerOf(req),id]);
       res.status(201).json({ season: publicSeason(result.rows[0]) });
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') { res.status(409).json({ error: 'SEASON_EXISTS' }); return; }
@@ -409,7 +480,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   app.get('/api/seasons/:id', async (req, res, next) => {
     if (!idPattern.test(req.params.id)) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
     try {
-      const result = await pool.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id = $1 AND owner_user_id = $2', [req.params.id, ownerOf(req)]);
+      const result = await pool.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id = $1 AND owner_user_id = $2', [req.params.id, ownerOf(req)]);
       if (!result.rows[0]) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
       res.json({ season: publicSeason(result.rows[0]) });
     } catch (error) { next(error); }
@@ -420,7 +491,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id = $1 AND owner_user_id = $2 FOR UPDATE', [req.params.id, ownerOf(req)]);
+      const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id = $1 AND owner_user_id = $2 FOR UPDATE', [req.params.id, ownerOf(req)]);
       const old = found.rows[0];
       if (!old) { await client.query('ROLLBACK'); res.status(404).json({ error: 'NOT_FOUND' }); return; }
       if (old.revision !== req.body.revision) { await client.query('ROLLBACK'); res.status(409).json({ error: 'REVISION_CONFLICT', revision: old.revision, season: publicSeason(old) }); return; }
@@ -431,7 +502,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const state = withoutClientAuthority(parsed.data, old.state);
       const result = await client.query<Row>(`UPDATE seasons SET title=$1,state=$2,revision=revision+1,updated_at=now()
         WHERE id=$3 AND owner_user_id=$4 AND revision=$5
-        RETURNING id,campaign_id,title,revision,state,created_at,updated_at`,
+        RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`,
       [state.campaign.title, JSON.stringify(state), req.params.id, ownerOf(req), req.body.revision]);
       if (!result.rows[0]) { await client.query('ROLLBACK'); res.status(409).json({ error: 'REVISION_CONFLICT' }); return; }
       await client.query('COMMIT');

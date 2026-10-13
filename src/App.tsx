@@ -80,7 +80,9 @@ function App() {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [scopedUserId, setScopedUserId] = useState<string>();
-  const [serverSeasons, setServerSeasons] = useState<Array<{ id: string; revision: number; title: string; state: LearningState }>>([]);
+  const [serverSeasons, setServerSeasons] = useState<Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?: string; updatedAt?: string; lifecycleStatus?: 'active'|'paused'|'archived' }>>([]);
+  const [currentSeasonId, setCurrentSeasonId] = useState('');
+  const [, setSeasonSelectionRevision] = useState(0);
   const [serverWallet, setServerWallet] = useState(0);
   const [serverInventory, setServerInventory] = useState<Array<{ item_id: string; definition: { itemId?: string; name?: string; description?: string; rarity?: string; icon?: string }; quantity: number; is_locked?: boolean; is_showcased?: boolean; sources: Array<{ seasonId: string; taskId: string }> }>>([]);
   const [serverLedger, setServerLedger] = useState<Array<{ id: string; task_id: string; reward: { coins?: number; items?: Array<{ name: string }> } }>>([]);
@@ -113,6 +115,9 @@ function App() {
   const archiveRequest = useRef<AbortController | null>(null);
   const serverArchive = useRef<{ id: string; revision: number; userId: string; conflicted?: boolean } | null>(null);
   const archiveWriteQueue = useRef<Promise<void>>(Promise.resolve());
+  const seasonSwitchSequence = useRef(0);
+  const seasonSelectionQueue = useRef<Promise<void>>(Promise.resolve());
+  const seasonSelectionRevisionRef = useRef(0);
   const settlementInFlight = useRef(false);
   const serverHydrated = useRef(false);
   const [notification, setNotification] = useState<Notification>(null);
@@ -244,9 +249,9 @@ function App() {
       try {
         const response = await apiFetch('/api/seasons', { signal: controller.signal });
         if (!response.ok) throw new Error('服务器档案读取失败');
-        const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState }> };
+        const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?:string; updatedAt?:string; lifecycleStatus?:'active'|'paused'|'archived' }>; currentSeasonId?:string|null; selectionRevision?:number };
         if (controller.signal.aborted) return;
-        let season = payload.seasons?.[0];
+        let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived') ?? payload.seasons?.find(item=>item.lifecycleStatus!=='archived');
         if (!season) {
           if (!loaded.isNew) {
             setLegacyImportPending(localArchiveCandidates(loaded.state));
@@ -261,6 +266,7 @@ function App() {
         }
         if (controller.signal.aborted) return;
         setServerSeasons(payload.seasons?.length ? payload.seasons : [season]);
+        setCurrentSeasonId(season.id); seasonSelectionRevisionRef.current=payload.seasons?.length?(payload.selectionRevision??0):1; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
         try {
           const draftResponse = await apiFetch('/api/generation-drafts', { signal: controller.signal });
           if (draftResponse.ok) {
@@ -369,21 +375,35 @@ function App() {
     flash({ title: '蓝图已确认 · 新赛季部署', body: `${pendingCampaign.stages.length} 个阶段；旧目标和进度已归档保存。`, tone: 'success' });
   };
 
-  const switchServerSeason = async (id: string) => {
-    if (!accountUser || id === serverArchive.current?.id) return;
+  const switchServerSeason = async (id: string): Promise<boolean> => {
+    if (!accountUser) return false;
+    if (id === serverArchive.current?.id) return true;
+    const sequence=++seasonSwitchSequence.current;
     let controller: AbortController | undefined;
     try {
       if (serverArchive.current && !serverArchive.current.conflicted) await putServerArchive(currentState.current);
       if (serverArchive.current?.conflicted) throw new Error('当前赛季有版本冲突，请先导出草稿或加载服务器版本');
-      archiveRequest.current?.abort(); activeRequest.current?.abort(); controller = new AbortController(); archiveRequest.current = controller;
-      const response = await apiFetch(`/api/seasons/${id}`, { signal: controller.signal });
+      const response = await apiFetch(`/api/seasons/${id}`);
       if (!response.ok) throw new Error('无法读取该学习赛季');
-      const season = (await response.json() as { season: { id: string; revision: number; state: LearningState } }).season;
-      if (controller.signal.aborted) return;
+      const season = (await response.json() as { season: { id: string; revision: number; state: LearningState; lifecycleStatus?:'active'|'paused'|'archived' } }).season;
+      if(season.lifecycleStatus==='archived') throw new Error('该赛季已归档，只能在主页查看');
+      if(sequence!==seasonSwitchSequence.current) return false;
+      const select=async()=>{
+        if(sequence!==seasonSwitchSequence.current)return;
+        const selected=await apiFetch('/api/seasons/current',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({seasonId:id,revision:seasonSelectionRevisionRef.current})});
+        const payload=await selected.json();
+        if(!selected.ok) throw new Error(selected.status===409?'另一设备刚切换了当前赛季，请重新载入后再切换。':payload.error??'当前赛季选择未保存');
+        seasonSelectionRevisionRef.current=payload.revision; setSeasonSelectionRevision(payload.revision);
+      };
+      const pending=seasonSelectionQueue.current.then(select); seasonSelectionQueue.current=pending.then(()=>undefined,()=>undefined); await pending;
+      if(sequence!==seasonSwitchSequence.current) return false;
+      archiveRequest.current?.abort(); activeRequest.current?.abort(); controller = new AbortController(); archiveRequest.current = controller;
       serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
+      setCurrentSeasonId(id); setServerSeasons(prev=>prev.map(item=>item.id===id?{...item,...season}:item));
       setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0]?.tasks[0]?.id ?? ''); setSelectedStage(0); setTab('missions');
-      setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError('');
-    } catch (error) { if (!controller?.signal.aborted) setSaveError(`赛季切换失败：${error instanceof Error ? error.message : '网络错误'}`); }
+      setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError(''); setSyncStatus('saved');
+      return true;
+    } catch (error) { if (!controller?.signal.aborted && sequence===seasonSwitchSequence.current) setSaveError(`赛季切换失败：${error instanceof Error ? error.message : '网络错误'}；当前内容仍保留。`); return false; }
   };
 
   const recoverServerArchive = async (choice: 'retry' | 'server') => {
@@ -413,7 +433,7 @@ function App() {
       const list = await apiFetch('/api/seasons'); if (!list.ok) throw new Error('迁移结果无法核对');
       const payload = await list.json() as { seasons: Array<{ id: string; revision: number; title: string; state: LearningState }> };
       if (!payload.seasons.length) throw new Error('服务器未返回可核对的赛季');
-      setServerSeasons(payload.seasons); const season = payload.seasons[0];
+        setServerSeasons(payload.seasons); const season = payload.seasons[0];
       serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser!.id }; serverHydrated.current = true;
       setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0]?.tasks[0]?.id ?? '');
       setSelectedStage(0); setLegacyImportPending(null); setSaveError(''); setScopedUserId(accountUser!.id);
