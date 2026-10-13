@@ -6,7 +6,7 @@ export interface CollectionItem {
   limited: boolean; sellable: boolean; seasonId: string | null; version: number;
 }
 
-const generatedRanges: Array<[string, number]> = [['small-purple',45],['small-gold',7],['large-gold',15],['small-red',15],['large-red',6]];
+const generatedRanges: Array<[string, number]> = [['small-purple',45],['small-gold',27],['large-gold',15],['small-red',15],['large-red',6]];
 export const GENERATED_CATALOG_IMAGE_IDS = new Set(generatedRanges.flatMap(([rarity, count]) => Array.from({ length: count }, (_, index) => `${rarity}-${String(index + 1).padStart(2, '0')}`)));
 
 const sets: Array<{ rarity: CollectionRarity; min: number; max: number; names: string[] }> = [
