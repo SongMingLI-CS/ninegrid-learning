@@ -12,7 +12,7 @@ function outlineFixture() {
     const branches = Array.from({ length: 3 }, (_, branchIndex) => ({ id: `${stageId}-b${branchIndex}`, title: `branch ${branchIndex}`, tasks: Array.from({ length: 3 }, (_, i) => ({ id:`${stageId}-b${branchIndex}-t${i}`, title:`branch task ${i}`, knowledgePoint:`branch point ${i}`, minutes:10, prerequisites:[i ? `${stageId}-b${branchIndex}-t${i-1}` : `${stageId}-m${branchIndex*4}`] })) }));
     return { id:stageId, title:`stage ${stageIndex}`, description:'learning', gateTaskId:mainline[14].id, mainline, branches };
   });
-  return { title:'Course', subtitle:'Course subtitle', prerequisites:[], stages, nineGrid:Array.from({length:9},(_,i)=>({id:`grid-${i}`,title:`grid ${i}`,ability:'skill',value:'value',taskIds:[`s${Math.min(3,Math.floor(i/3))}-m14`]})) };
+  return { title:'Course', subtitle:'Course subtitle', prerequisites:[], stages, seasonalCollectible:{name:'季节标本',story:'一段与目标相关的记录。',appearance:'深色金属外壳和封存标签。',abilityOutcome:'独立完成课程最终成果。'}, nineGrid:Array.from({length:9},(_,i)=>({id:`grid-${i}`,title:`grid ${i}`,ability:'skill',value:'value',taskIds:[`s${Math.min(3,Math.floor(i/3))}-m14`]})) };
 }
 
 describe('versioned NumPy curriculum', () => {

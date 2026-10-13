@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 768 768" role="img" aria-label="赛季限定藏品临时原创图形">
+  <defs><radialGradient id="bg"><stop stop-color="#273135"/><stop offset="1" stop-color="#101517"/></radialGradient><linearGradient id="metal" x2="1" y2="1"><stop stop-color="#a95d52"/><stop offset=".5" stop-color="#6c3333"/><stop offset="1" stop-color="#2b2527"/></linearGradient></defs>
+  <rect width="768" height="768" fill="url(#bg)"/>
+  <circle cx="384" cy="344" r="220" fill="#151a1c" stroke="#a24c43" stroke-width="12"/>
+  <path d="M384 162 520 240v168L384 486 248 408V240z" fill="url(#metal)" stroke="#d07a69" stroke-width="8"/>
+  <circle cx="384" cy="324" r="89" fill="#171d1f" stroke="#d3ab8d" stroke-width="9"/>
+  <path d="M328 324h112M384 268v112M344 284l80 80m0-80-80 80" stroke="#d3ab8d" stroke-width="8" opacity=".8"/>
+  <path d="M204 525h360" stroke="#687377" stroke-width="2"/>
+  <text x="384" y="585" text-anchor="middle" fill="#d4c8b4" font-family="sans-serif" font-size="24" letter-spacing="4">临时原创占位素材</text>
+  <text x="384" y="620" text-anchor="middle" fill="#899396" font-family="sans-serif" font-size="18" letter-spacing="3">SEASON ITEM · TEMP ART</text>
+</svg>

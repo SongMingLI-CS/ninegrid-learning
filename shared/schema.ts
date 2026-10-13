@@ -85,6 +85,10 @@ export const campaignSchema = z.object({
   })).min(1).max(20),
   prerequisites: z.array(text(500)).max(100).optional(),
   curriculumRulesVersion: z.number().int().min(1).max(100).optional(), densityRationale: text(2000).optional(),
+  seasonalCollectible: z.object({
+    id: idSchema, name: text(120), story: text(1200), appearance: text(1200), abilityOutcome: text(1000),
+    rewardKey: z.string().regex(/^[a-f0-9]{64}$/), finalTaskId: idSchema, displayValue: z.number().int().min(1_000_000).max(2_000_000), imageKey: z.string().max(128).optional(),
+  }).optional(),
   nineGrid: z.array(z.object({ id: idSchema, title: text(200), ability: text(1000), value: text(1000), unlockTaskIds: z.array(idSchema).min(1).max(100), artifact: text(2000).optional() })).length(9).optional(),
 }).superRefine((campaign, ctx) => {
   const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
@@ -95,6 +99,7 @@ export const campaignSchema = z.object({
   if (!unique(tasks.flatMap(task => task.objectives.map(objective => objective.id)))) issue('目标 ID 必须全局唯一');
   const byId = new Map(tasks.map(task => [task.id, task]));
   const taskIds = new Set(byId.keys());
+  if (campaign.seasonalCollectible && (!taskIds.has(campaign.seasonalCollectible.finalTaskId) || !(campaign.stages.at(-1)?.gateTaskIds ?? []).includes(campaign.seasonalCollectible.finalTaskId))) issue('赛季限定藏品必须绑定最后阶段的综合验收任务');
   const stageByTask = new Map<string, typeof campaign.stages[number]>();
   for (const stage of campaign.stages) for (const task of stage.tasks) stageByTask.set(task.id, stage);
   const chainById = new Map<string, { stage: typeof campaign.stages[number]; chain: NonNullable<typeof campaign.stages[number]['chains']>[number] }>();

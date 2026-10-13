@@ -18,6 +18,12 @@ function serve(){
 
 describe('independent safe shop page',()=>{
   afterEach(()=>{cleanup();vi.unstubAllGlobals();calls.length=0;});
+  it('shows whole-coin expected recovery for fractional probability averages',async()=>{
+    serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+    await screen.findByRole('heading',{name:'保险箱补给'});
+    expect(screen.queryByText(/金额超出安全范围/)).toBeNull();
+    expect(screen.getAllByText(/按整币取整/)).toHaveLength(2);
+  });
   it('shows quantity and total in a review dialog, and cancellation does not submit a purchase',async()=>{
     serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
     await screen.findByRole('heading',{name:'保险箱补给'});

@@ -107,7 +107,20 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       if (draft.status !== 'awaiting-confirmation') { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_NOT_READY' }); return; }
       const checked = campaignSchema.safeParse(draft.final_campaign);
       if (!checked.success || checked.data.goal !== (draft.input as any).goal || checked.data.sourceMaterial !== (draft.input as any).sourceMaterial) { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_TARGET_MISMATCH' }); return; }
-      const campaign = checked.data as Campaign;
+      const submittedCampaign = checked.data as Campaign;
+      const input = draft.input as { goal: string; sourceMaterial?: string; desiredArtifact?: string; ultimateReward: string; language?: string };
+      const rewardKey = createHash('sha256').update(JSON.stringify({ goal: input.goal.trim(), sourceMaterial: input.sourceMaterial?.trim() ?? '', desiredArtifact: input.desiredArtifact?.trim() ?? input.ultimateReward.trim(), language: input.language ?? 'mixed', version: 1 })).digest('hex');
+      const finalTaskId = submittedCampaign.stages.at(-1)?.gateTaskIds?.[0];
+      const campaign: Campaign = {
+        ...submittedCampaign,
+        ...(submittedCampaign.seasonalCollectible && finalTaskId ? { seasonalCollectible: {
+          ...submittedCampaign.seasonalCollectible,
+          id: `season-red-${rewardKey.slice(0, 40)}`,
+          rewardKey,
+          finalTaskId,
+          displayValue: 1_600_000,
+        } } : { seasonalCollectible: undefined }),
+      };
       const state: LearningState = { version: 2, campaign, progress: Object.fromEntries(campaign.stages.flatMap(stage => stage.tasks).map(task => [task.id, { completedObjectives: [], evidence: '', status: 'idle' as const }])), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {} };
       let inserted;
       try {
@@ -116,6 +129,20 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
         if (!(error && typeof error === 'object' && 'code' in error && error.code === '23505')) throw error;
         inserted = await client.query('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE owner_user_id=$1 AND campaign_id=$2', [ownerOf(req), campaign.id]);
         if (!inserted.rows[0]) throw error;
+      }
+      if (campaign.seasonalCollectible) {
+        const collectible = campaign.seasonalCollectible;
+        const gateTaskIds = campaign.stages.flatMap(stage => stage.gateTaskIds ?? []);
+        const definition = {
+          id: collectible.id, name: collectible.name, category: '纪念物', rarity: 'large-red', size: '2×3',
+          imageKey: 'season-exclusive-placeholder',
+          description: `${collectible.story}\n\n${collectible.appearance}\n\n对应学习成果：${collectible.abilityOutcome}`,
+          displayValue: 1_600_000, sellPrice: 0, limited: true, sellable: false,
+          seasonId: inserted.rows[0].id, version: 1,
+        };
+        await client.query(`INSERT INTO season_collectibles(season_id,owner_user_id,item_id,reward_key,definition,final_task_id,gate_task_ids,reward_version)
+          VALUES($1,$2,$3,$4,$5,$6,$7,1) ON CONFLICT(season_id) DO NOTHING`,
+        [inserted.rows[0].id, ownerOf(req), collectible.id, collectible.rewardKey, JSON.stringify(definition), collectible.finalTaskId, gateTaskIds]);
       }
       // Keep only the compact activation key; the full course already lives in seasons.state.
       await client.query("UPDATE generation_drafts SET status='activated',activated_season_id=$1,input=$4::jsonb,outline=NULL,batches='{}'::jsonb,progress='{}'::jsonb,failure=NULL,final_campaign=NULL,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3", [inserted.rows[0].id, draft.id, ownerOf(req), JSON.stringify({ goal: (draft.input as any).goal, activated: true })]);

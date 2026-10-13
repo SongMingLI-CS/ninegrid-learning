@@ -135,6 +135,7 @@ describe('curriculum orchestration endpoints', () => {
   const shortInput = { ...input, days: 2, dailyMinutes: 15, sourceMaterial: 'NDARRAY NOTES: A nested list with two rows and three columns becomes shape (2, 3).\nINDEX NOTES: Integer row and column coordinates select one value.' };
   const shortOutline = {
     title: 'Compact skills course', subtitle: 'A focused practice route', prerequisites: [], densityRationale: 'Two days of budget; focus on a single independently verifiable skill.',
+    seasonalCollectible: { name: '坐标校准章', story: '记录一次独立完成的数据定位成果。', appearance: '深色金属圆章，刻有抽象坐标纹路。', abilityOutcome: '独立完成并解释最终数据处理成果。' },
     stages: [
       { id: 'stage-one', title: 'Make and explain an array', description: 'Create and verify a small artifact.', gateTaskId: 'task-two', mainline: [
         { id: 'task-one', title: 'Create one array', knowledgePoint: 'Construct an ndarray from nested data', minutes: 12, prerequisites: [] },
@@ -219,6 +220,13 @@ describe('curriculum orchestration endpoints', () => {
     const finalResponse = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: stageResponse.body.tasks }] });
     expect(finalResponse.status, JSON.stringify(finalResponse.body)).toBe(200);
     expect(finalResponse.body.campaign.curriculumRulesVersion).toBe(4);
+    expect(finalResponse.body.campaign.seasonalCollectible.finalTaskId).toBe(finalResponse.body.campaign.stages.at(-1).gateTaskIds[0]);
+    expect(finalResponse.body.campaign.seasonalCollectible.rewardKey).toMatch(/^[a-f0-9]{64}$/);
+    const fieldInput = { ...shortInput, goal: 'Learn how to organize and audit a field medical supply inventory', desiredArtifact: 'A reconciled medical supply inventory and audit report' };
+    const fieldOutline = { ...outlineResponse.body.outline, seasonalCollectible: { name: '补给盘点章', story: '记录一次独立完成的物资盘点。', appearance: '深色封存铜牌，刻有简洁的清点刻度。', abilityOutcome: '交付可追溯的物资核对结果。' } };
+    const fieldFinal = await request(app).post('/api/generation/finalize').send({ input: fieldInput, outline: fieldOutline, stages: [{ id: 'stage-one', tasks: stageResponse.body.tasks }] }).expect(200);
+    expect(fieldFinal.body.campaign.seasonalCollectible.name).toBe('补给盘点章');
+    expect(fieldFinal.body.campaign.seasonalCollectible.rewardKey).not.toBe(finalResponse.body.campaign.seasonalCollectible.rewardKey);
     expect(finalResponse.body.campaign.sourceMaterial).toBe(shortInput.sourceMaterial);
     expect(finalResponse.body.campaign.stages).toHaveLength(1);
     expect(finalResponse.body.campaign.stages[0].tasks[0].title).toBe('Create one array');

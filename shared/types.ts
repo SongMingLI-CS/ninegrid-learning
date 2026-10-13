@@ -34,6 +34,10 @@ export interface Campaign {
   source: 'demo' | 'deepseek'; stages: Stage[]; prerequisites?: string[]; nineGrid?: GridOutcome[];
   desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
   curriculumRulesVersion?: number; densityRationale?: string;
+  seasonalCollectible?: {
+    id: string; name: string; story: string; appearance: string; abilityOutcome: string;
+    rewardKey: string; finalTaskId: string; displayValue: number; imageKey?: string;
+  };
 }
 export interface Evaluation {
   passed: boolean; score: number; feedback: string; gaps: string[]; nextStep: string;

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowDownWideNarrow, ArrowUpDown, Check, ChevronLeft, ChevronRight, LockKeyhole, Search, ShieldCheck, Sparkles, Tag, UnlockKeyhole, X } from 'lucide-react';
-import { COLLECTION_CATALOG, CATALOG_RARITY_COUNTS, type CollectionItem, type CollectionRarity } from '../../shared/catalog';
+import { COLLECTION_CATALOG, CATALOG_RARITY_COUNTS, GENERATED_CATALOG_IMAGE_IDS, type CollectionItem, type CollectionRarity } from '../../shared/catalog';
 import { apiFetch } from '../lib/api';
 import { formatHafverCoins } from '../../shared/economy';
 import './WarehouseScreen.css';
 
-type HeldItem = { item_id: string; definition: { itemId: string; name: string; description: string; rarity: string; icon: string }; quantity: number; acquired_at: string; sources: Array<{ seasonId: string; taskId: string; acquiredAt: string }>; is_locked: boolean; is_showcased: boolean };
+type HeldItem = { item_id: string; definition: Partial<CollectionItem> & { itemId?: string; name: string; description: string; rarity: string; icon?: string }; quantity: number; acquired_at: string; sources: Array<{ seasonId: string; taskId: string; acquiredAt: string }>; is_locked: boolean; is_showcased: boolean };
 type Sale = { operation_id: string; items: Array<{ name: string; quantity: number; total: number }>; coins: number; created_at: string };
 type Props = { account: string; onExit: () => void; onLogout: () => void };
 const rarityLabels: Record<CollectionRarity, string> = { 'small-purple': '小紫', 'small-gold': '小金', 'large-gold': '大金', 'small-red': '小红', 'large-red': '大红' };
@@ -18,7 +18,7 @@ function Artwork({ item, dim = false }: { item: Pick<CollectionItem, 'id' | 'nam
   const n = [...item.id].reduce((sum, char) => sum + char.charCodeAt(0), 0);
   const silhouettes: Record<string, number> = { '电子设备': 0, '工具零件': 1, '医疗用品': 2, '贵重物': 3, '情报档案': 4, '研究样本': 5, '纪念物': 6 };
   const shape = silhouettes[item.category] ?? n % 7;
-  const generated = ['small-purple','small-gold','large-gold','small-red','large-red'].includes(item.imageKey);
+  const generated = GENERATED_CATALOG_IMAGE_IDS.has(item.imageKey) || ['small-purple','small-gold','large-gold','small-red','large-red'].includes(item.imageKey);
   return <div className={`wh-art ${dim ? 'wh-art-dim' : ''}`} aria-hidden="true">{generated ? <img loading="lazy" src={`/assets/catalog/${item.imageKey}.webp`} alt=""/> : <><span className="wh-art-scan"/><svg viewBox="0 0 120 90" role="img">
     <ellipse cx="60" cy="76" rx="39" ry="6" fill="#000" opacity=".42"/>
     {shape === 0 ? <><path d="M34 29 67 20 86 31 84 58 49 68 31 56Z"/><path d="m34 29 33-9v27l-36 9M67 20l19 11-35 11-17-13M49 40v28M84 31l-2 27"/><circle cx="73" cy="33" r="4"/></> : shape === 1 ? <><path d="M25 52h21l10-20 12 2-7 17h27v10H60l-9 13h-8l5-13H25z"/><path d="m56 32 7-9 8 2-3 9m-27 18v10m30-10v10"/><circle cx="79" cy="31" r="5"/></> : shape === 2 ? <><path d="M39 22h40l8 13-8 34H40l-8-34Z"/><path d="M39 22v16l-7-3m47-13v16l8-3M40 50h39m-31-9v18m18-18v18"/><circle cx="59" cy="31" r="5"/></> : shape === 3 ? <><path d="m31 34 29-16 30 16-30 18Z"/><path d="M31 34v28l29 15V52m30-18v28L60 77m-17-35 29-16m-29 28v8m29-26v9"/><path d="m73 25 11 7"/></> : shape === 4 ? <><path d="M34 20h48l7 8v44H34z"/><path d="M42 29h29m-29 8h35m-35 9h28m-28 9h35m-35 9h20"/><path d="M73 20v12h16"/></> : shape === 5 ? <><path d="M47 19h26v9l7 8v32H40V36l7-8z"/><path d="M47 28h26m-33 28h40M51 20v8m18-8v8"/><path d="M47 44h26v12H47z"/></> : <><circle cx="60" cy="43" r="25"/><circle cx="60" cy="43" r="18"/><path d="M52 66 48 78l12-6 12 6-4-12m-19-24 8 8 15-17"/><circle cx="81" cy="22" r="3"/></>}
@@ -29,6 +29,7 @@ function Artwork({ item, dim = false }: { item: Pick<CollectionItem, 'id' | 'nam
 
 export function WarehouseScreen({ account, onExit, onLogout }: Props) {
   const [items, setItems] = useState<HeldItem[]>([]);
+  const [seasonalCatalog, setSeasonalCatalog] = useState<CollectionItem[]>([]);
   const [balance, setBalance] = useState(0);
   const [seasons, setSeasons] = useState<Array<{ id: string; title: string; tasks: Record<string, string> }>>([]);
   const [sales, setSales] = useState<Sale[]>([]);
@@ -51,22 +52,27 @@ export function WarehouseScreen({ account, onExit, onLogout }: Props) {
   async function refresh() {
     setLoading(true); setError('');
     try {
-      const [invResponse, walletResponse, seasonResponse] = await Promise.all([apiFetch('/api/inventory'), apiFetch('/api/wallet'), apiFetch('/api/seasons')]);
-      if (![invResponse, walletResponse, seasonResponse].every(response => response.ok)) throw new Error('服务器连接失败。检查网络或重新登录后再试。');
-      const inv = await invResponse.json(); const wallet = await walletResponse.json(); const seasonData = await seasonResponse.json();
+      const [invResponse, walletResponse, seasonResponse, profileResponse] = await Promise.all([apiFetch('/api/inventory'), apiFetch('/api/wallet'), apiFetch('/api/seasons'), apiFetch('/api/profile')]);
+      if (![invResponse, walletResponse, seasonResponse, profileResponse].every(response => response.ok)) throw new Error('服务器连接失败。检查网络或重新登录后再试。');
+      const inv = await invResponse.json(); const wallet = await walletResponse.json(); const seasonData = await seasonResponse.json(); const profile = await profileResponse.json();
       setItems(inv.items ?? []); setSales(inv.sales ?? []); setTransactions(inv.transactions??[]); setBalance(Number(wallet.wallets?.find((row: any) => row.currency === 'learning-coin')?.balance ?? 0)); setSeasons(seasonData.seasons?.map((row: any) => ({ id: row.id, title: row.title, tasks: Object.fromEntries((row.state?.campaign?.stages ?? []).flatMap((stage: any) => stage.tasks ?? []).map((task: any) => [task.id, task.title])) })) ?? []);
+      setSeasonalCatalog((profile.seasonalCollectibles ?? []).map((item: any) => item.definition as CollectionItem));
     } catch (cause) { setError(cause instanceof Error ? cause.message : '库存暂时不可用。'); }
     finally { setLoading(false); }
   }
   useEffect(() => { void refresh(); }, []);
 
   const heldById = useMemo(() => new Map(items.map(item => [item.item_id, item])), [items]);
+  const catalog = useMemo(() => {
+    const baseIds = new Set(COLLECTION_CATALOG.map(item => item.id));
+    return [...COLLECTION_CATALOG, ...seasonalCatalog.filter(item => item?.limited && !baseIds.has(item.id))];
+  }, [seasonalCatalog]);
   const ownedKinds = items.filter(item => item.quantity > 0).length;
   const catalogHeldKinds = COLLECTION_CATALOG.filter(item => (heldById.get(item.id)?.quantity ?? 0) > 0).length;
   const completionPercent = catalogHeldKinds ? Math.floor(catalogHeldKinds / COLLECTION_CATALOG.length * 100) : 0;
-  const estimated = items.reduce((sum, held) => sum + (COLLECTION_CATALOG.find(item => item.id === held.item_id)?.displayValue ?? 0) * held.quantity, 0);
-  const sellTotal = marked.reduce((sum, id) => sum + (COLLECTION_CATALOG.find(item => item.id === id)?.sellPrice ?? 0) * (heldById.get(id)?.quantity ?? 0), 0);
-  const baseRows = tab === 'owned' ? items.filter(item => item.quantity > 0).map(held => ({ catalog: COLLECTION_CATALOG.find(item => item.id === held.item_id), held, isBox:Boolean(boxIdFromItem(held.item_id)) })) : COLLECTION_CATALOG.map(catalog => ({ catalog, held: heldById.get(catalog.id), isBox:false }));
+  const estimated = items.reduce((sum, held) => sum + (catalog.find(item => item.id === held.item_id)?.displayValue ?? held.definition.displayValue ?? 0) * held.quantity, 0);
+  const sellTotal = marked.reduce((sum, id) => sum + (catalog.find(item => item.id === id)?.sellPrice ?? 0) * (heldById.get(id)?.quantity ?? 0), 0);
+  const baseRows = tab === 'owned' ? items.filter(item => item.quantity > 0).map(held => ({ catalog: catalog.find(item => item.id === held.item_id), held, isBox:Boolean(boxIdFromItem(held.item_id)) })) : catalog.map(catalogItem => ({ catalog: catalogItem, held: heldById.get(catalogItem.id), isBox:false }));
   const rows = baseRows.filter(({ catalog, held, isBox }) => {
     const name = catalog?.name ?? held?.definition.name ?? '';
     const categoryName = isBox ? '保险箱' : catalog?.category ?? '旧版收藏';
@@ -79,7 +85,7 @@ export function WarehouseScreen({ account, onExit, onLogout }: Props) {
     return rarityOrder[(ac?.rarity ?? 'small-purple') as CollectionRarity] - rarityOrder[(bc?.rarity ?? 'small-purple') as CollectionRarity] || (ac?.name ?? a.held?.definition.name ?? '').localeCompare(bc?.name ?? b.held?.definition.name ?? '', 'zh');
   });
   const pageSize = 48; const pages = Math.max(1, Math.ceil(rows.length / pageSize)); const visible = rows.slice(page * pageSize, (page + 1) * pageSize);
-  const selectedCatalog = COLLECTION_CATALOG.find(item => item.id === selected);
+  const selectedCatalog = catalog.find(item => item.id === selected);
   const selectedHeld = selected ? heldById.get(selected) : undefined;
   const selectedLegacy = selected && !selectedCatalog ? selectedHeld : undefined;
   const selectedBox=selectedHeld?boxIdFromItem(selectedHeld.item_id):undefined;
@@ -123,7 +129,7 @@ export function WarehouseScreen({ account, onExit, onLogout }: Props) {
     <aside className="wh-detail">{selectedDefinition ? <><div className={`wh-detail-art rarity-${selectedDefinition.rarity}`}><Artwork item={selectedDefinition}/></div><div className="wh-detail-title"><div><span className="wh-kicker">ITEM INSPECTION · {selectedDefinition.id}</span><h2>{selectedDefinition.name}</h2></div><button onClick={()=>setSelected(null)} aria-label="关闭详情"><X size={16}/></button></div><p className="wh-detail-desc">{selectedDefinition.description}</p><div className="wh-detail-tags"><span>{selectedDefinition.category}</span><span>{rarityLabels[selectedDefinition.rarity]}</span><span>{selectedDefinition.size}</span>{selectedDefinition.limited&&<span>赛季限定</span>}</div><dl className="wh-detail-values"><div><dt>展示估值</dt><dd>{money(selectedDefinition.displayValue)} <small>收藏参考</small></dd></div><div><dt>出售回收价</dt><dd>{selectedDefinition.sellable?money(selectedDefinition.sellPrice):'不可出售'} <small>{selectedDefinition.limited?'限定品按配置不可出售':'服务器固定价格'}</small></dd></div><div><dt>持有数量</dt><dd>{selectedHeld?.quantity??0}</dd></div><div><dt>首次获得</dt><dd>{dateText(selectedHeld?.acquired_at)}</dd></div></dl>{selectedHeld?.sources?.length ? <div className="wh-source"><strong>获得来源</strong>{selectedHeld.sources.map((source,index)=>{const origin=seasons.find(item=>item.id===source.seasonId);const label=source.seasonId==='purchase'?'商城购买':source.seasonId==='box-open'?'保险箱开出':source.seasonId==='challenge'?'学习挑战':origin?.title??`赛季 ${source.seasonId}`;return <p key={`${source.seasonId}-${source.taskId}-${index}`}>{label} · {origin?.tasks[source.taskId]??source.taskId}</p>})}</div> : <div className="wh-source"><strong>来源</strong><p>{selectedHeld?'旧版库存，历史来源未记录':'尚未收集 · 不属于真实持有库存'}</p></div>}
       {selectedHeld&&selectedBox?<div className="wh-detail-actions"><p>保险箱会在服务器事务中消耗，随机结果保存到共享仓库；网络中断后可在商城交易记录中找回结果。</p><button className="wh-sell" disabled={busy} onClick={()=>void openSelectedBox()}><Sparkles size={15}/>开启一个 · 持有 {selectedHeld.quantity}</button></div>:selectedHeld&&<div className="wh-detail-actions"><button disabled={busy} onClick={()=>void savePreferences([{itemId:selectedHeld.item_id,locked:!selectedHeld.is_locked,showcased:selectedHeld.is_showcased}])}>{selectedHeld.is_locked?<UnlockKeyhole size={15}/>:<LockKeyhole size={15}/>} {selectedHeld.is_locked?'解除收藏锁定':'锁定收藏'}</button><button disabled={busy} onClick={()=>void savePreferences([{itemId:selectedHeld.item_id,locked:selectedHeld.is_locked,showcased:!selectedHeld.is_showcased}])}><Sparkles size={15}/>{selectedHeld.is_showcased?'取消主页展示':'设为主页展示'}</button>{selectedCatalog?.sellable&&!selectedHeld.is_locked&&<button className="wh-sell" onClick={()=>{setMarked([selectedCatalog.id]);setConfirmSale(true)}}><Tag size={15}/>出售全部 · {money(selectedCatalog.sellPrice*selectedHeld.quantity)}</button>}</div>}
     </> : <div className="wh-detail-empty"><ShieldCheck size={28}/><strong>选择一件藏品</strong><p>查看物品档案、来源赛季、估值与仓库操作。</p></div>}</aside></section>
-    <footer className="wh-footer"><span>原创虚构收藏 · 服务器账号资产</span><span>图鉴插画为临时原创矢量稿</span></footer>
-    {confirmSale&&<div className="wh-modal-backdrop" role="presentation" onClick={()=>!busy&&setConfirmSale(false)}><section className="wh-modal" role="dialog" aria-modal="true" aria-labelledby="wh-sale-heading" onClick={event=>event.stopPropagation()}><span className="wh-kicker">SERVER SETTLEMENT</span><h2 id="wh-sale-heading">确认出售</h2><p>出售后将从账户共享仓库扣除下列物品，并按固定回收价增加哈弗币。</p><ul>{marked.map(id=>{const item=COLLECTION_CATALOG.find(entry=>entry.id===id)!;const quantity=heldById.get(id)?.quantity??0;return <li key={id}><span>{item.name} × {quantity}</span><b>{money(item.sellPrice*quantity)}</b></li>})}</ul><div className="wh-modal-total"><span>回收合计</span><strong>{money(sellTotal)} 哈弗币</strong></div><div className="wh-modal-actions"><button onClick={()=>setConfirmSale(false)} disabled={busy}>取消</button><button className="wh-sell" onClick={()=>void sellMarked()} disabled={busy}>{busy?'正在结算…':'确认出售'}</button></div></section></div>}
+    <footer className="wh-footer"><span>原创虚构收藏 · 服务器账号资产</span><span>{GENERATED_CATALOG_IMAGE_IDS.size}/155 件图鉴使用独立原创生成图片，其余为临时原创矢量稿</span></footer>
+      {confirmSale&&<div className="wh-modal-backdrop" role="presentation" onClick={()=>!busy&&setConfirmSale(false)}><section className="wh-modal" role="dialog" aria-modal="true" aria-labelledby="wh-sale-heading" onClick={event=>event.stopPropagation()}><span className="wh-kicker">SERVER SETTLEMENT</span><h2 id="wh-sale-heading">确认出售</h2><p>出售后将从账户共享仓库扣除下列物品，并按固定回收价增加哈弗币。</p><ul>{marked.map(id=>{const item=catalog.find(entry=>entry.id===id)!;const quantity=heldById.get(id)?.quantity??0;return <li key={id}><span>{item.name} × {quantity}</span><b>{money(item.sellPrice*quantity)}</b></li>})}</ul><div className="wh-modal-total"><span>回收合计</span><strong>{money(sellTotal)} 哈弗币</strong></div><div className="wh-modal-actions"><button onClick={()=>setConfirmSale(false)} disabled={busy}>取消</button><button className="wh-sell" onClick={()=>void sellMarked()} disabled={busy}>{busy?'正在结算…':'确认出售'}</button></div></section></div>}
   </main>;
 }

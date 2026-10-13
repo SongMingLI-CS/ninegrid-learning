@@ -17,6 +17,7 @@ function serve() {
     if (url === '/api/inventory' && (!init?.method || init.method === 'GET')) return response(inventory);
     if (url === '/api/wallet') return response(wallet);
     if (url === '/api/seasons') return response(seasons);
+    if (url === '/api/profile') return response({ seasonalCollectibles: [] });
     if (url === '/api/inventory/preferences') return response({ saved: 1 });
     if (url === '/api/inventory/sell') {
       const request = JSON.parse(String(init?.body));

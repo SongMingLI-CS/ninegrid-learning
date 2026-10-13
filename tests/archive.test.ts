@@ -30,6 +30,9 @@ async function fixture() {
   await pool.query('CREATE TABLE reward_ledger (id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, kind text NOT NULL, idempotency_key text NOT NULL, reward jsonb NOT NULL, economy_version text NOT NULL DEFAULT \'2026-10-v1\', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))');
   await pool.query('CREATE TABLE wallets (user_id uuid NOT NULL, currency text NOT NULL, balance bigint NOT NULL DEFAULT 0, PRIMARY KEY(user_id,currency))');
   await pool.query('CREATE TABLE inventory_items (user_id uuid NOT NULL, item_id text NOT NULL, definition jsonb NOT NULL, quantity integer NOT NULL DEFAULT 0, acquired_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,item_id))');
+  await pool.query('CREATE TABLE inventory_acquisitions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL,item_id text NOT NULL,quantity integer NOT NULL,source_type text NOT NULL,source_id text NOT NULL,season_id uuid,task_id text,created_at timestamptz NOT NULL DEFAULT now())');
+  await pool.query('CREATE TABLE season_collectibles (season_id uuid PRIMARY KEY,owner_user_id uuid NOT NULL,item_id text NOT NULL,reward_key text NOT NULL,definition jsonb NOT NULL,final_task_id text NOT NULL,gate_task_ids text[] NOT NULL,reward_version integer NOT NULL DEFAULT 1,claimed_at timestamptz,evidence_sha256 text,created_at timestamptz NOT NULL DEFAULT now())');
+  await pool.query('CREATE TABLE season_collectible_claims (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),owner_user_id uuid NOT NULL,season_id uuid NOT NULL,reward_key text NOT NULL,item_id text NOT NULL,evidence_sha256 text NOT NULL,reward_version integer NOT NULL DEFAULT 1,claimed_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_user_id,reward_key),UNIQUE(owner_user_id,season_id))');
   await pool.query('CREATE TABLE inventory_item_preferences (user_id uuid NOT NULL,item_id text NOT NULL,is_locked boolean NOT NULL DEFAULT false,is_showcased boolean NOT NULL DEFAULT false,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,item_id))');
   await pool.query('CREATE TABLE inventory_sales (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL,operation_id uuid NOT NULL,items jsonb NOT NULL,coins bigint NOT NULL CHECK(coins>0),request_hash text,economy_version text NOT NULL DEFAULT \'2026-10-v1\',created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(user_id,operation_id))');
   await pool.query('CREATE TABLE task_evaluations (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, evidence_sha256 text NOT NULL, evaluation jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,season_id,task_id,evidence_sha256))');
@@ -117,6 +120,57 @@ describe('server-owned learning archives', () => {
     expect(again.body.idempotent).toBe(true);
     expect(again.body.season.id).toBe(first.body.season.id);
     expect((await pool.query('SELECT id FROM seasons WHERE owner_user_id=$1', [owner])).rows).toHaveLength(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('binds one non-sellable season collectible to the final verified project and deduplicates regenerated targets', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const input = { goal: 'Build a practical NumPy data cleaning project', level: 'knows ndarray', days: 28, dailyMinutes: 60, ultimateReward: 'A tested data cleaning notebook', desiredArtifact: 'A tested data cleaning notebook', language: 'en' as const };
+    const makeCampaign = (id: string) => {
+      const campaign = structuredClone(NUMPY_DEMO_CAMPAIGN);
+      campaign.id = id;
+      campaign.goal = input.goal; campaign.level = input.level; campaign.days = input.days; campaign.dailyMinutes = input.dailyMinutes; campaign.ultimateReward = input.ultimateReward; campaign.desiredArtifact = input.desiredArtifact; campaign.language = input.language;
+      const finalTaskId = campaign.stages.at(-1)!.gateTaskIds![0];
+      campaign.seasonalCollectible = { id: 'untrusted-model-id', name: '坐标校准章', story: '记录一次独立完成的数据定位成果。', appearance: '深色金属圆章，表面刻有抽象坐标线。', abilityOutcome: '交付并解释经过验证的数据清理项目。', rewardKey: '0'.repeat(64), finalTaskId, displayValue: 1_600_000 };
+      return campaign;
+    };
+    async function activate(campaignId: string) {
+      const campaign = makeCampaign(campaignId);
+      const draft = await request(app).post('/api/generation-drafts').set('x-test-user', owner).send({ input, rulesVersion: 4 }).expect(201);
+      await request(app).patch(`/api/generation-drafts/${draft.body.draft.id}`).set('x-test-user', owner).send({ revision: 1, status: 'awaiting-confirmation', finalCampaign: campaign }).expect(200);
+      return request(app).post(`/api/generation-drafts/${draft.body.draft.id}/activate`).set('x-test-user', owner).expect(201);
+    }
+    async function prepareAndSettle(season: any) {
+      const learning = structuredClone(season.state) as LearningState;
+      const collectible = learning.campaign.seasonalCollectible!;
+      const finalTaskId = collectible.finalTaskId;
+      const evidence = 'I completed the final data cleaning project and checked its output against the acceptance criteria.';
+      for (const task of learning.campaign.stages.flatMap(stage => stage.tasks)) {
+        const taskEvidence = task.id === finalTaskId ? evidence : `Completed and verified prerequisite output for ${task.title}.`;
+        learning.progress[task.id] = { completedObjectives: task.objectives.map(objective => objective.id), evidence: taskEvidence, status: 'completed', verification: task.id === finalTaskId ? 'self' : 'ai', selfChecked: true, completedAt: new Date().toISOString(), ...(task.id === finalTaskId ? { evaluation: { passed: true, score: 92, feedback: 'Evidence supports the final project.', gaps: [], nextStep: 'Review the saved artifact.' }, evaluationSource: 'ai' as const, evaluationEvidence: evidence } : {}) };
+      }
+      await pool.query('UPDATE seasons SET state=$1 WHERE id=$2', [JSON.stringify(learning), season.id]);
+      await pool.query('INSERT INTO task_evaluations(id,owner_user_id,season_id,task_id,evidence_sha256,evaluation) VALUES($1,$2,$3,$4,$5,$6)', [randomUUID(), owner, season.id, finalTaskId, (await import('../server/archive')).evidenceHash(evidence), JSON.stringify({ passed: true, score: 92, feedback: 'Evidence supports the final project.', gaps: [], nextStep: 'Review the saved artifact.' })]);
+      const result = await request(app).post(`/api/seasons/${season.id}/settle`).set('x-test-user', owner).send({ revision: season.revision, taskId: finalTaskId, verification: 'ai' });
+      expect(result.status, result.text).toBe(200);
+      return { result, itemId: collectible.id };
+    }
+    const first = await activate(randomUUID());
+    const rule = await pool.query('SELECT item_id,reward_key,final_task_id,definition FROM season_collectibles WHERE season_id=$1', [first.body.season.id]);
+    expect(rule.rows[0].item_id).toBe(first.body.season.state.campaign.seasonalCollectible.id);
+    expect(rule.rows[0].final_task_id).toBe(first.body.season.state.campaign.stages.at(-1).gateTaskIds[0]);
+    expect(rule.rows[0].definition).toMatchObject({ rarity: 'large-red', limited: true, sellable: false, sellPrice: 0, seasonId: first.body.season.id });
+    const claimed = await prepareAndSettle(first.body.season);
+    expect(claimed.result.body.seasonalCollectible.claimed).toBe(true);
+    expect(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [owner, claimed.itemId])).rows[0].quantity)).toBe(1);
+
+    const second = await activate(randomUUID());
+    expect(second.body.season.state.campaign.seasonalCollectible.id).toBe(claimed.itemId);
+    const duplicate = await prepareAndSettle(second.body.season);
+    expect(duplicate.result.body.seasonalCollectible?.claimed).not.toBe(true);
+    expect(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [owner, claimed.itemId])).rows[0].quantity)).toBe(1);
+    expect((await pool.query('SELECT count(*)::int AS count FROM season_collectible_claims WHERE owner_user_id=$1', [owner])).rows[0].count).toBe(1);
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 

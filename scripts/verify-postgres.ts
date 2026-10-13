@@ -13,7 +13,7 @@ import request from 'supertest';
 import sharp from 'sharp';
 import { createApp } from '../server/app';
 import { runMigrations } from '../server/db';
-import { persistEvaluation, taskEvidence } from '../server/archive';
+import { evidenceHash, persistEvaluation, taskEvidence } from '../server/archive';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { createProgressForCampaign } from '../src/lib/engine';
 import type { LearningState } from '../shared/types';
@@ -72,10 +72,14 @@ const pg = {
     if (!pgProcess) return;
     await execute(join(bin, `pg_ctl${extension}`), ['-D', join(root, 'cluster'), '-m', 'fast', '-w', 'stop'], { cwd: root }); pgProcess = undefined;
   },
-  async createDatabase(name: string) { const admin = new Pool({ connectionString: url('postgres') }); try { await admin.query(`CREATE DATABASE ${name}`); } finally { await admin.end(); } },
+  async createDatabase(name: string) { const admin = observePool(new Pool({ connectionString: url('postgres') })); try { await admin.query(`CREATE DATABASE ${name}`); } finally { await admin.end(); } },
 };
 const results: string[] = [];
 let pool: Pool;
+function observePool(target: Pool): Pool {
+  target.on('error', error => console.error('PostgreSQL idle client error:', (error as Error & { code?: string }).code ?? error.message));
+  return target;
+}
 let visualBytes = false;
 let testServer: Server | undefined;
 let failChallengeProvider = false;
@@ -98,7 +102,7 @@ function appFor(currentPool: Pool) {
 }
 try {
   await pg.initialise(); await pg.start(); await pg.createDatabase('ninegrid_test'); await pg.createDatabase('ninegrid_restore'); await pg.createDatabase('ninegrid_legacy');
-  const legacyPool = new Pool({ connectionString: url('ninegrid_legacy'), max: 2 });
+  const legacyPool = observePool(new Pool({ connectionString: url('ninegrid_legacy'), max: 2 }));
   const migrationFiles=(await readdir(resolve('server/migrations'))).filter(name=>/^\d+_[a-z0-9_-]+\.sql$/i.test(name)).sort();
   for(const name of migrationFiles.slice(0,5)) await legacyPool.query(await readFile(resolve('server/migrations',name),'utf8'));
   await legacyPool.query('CREATE TABLE schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
@@ -122,12 +126,17 @@ try {
   assert.equal(Number((await legacyPool.query("SELECT count(*) FROM inventory_acquisitions WHERE user_id=$1 AND source_type='migration'",[legacyOwner])).rows[0].count),2);
   assert.deepEqual((await legacyPool.query('SELECT currency_ratio,old_balance,new_balance,safe_entitlements FROM economy_migrations WHERE user_id=$1',[legacyOwner])).rows[0],{currency_ratio:String(LEGACY_CURRENCY_CONVERSION),old_balance:'13',new_balance:String(13*LEGACY_CURRENCY_CONVERSION),safe_entitlements:{'small-safe':2,'large-safe':1,safeConversionRatio:'1:1'}});
   await legacyPool.end(); results.push('isolated PostgreSQL v1→v2 migration scales wallet 10,000:1 once, converts safe entitlements 1:1, preserves collections, and records an audit row');
-  pool = new Pool({ connectionString: url('ninegrid_test'), max: 6 }); await runMigrations(pool); await runMigrations(pool);
+  pool = observePool(new Pool({ connectionString: url('ninegrid_test'), max: 6 })); await runMigrations(pool); await runMigrations(pool);
   results.push('real PostgreSQL migrations applied and repeatable');
   process.env.UPLOAD_DIR = join(root, 'uploads');
-  const app = appFor(pool);
+  // Keep API traffic on its own pool so direct assertion queries cannot close
+  // the pool backing request handlers during the real-PostgreSQL regression.
+  const appPool = observePool(new Pool({ connectionString: url('ninegrid_test'), max: 6 }));
+  const app = appFor(appPool);
   testServer = app.listen(0, '127.0.0.1'); await new Promise<void>(done => testServer!.once('listening', done));
-  const a = request.agent(testServer); const b = request.agent(testServer);
+  const testAddress = testServer.address() as import('node:net').AddressInfo;
+  const testOrigin = `http://127.0.0.1:${testAddress.port}`;
+  const a = request.agent(testOrigin); const b = request.agent(testOrigin);
   const csrf = async (agent: typeof a) => (await agent.get('/api/auth/csrf').expect(200)).body.token as string;
   const register = async (agent: typeof a, email: string) => { const token = await csrf(agent); return (await agent.post('/api/auth/register').set('x-csrf-token', token).send({ email, password: 'independent-test-passphrase-2026' }).expect(201)).body.user; };
   const userA = await register(a, 'integration-a@example.com'); const userB=await register(b, 'integration-b@example.com');
@@ -138,15 +147,57 @@ try {
   const draftId = draftResponse.body.draft.id as string;
   await b.get('/api/generation-drafts').expect(200).then(response => assert.equal(response.body.drafts.some((item: { id: string }) => item.id === draftId), false));
   const draftCampaign = { ...structuredClone(NUMPY_DEMO_CAMPAIGN), id: randomUUID() };
+  draftCampaign.seasonalCollectible = { id: 'model-proposal', name: '坐标校准章', story: '记录一次独立完成的坐标数据整理。', appearance: '深色金属徽章，表面刻有抽象网格线。', abilityOutcome: '交付并解释经过验证的数据处理项目。', rewardKey: '0'.repeat(64), finalTaskId: draftCampaign.stages.at(-1)!.gateTaskIds![0], displayValue: 1_600_000 };
   const waitingDraft = await a.patch(`/api/generation-drafts/${draftId}`).set('x-csrf-token', await csrf(a)).send({ revision: draftResponse.body.draft.revision, finalCampaign: draftCampaign, status: 'awaiting-confirmation' }).expect(200);
   const activated = await a.post(`/api/generation-drafts/${draftId}/activate`).set('x-csrf-token', await csrf(a)).send({}).expect(201);
   const activatedAgain = await a.post(`/api/generation-drafts/${draftId}/activate`).set('x-csrf-token', await csrf(a)).send({}).expect(200);
   assert.equal(activated.body.season.id, activatedAgain.body.season.id);
   assert.equal(activatedAgain.body.idempotent, true);
   assert.equal(waitingDraft.body.draft.status, 'awaiting-confirmation');
+  const activatedRule = await pool.query('SELECT item_id,reward_key,final_task_id,definition FROM season_collectibles WHERE season_id=$1 AND owner_user_id=$2', [activated.body.season.id, userA.id]);
+  assert.equal(activatedRule.rows[0].item_id, activated.body.season.state.campaign.seasonalCollectible.id);
+  assert.equal(activatedRule.rows[0].final_task_id, activated.body.season.state.campaign.stages.at(-1).gateTaskIds[0]);
+  assert.deepEqual({ rarity: activatedRule.rows[0].definition.rarity, limited: activatedRule.rows[0].definition.limited, sellable: activatedRule.rows[0].definition.sellable, sellPrice: activatedRule.rows[0].definition.sellPrice, seasonId: activatedRule.rows[0].definition.seasonId }, { rarity: 'large-red', limited: true, sellable: false, sellPrice: 0, seasonId: activated.body.season.id });
   const compactDraft = await pool.query('SELECT status,activated_season_id,final_campaign,outline,batches,input FROM generation_drafts WHERE id=$1', [draftId]);
   assert.equal(compactDraft.rows[0].status, 'activated'); assert.equal(compactDraft.rows[0].activated_season_id, activated.body.season.id);
   assert.equal(compactDraft.rows[0].final_campaign, null); assert.deepEqual(compactDraft.rows[0].batches, {}); assert.equal(compactDraft.rows[0].input.activated, true);
+  async function settleFinalCollectible(season: any) {
+    const state = structuredClone(season.state) as LearningState;
+    const finalTaskId = state.campaign.seasonalCollectible!.finalTaskId;
+    const evidence = 'I delivered the final data processing project, ran its checks, and compared the output with the acceptance criteria.';
+    const now = new Date().toISOString();
+    for (const task of state.campaign.stages.flatMap(stage => stage.tasks)) {
+      const taskEvidenceText = task.id === finalTaskId ? evidence : `I completed and checked the prerequisite result for ${task.title}.`;
+      state.progress[task.id] = { completedObjectives: task.objectives.map(objective => objective.id), evidence: taskEvidenceText, status: 'completed', verification: task.id === finalTaskId ? 'self' : 'ai', selfChecked: true, completedAt: now };
+    }
+    await pool.query('UPDATE seasons SET state=$1 WHERE id=$2 AND owner_user_id=$3', [JSON.stringify(state), season.id, userA.id]);
+    const evaluationPool = observePool(new Pool({ connectionString: url('ninegrid_test'), max: 1 }));
+    try { await persistEvaluation(evaluationPool, userA.id, season.id, finalTaskId, evidence, { passed: true, score: 94, feedback: 'Server-bound integration evaluation for the saved final artifact.', gaps: [], nextStep: 'Review the saved project.' }); }
+    finally { await evaluationPool.end(); }
+    const freshResponse = await a.get(`/api/seasons/${season.id}`);
+    if (freshResponse.status !== 200) console.error('Season refresh failed:', freshResponse.status, freshResponse.body, 'server listening:', testServer?.listening, 'api pool ended:', (appPool as any).ended);
+    assert.equal(freshResponse.status, 200);
+    const fresh = freshResponse.body.season;
+    return await a.post(`/api/seasons/${season.id}/settle`).set('x-csrf-token', await csrf(a)).send({ revision: fresh.revision, taskId: finalTaskId, verification: 'ai' }).expect(200);
+  }
+  const exclusiveFirst = await settleFinalCollectible(activated.body.season);
+  assert.equal(exclusiveFirst.body.seasonalCollectible.claimed, true);
+  const exclusiveId = activated.body.season.state.campaign.seasonalCollectible.id;
+  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [userA.id, exclusiveId])).rows[0].quantity), 1);
+  const copiedDraft = await a.post('/api/generation-drafts').set('x-csrf-token', await csrf(a)).send({ input: draftInput, rulesVersion: 4 }).expect(201);
+  const copiedCampaign = { ...structuredClone(draftCampaign), id: randomUUID() };
+  await a.patch(`/api/generation-drafts/${copiedDraft.body.draft.id}`).set('x-csrf-token', await csrf(a)).send({ revision: copiedDraft.body.draft.revision, finalCampaign: copiedCampaign, status: 'awaiting-confirmation' }).expect(200);
+  const copiedSeason = (await a.post(`/api/generation-drafts/${copiedDraft.body.draft.id}/activate`).set('x-csrf-token', await csrf(a)).send({}).expect(201)).body.season;
+  assert.equal(copiedSeason.state.campaign.seasonalCollectible.id, exclusiveId);
+  const duplicateExclusive = await settleFinalCollectible(copiedSeason);
+  assert.equal(duplicateExclusive.body.seasonalCollectible.alreadyClaimed, true);
+  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [userA.id, exclusiveId])).rows[0].quantity), 1);
+  assert.equal(Number((await pool.query('SELECT count(*) FROM season_collectible_claims WHERE owner_user_id=$1', [userA.id])).rows[0].count), 1);
+  const seasonHonors = (await a.get('/api/profile').expect(200)).body.seasonalCollectibles;
+  assert.equal(seasonHonors.length, 1);
+  assert.equal(seasonHonors[0].claimed, true);
+  await a.post('/api/inventory/sell').set('x-csrf-token', await csrf(a)).send({ operationId: randomUUID(), items: [{ itemId: exclusiveId, quantity: 1 }] }).expect(422);
+  results.push('native PostgreSQL stores a target-bound red collectible, pays it after the final server-bound evaluation once, and prevents duplicate claims after regenerating the same target');
   results.push('account-scoped generation drafts persist in PostgreSQL and repeated activation creates one season');
   const capacityToken = await csrf(a);
   const capacityPosts = await Promise.all(Array.from({ length: 4 }, (_, index) => a.post('/api/generation-drafts').set('x-csrf-token', capacityToken).send({ input: { ...draftInput, goal: `练习 NumPy 数据整理目标 ${index + 1}` }, rulesVersion: 4 })));
@@ -154,13 +205,14 @@ try {
   results.push('PostgreSQL account row lock enforces the three-active-draft limit during concurrent creates');
   const collectible = COLLECTION_CATALOG[0];
   await pool.query('INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,2)', [userA.id, collectible.id, JSON.stringify(collectible)]);
+  const balanceBeforeSale = Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance);
   const saleOperation = randomUUID(); const saleToken = await csrf(a);
   const firstSale = await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId: saleOperation, items: [{ itemId: collectible.id, quantity: 1 }] }).expect(200);
   const saleRetry = await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId: saleOperation, items: [{ itemId: collectible.id, quantity: 1 }] }).expect(200);
   assert.equal(Number(firstSale.body.sale.coins), collectible.sellPrice); assert.equal(saleRetry.body.idempotent, true);
   await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId:saleOperation,items:[{itemId:collectible.id,quantity:2}]}).expect(409);
   assert.equal((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [userA.id, collectible.id])).rows[0].quantity, 1);
-  assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance), collectible.sellPrice);
+  assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance), balanceBeforeSale + collectible.sellPrice);
   assert.equal((await b.get('/api/inventory').expect(200)).body.items.length, 0);
   const competingSales = await Promise.all([0, 1].map(() => a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId: randomUUID(), items: [{ itemId: collectible.id, quantity: 1 }] })));
   assert.deepEqual(competingSales.map(response => response.status).sort(), [200, 409]);
@@ -169,7 +221,7 @@ try {
   const concurrentRetry = await a.post('/api/inventory/sell').set('x-csrf-token', saleToken).send({ operationId: winningOperation, items: [{ itemId: collectible.id, quantity: 1 }] }).expect(200);
   assert.equal(concurrentRetry.body.idempotent, true);
   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [userA.id, collectible.id])).rows[0].quantity), 0);
-  assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance), collectible.sellPrice * 2);
+  assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [userA.id])).rows[0].balance), balanceBeforeSale + collectible.sellPrice * 2);
   results.push('PostgreSQL inventory sale commits one fixed-price credit, one quantity debit and one idempotent sale ledger row; accounts stay isolated');
   await pool.query("UPDATE wallets SET balance=balance+2000000 WHERE user_id=$1 AND currency='learning-coin'",[userA.id]);
   const shopToken=await csrf(a); const shopBefore=Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance);const buyId=randomUUID();
@@ -223,7 +275,7 @@ try {
   const challengePass=await b.post(`/api/challenges/${challengeEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(b)).send({evidence:challengeAnswer}).expect(200);assert.equal(challengePass.body.challenge.status,'passed');assert.equal(challengePass.body.challenge.evaluation.score,92);const wonId=challengePass.body.challenge.rewardItem.itemId;assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userB.id,wonId])).rows[0].quantity),1);await b.post(`/api/challenges/${challengeEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(b)).send({evidence:challengeAnswer}).expect(200);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2',[userB.id,wonId])).rows[0].quantity),1);
   await pool.query("UPDATE wallets SET balance=balance+2000000 WHERE user_id=$1 AND currency='learning-coin'",[userA.id]);const techSeason=(await a.post('/api/seasons').set('x-csrf-token',await csrf(a)).send({state:newState({...NUMPY_DEMO_CAMPAIGN,id:randomUUID()})}).expect(201)).body.season;const techTask=techSeason.state.campaign.stages[0].tasks[0];const techEntry=await a.post('/api/challenges/enter').set('x-csrf-token',await csrf(a)).send({seasonId:techSeason.id,taskId:techTask.id,tier:'ordinary'}).expect(201);const balanceAfterEntry=Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance);failChallengeProvider=true;const techResponse=await a.post(`/api/challenges/${techEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(a)).send({evidence:challengeAnswer}).expect(502);failChallengeProvider=false;assert.equal(techResponse.body.code,'CHALLENGE_TECHNICAL_REFUND');assert.equal((await pool.query('SELECT status FROM challenge_runs WHERE id=$1',[techEntry.body.challenge.id])).rows[0].status,'technical_refund');assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance),balanceAfterEntry+100000);await a.post(`/api/challenges/${techEntry.body.challenge.id}/submit`).set('x-csrf-token',await csrf(a)).send({evidence:challengeAnswer}).expect(200);assert.equal(Number((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'",[userA.id])).rows[0].balance),balanceAfterEntry+100000);assert.equal(Number((await pool.query('SELECT count(*) FROM challenge_runs WHERE user_id=$1 AND status=\'technical_refund\'',[userA.id])).rows[0].count),1);const recoverySeason=(await a.post('/api/seasons').set('x-csrf-token',await csrf(a)).send({state:newState({...NUMPY_DEMO_CAMPAIGN,id:randomUUID()})}).expect(201)).body.season;await a.post('/api/challenges/enter').set('x-csrf-token',await csrf(a)).send({seasonId:recoverySeason.id,taskId:recoverySeason.state.campaign.stages[0].tasks[0].id,tier:'ordinary'}).expect(201);
   results.push('PostgreSQL challenge entry fee settles once; mocked server evaluation awards one catalog item; provider failure returns one technical refund without changing campaign progress');
-  const anotherBrowser = request.agent(testServer);
+  const anotherBrowser = request.agent(testOrigin);
   const browserCsrf = await csrf(anotherBrowser);
   await anotherBrowser.post('/api/auth/login').set('x-csrf-token', browserCsrf).send({ email: 'integration-a@example.com', password: 'independent-test-passphrase-2026' }).expect(200);
   assert.equal((await anotherBrowser.get(`/api/seasons/${season.id}`).expect(200)).body.season.state.progress[taskId].verification, 'ai');
@@ -240,7 +292,8 @@ try {
   const counts = async (p: Pool) => (await p.query('SELECT (SELECT count(*) FROM users) AS users,(SELECT count(*) FROM seasons) AS seasons,(SELECT count(*) FROM reward_ledger) AS rewards,(SELECT count(*) FROM attachments) AS attachments')).rows[0];
   const before = await counts(pool);
   await new Promise<void>(done => testServer!.close(() => done())); testServer = undefined;
-  await pool.end(); await pg.stop(); await pg.start(); pool = new Pool({ connectionString: url('ninegrid_test') });
+  await appPool.end();
+  await pool.end(); await pg.stop(); await pg.start(); pool = observePool(new Pool({ connectionString: url('ninegrid_test') }));
   assert.deepEqual(await counts(pool), before); results.push('native PostgreSQL restart preserves users, seasons, rewards and attachments');
   const dump = join(root, 'backup.dump');
   const attachmentBackup = join(root, 'backup-attachments');
@@ -252,7 +305,7 @@ try {
   const pgEnvironment = { ...process.env, PGPASSWORD: password };
   await execute(join(pgToolsDir, `pg_dump${extension}`), ['-h', '127.0.0.1', '-p', String(port), '-U', 'postgres', '-d', 'ninegrid_test', '--format=custom', '--no-owner', '--file', dump], { env: pgEnvironment, cwd: pgToolsDir });
   await execute(join(pgToolsDir, `pg_restore${extension}`), ['-h', '127.0.0.1', '-p', String(port), '-U', 'postgres', '-d', 'ninegrid_restore', '--no-owner', dump], { env: pgEnvironment, cwd: pgToolsDir });
-  const restored = new Pool({ connectionString: url('ninegrid_restore') });
+  const restored = observePool(new Pool({ connectionString: url('ninegrid_restore') }));
   assert.deepEqual(await counts(restored), before);
   const files = await restored.query('SELECT storage_key,sha256 FROM attachments');
   for (const file of files.rows) assert.equal(createHash('sha256').update(await readFile(join(attachmentRestore, file.storage_key))).digest('hex'), file.sha256);

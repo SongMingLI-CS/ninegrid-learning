@@ -8,9 +8,13 @@ export const stageOutlineSchema = z.object({
   mainline: z.array(outlineTaskSchema).min(1).max(40),
   branches: z.array(z.object({ id, title: text(200), tasks: z.array(outlineTaskSchema).min(1).max(10) })).max(6),
 });
+export const seasonalCollectibleProposalSchema = z.object({
+  name: text(120), story: text(1200), appearance: text(1200), abilityOutcome: text(1000),
+});
 export const curriculumOutlineSchema = z.object({
   title: text(300), subtitle: text(1000), prerequisites: z.array(text(500)).max(30),
   densityRationale: text(2000).optional(), stages: z.array(stageOutlineSchema).min(1).max(20),
+  seasonalCollectible: seasonalCollectibleProposalSchema,
   nineGrid: z.array(z.object({ id, title: text(200), ability: text(500), value: text(500), taskIds: z.array(id).min(1).max(10) })).length(9),
 });
 export type CurriculumOutline = z.infer<typeof curriculumOutlineSchema>;
