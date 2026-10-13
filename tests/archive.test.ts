@@ -10,7 +10,9 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import { mountArchiveRoutes, persistEvaluation } from '../server/archive';
 import { mountAttachmentRoutes } from '../server/attachments';
+import { mountGenerationDraftRoutes } from '../server/generationDrafts';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
+import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { createProgressForCampaign } from '../src/lib/engine';
 import { completeTask, markSelfChecked, setEvidence, setEvaluation } from '../src/lib/engine';
 import type { LearningState } from '../shared/types';
@@ -26,10 +28,12 @@ async function fixture() {
   await pool.query('CREATE TABLE task_evaluations (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, evidence_sha256 text NOT NULL, evaluation jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,season_id,task_id,evidence_sha256))');
   await pool.query("CREATE TABLE legacy_imports (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, source_sha256 text NOT NULL, season_ids uuid[] NOT NULL DEFAULT '{}', imported_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,source_sha256))");
   await pool.query('CREATE TABLE attachments (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, storage_key text UNIQUE NOT NULL, mime_type text NOT NULL, byte_size integer NOT NULL, width integer NOT NULL, height integer NOT NULL, sha256 text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
-  const app = express(); app.use(express.json());
+  await pool.query("CREATE TABLE generation_drafts (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, input_fingerprint text NOT NULL, input jsonb NOT NULL, rules_version integer NOT NULL, outline jsonb, batches jsonb NOT NULL DEFAULT '{}'::jsonb, status text NOT NULL, progress jsonb NOT NULL DEFAULT '{}'::jsonb, failure jsonb, final_campaign jsonb, activated_season_id uuid, revision integer NOT NULL DEFAULT 1, expires_at timestamptz NOT NULL DEFAULT (now() + interval '30 days'), created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,input_fingerprint))");
+  const app = express(); app.use(express.json({ limit: '10mb' }));
   app.use(session({ secret: 'archive-test-secret-that-is-long-enough', resave: false, saveUninitialized: true }));
   app.use((req, _res, next) => { (req.session as typeof req.session & { userId?: string }).userId = req.header('x-test-user') ?? '00000000-0000-4000-8000-000000000001'; next(); });
   mountArchiveRoutes(app, { pool });
+  mountGenerationDraftRoutes(app, { pool });
   const directory = await mkdtemp(join(tmpdir(), 'ninegrid-attachments-'));
   mountAttachmentRoutes(app, { pool, directory, apiKey: 'vision-test-only', fetchImpl: async (_url, init) => {
     const body = JSON.parse(String(init?.body));
@@ -45,6 +49,28 @@ function state(): LearningState {
 }
 
 describe('server-owned learning archives', () => {
+  it('isolates server generation drafts by owner and activates one finalized season idempotently', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const other = '00000000-0000-4000-8000-000000000002';
+    const campaign = structuredClone(NUMPY_DEMO_CAMPAIGN);
+    const input = { goal: campaign.goal, level: campaign.level, days: campaign.days, dailyMinutes: campaign.dailyMinutes, ultimateReward: campaign.ultimateReward, desiredArtifact: campaign.desiredArtifact, language: campaign.language };
+    const created = await request(app).post('/api/generation-drafts').set('x-test-user', owner).send({ input, rulesVersion: 4, apiKey: 'must-not-be-saved' }).expect(201);
+    expect(JSON.stringify(created.body)).not.toContain('must-not-be-saved');
+    const id = created.body.draft.id;
+    expect((await request(app).get('/api/generation-drafts').set('x-test-user', other)).body.drafts).toHaveLength(0);
+    await request(app).get('/api/generation-drafts').set('x-test-user', owner).expect(200).then(res => expect(res.body.drafts[0].id).toBe(id));
+    await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', other).send({ status: 'failed' }).expect(404);
+    const ready = await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: created.body.draft.revision, status: 'awaiting-confirmation', finalCampaign: campaign }).expect(200);
+    expect(ready.body.draft.status).toBe('awaiting-confirmation');
+    const first = await request(app).post(`/api/generation-drafts/${id}/activate`).set('x-test-user', owner).expect(201);
+    const again = await request(app).post(`/api/generation-drafts/${id}/activate`).set('x-test-user', owner).expect(200);
+    expect(again.body.idempotent).toBe(true);
+    expect(again.body.season.id).toBe(first.body.season.id);
+    expect((await pool.query('SELECT id FROM seasons WHERE owner_user_id=$1', [owner])).rows).toHaveLength(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
   it('creates, lists, reads, and updates only the signed-in owner archive using revision checks', async () => {
     const { app, pool, directory } = await fixture();
     const owner = '00000000-0000-4000-8000-000000000001';

@@ -7,7 +7,7 @@ import {
   Sparkles, SquareArrowOutUpRight, Target, TerminalSquare, Trophy, X, Zap,
 } from 'lucide-react';
 import type { Campaign, GoalInput, LearningState, Task, TaskProgress } from '../shared/types';
-import type { CurriculumOutline } from '../shared/curriculum';
+import { planCurriculumBudget, type CurriculumOutline } from '../shared/curriculum';
 import { campaignSchema } from '../shared/schema';
 import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask } from './lib/engine';
 import { loadStateSafely, saveStateSafely, exportState, importState } from './lib/storage';
@@ -27,7 +27,20 @@ import { getDailyBudgetMinutes, markVideoWatched, scheduleVideo as addVideoToSch
 type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews' | 'inventory';
 type Notification = { title: string; body?: string; tone?: 'success' | 'warning' } | null;
 type Connection = { configured: boolean; model: string; accounts?: boolean };
-type GenerationDraft = { input: GoalInput; outline: CurriculumOutline; stages: Record<string, Record<string, Campaign['stages'][number]['tasks']>> };
+type GenerationDraft = { id?: string; revision?: number; status?: string; finalCampaign?: Campaign; input: GoalInput; outline?: CurriculumOutline; stages: Record<string, Record<string, Campaign['stages'][number]['tasks']>> };
+type SavedGenerationDraft = { id: string; input: GoalInput; rulesVersion: number; outline?: CurriculumOutline; batches: Record<string, { stageId: string; chainId: string; batchKey: string; tasks: Campaign['stages'][number]['tasks'] }>; status: string; progress?: { completedTasks?: number; totalTasks?: number; stageTitle?: string; chainTitle?: string }; failure?: { code?: string; message?: string }; finalCampaign?: Campaign; revision: number };
+
+function restoreGenerationDraft(saved: SavedGenerationDraft): GenerationDraft {
+  const stages: GenerationDraft['stages'] = {};
+  for (const batch of Object.values(saved.batches ?? {})) {
+    if (!Array.isArray(batch.tasks)) continue;
+    stages[batch.stageId] ??= {};
+    const existing = stages[batch.stageId][batch.chainId] ?? [];
+    const byId = new Map([...existing, ...batch.tasks].map(task => [task.id, task]));
+    stages[batch.stageId][batch.chainId] = [...byId.values()];
+  }
+  return { id: saved.id, revision: saved.revision, status: saved.status, input: saved.input, outline: saved.outline as CurriculumOutline | undefined, stages, finalCampaign: saved.finalCampaign };
+}
 
 const defaultGoal = NUMPY_DEMO_CAMPAIGN.goal;
 
@@ -77,6 +90,8 @@ function App() {
   const [allowOverwrite, setAllowOverwrite] = useState(false);
   const [pendingCampaign, setPendingCampaign] = useState<Campaign | null>(null);
   const [generationDraft, setGenerationDraft] = useState<GenerationDraft | null>(null);
+  const [savedGenerationDrafts, setSavedGenerationDrafts] = useState<SavedGenerationDraft[]>([]);
+  const [pendingDraftId, setPendingDraftId] = useState<string>();
   const [generationMessage, setGenerationMessage] = useState('');
   const [sourceMaterial, setSourceMaterial] = useState('');
   const [languagePreference, setLanguagePreference] = useState<'en'|'zh'|'mixed'>('mixed');
@@ -105,6 +120,7 @@ function App() {
   const [note, setNote] = useState('');
   const [mobileNav, setMobileNav] = useState(false);
   const [diagnosticMode, setDiagnosticMode] = useState(false);
+  const [hideCompletedTasks, setHideCompletedTasks] = useState(false);
 
   const campaign = state.campaign;
   const currentState = useRef(state); currentState.current = state;
@@ -131,6 +147,19 @@ function App() {
   const diagnosedAsKnown = state.dailyAdjustments?.[localDate] === 'skip-known';
   const recommendationTasks = readyTasks.filter(item => !state.knownTasks?.[item.id]);
   const nextMission = recommendationTasks.find(item => (item.track ?? 'main') === 'main') ?? recommendationTasks[0];
+
+  useEffect(() => {
+    if (tab !== 'missions') return;
+    const frame = requestAnimationFrame(() => {
+      const list = document.querySelector<HTMLElement>('.mission-scroll');
+      const active = list?.querySelector<HTMLElement>('.mission-row[aria-current="true"]');
+      if (!list || !active) return;
+      const listBounds = list.getBoundingClientRect(); const taskBounds = active.getBoundingClientRect();
+      if (taskBounds.top < listBounds.top) list.scrollBy({ top: taskBounds.top - listBounds.top - 8, behavior: 'smooth' });
+      else if (taskBounds.bottom > listBounds.bottom) list.scrollBy({ top: taskBounds.bottom - listBounds.bottom + 8, behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [tab, selectedTaskId, selectedStage, activeChainId]);
 
   const update = useCallback((next: LearningState) => setState(next), []);
   const flash = useCallback((value: Notification) => setNotification(value), []);
@@ -200,7 +229,7 @@ function App() {
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
-    if (!accountUser) { archiveRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false; setScopedUserId(undefined); setStorageScope(); return; }
+    if (!accountUser) { archiveRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false; setSavedGenerationDrafts([]); setPendingDraftId(undefined); setScopedUserId(undefined); setStorageScope(); return; }
     const controller = new AbortController(); archiveRequest.current?.abort(); archiveRequest.current = controller;
     serverHydrated.current = false; serverArchive.current = null; setScopedUserId(undefined);
     setServerSeasons([]); setServerWallet(0); setServerInventory([]); setServerLedger([]); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null);
@@ -226,6 +255,13 @@ function App() {
         }
         if (controller.signal.aborted) return;
         setServerSeasons(payload.seasons?.length ? payload.seasons : [season]);
+        try {
+          const draftResponse = await apiFetch('/api/generation-drafts', { signal: controller.signal });
+          if (draftResponse.ok) {
+            const draftPayload = await draftResponse.json() as { drafts: SavedGenerationDraft[] };
+            if (!controller.signal.aborted) setSavedGenerationDrafts(draftPayload.drafts.filter(draft => draft.status !== 'activated'));
+          } else if (!controller.signal.aborted) setGenerationMessage('服务器生成草稿暂不可读取；已登录状态和学习赛季已正常恢复。');
+        } catch { if (!controller.signal.aborted) setGenerationMessage('服务器生成草稿暂不可读取；可稍后重试，学习赛季已正常恢复。'); }
         await refreshServerRewards(controller.signal);
         if (controller.signal.aborted) return;
         const pending = readPendingDraft(accountUser.id, season.id);
@@ -299,23 +335,31 @@ function App() {
     }
   };
 
-  const activateBlueprint = () => {
+  const restoreSavedGenerationDraft = (saved: SavedGenerationDraft) => {
+    const draft = restoreGenerationDraft(saved);
+    setGenerationDraft(draft); setPendingDraftId(saved.id);
+    setGoal(saved.input.goal); setLevel(saved.input.level); setDays(saved.input.days); setDailyMinutes(saved.input.dailyMinutes); setReward(saved.input.ultimateReward); setSourceMaterial(saved.input.sourceMaterial ?? ''); setLanguagePreference(saved.input.language ?? 'mixed');
+    setPendingCampaign(saved.finalCampaign ?? null); setGenerationMessage(saved.status === 'awaiting-confirmation' ? '课程已完整生成并保存在服务器，等待你确认创建赛季。' : `服务器草稿已恢复 · ${saved.progress?.completedTasks ?? Object.values(draft.stages).flatMap(chains => Object.values(chains)).reduce((sum, tasks) => sum + tasks.length, 0)} 项任务已保存；继续时只会补缺失批次。`); setGoalOpen(true);
+  };
+
+  const activateBlueprint = async () => {
     if (!pendingCampaign) return;
     if (accountUser) {
-      const next = createSeasonState(pendingCampaign);
-      void apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: next }) })
-        .then(async response => {
-          const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '新赛季创建失败');
-          const season = payload.season as { id: string; revision: number; title: string; state: LearningState };
-          serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
-          setServerSeasons(previous => [season, ...previous]); setState(season.state); setSelectedStage(0); setSelectedTaskId(season.state.campaign.stages[0].tasks[0].id);
-          setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
-          flash({ title: '独立学习赛季已部署', body: `${season.state.campaign.title} 已保存到你的服务器档案。`, tone: 'success' });
-        }).catch(error => setSaveError(`新赛季未同步：${error instanceof Error ? error.message : '请求失败'}。当前赛季未改变。`));
+      try {
+        const response = pendingDraftId
+          ? await apiFetch(`/api/generation-drafts/${pendingDraftId}/activate`, { method: 'POST' })
+          : await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: createSeasonState(pendingCampaign) }) });
+        const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? payload.code ?? '新赛季创建失败');
+        const season = payload.season as { id: string; revision: number; title: string; state: LearningState };
+        serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
+        setServerSeasons(previous => [season, ...previous.filter(item => item.id !== season.id)]); setState(season.state); setSelectedStage(0); setSelectedTaskId(season.state.campaign.stages[0].tasks[0].id);
+        setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setPendingDraftId(undefined); setGenerationDraft(null); setSavedGenerationDrafts(previous => previous.filter(item => item.id !== pendingDraftId)); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
+        flash({ title: '独立学习赛季已部署', body: `${season.state.campaign.title} 已保存到你的服务器档案。`, tone: 'success' });
+      } catch (error) { setSaveError(`新赛季未同步：${error instanceof Error ? error.message : '请求失败'}。草稿和当前赛季都已保留。`); }
       return;
     }
     const next = switchCampaign(state, pendingCampaign);
-    update(next); setSelectedStage(0); setSelectedTaskId(pendingCampaign.stages[0].tasks[0].id); setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
+    update(next); try { localStorage.removeItem('ninegrid.curriculum-draft.v4.guest'); } catch { /* The confirmed course remains active even if cleanup is unavailable. */ } setGenerationDraft(null); setSelectedStage(0); setSelectedTaskId(pendingCampaign.stages[0].tasks[0].id); setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setPendingDraftId(undefined); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
     flash({ title: '蓝图已确认 · 新赛季部署', body: `${pendingCampaign.stages.length} 个阶段；旧目标和进度已归档保存。`, tone: 'success' });
   };
 
@@ -386,57 +430,121 @@ function App() {
 
   const runGeneration = async () => {
     if (goal.trim().length < 12) { flash({ title: '行动目标还不够具体', body: '写明想达成什么，以及最终要交付什么。', tone: 'warning' }); return; }
+    if (sourceMaterial.length > 20_000) { setGenerationMessage(`材料共 ${sourceMaterial.length} 字符，当前上限 20000。请手动选择并保留需要使用的页码或段落范围；系统不会静默截断。`); return; }
+    const budget = planCurriculumBudget({ days, dailyMinutes });
+    if (!budget.feasible) { setGenerationMessage(budget.suggestion ?? budget.rationale); return; }
     setBusy('generate'); setGenerationMessage('准备课程总纲…');
+    const timeout = window.setTimeout(() => activeRequest.current?.abort('generation-deadline'), 15 * 60 * 1000);
+    let recoverableDraft: GenerationDraft | undefined;
     try {
-      const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: reward.trim() || '完成一项真实可用的成果', desiredArtifact: reward.trim() || undefined, language: languagePreference, sourceMaterial: sourceMaterial.slice(0, 20000) || undefined };
+      const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: reward.trim() || '完成一项真实可用的成果', desiredArtifact: reward.trim() || undefined, language: languagePreference, sourceMaterial: sourceMaterial || undefined };
       const controller = new AbortController(); activeRequest.current = controller;
-      const storageKey = `ninegrid.curriculum-draft.v3.${accountUser?.id ?? 'guest'}`;
+      const storageKey = `ninegrid.curriculum-draft.v4.${accountUser?.id ?? 'guest'}`;
       const sameInput = (candidate: GoalInput) => JSON.stringify(candidate) === JSON.stringify(input);
       let draft = generationDraft && sameInput(generationDraft.input) ? structuredClone(generationDraft) : null;
-      if (!draft) {
-        try { const saved = sessionStorage.getItem(storageKey); if (saved) { const parsed = JSON.parse(saved) as GenerationDraft; if (sameInput(parsed.input)) draft = parsed; } } catch { /* Session storage is optional; this run can continue in memory. */ }
+      if (accountUser) {
+        const response = await apiFetch('/api/generation-drafts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, rulesVersion: 4 }) });
+        const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? payload.code ?? '服务器生成草稿无法保存');
+        const saved = payload.draft as SavedGenerationDraft;
+        draft = restoreGenerationDraft(saved);
+        setPendingDraftId(saved.id); setSavedGenerationDrafts(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+      } else if (!draft) {
+        try { const saved = localStorage.getItem(storageKey); if (saved) { const parsed = JSON.parse(saved) as GenerationDraft; if (sameInput(parsed.input)) draft = parsed; } } catch { /* Local draft remains optional for guest-only runs. */ }
+        if (!draft) draft = { input, stages: {}, status: 'pending' };
+        setGenerationDraft(draft);
+        try { localStorage.setItem(storageKey, JSON.stringify(draft)); } catch { throw new Error('本机草稿空间不足；请清理浏览器存储后再开始生成。'); }
       }
-      const persistDraft = (next: GenerationDraft) => { draft = next; setGenerationDraft(next); try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { setGenerationMessage('当前浏览器无法保存生成草稿；已生成阶段仍保留在本页内存中。'); } };
+      const persistLocal = (next: GenerationDraft) => { draft = next; recoverableDraft = next; setGenerationDraft(next); if (!accountUser) try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { setGenerationMessage('本机草稿空间不足；本轮生成无法可靠续接。请释放浏览器存储空间后重试。'); throw new Error('本机生成草稿保存失败'); } };
+      const persistServer = async (body: Record<string, unknown>) => {
+        if (!accountUser || !draft?.id) return;
+        const response = await apiFetch(`/api/generation-drafts/${draft.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: draft.revision, ...body }) });
+        const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? payload.code ?? '服务器生成草稿保存失败');
+        const saved = payload.draft as SavedGenerationDraft;
+        draft = restoreGenerationDraft(saved); recoverableDraft = draft; setGenerationDraft(draft); setSavedGenerationDrafts(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+      };
+      if (draft) recoverableDraft = draft;
       const headers = { 'Content-Type': 'application/json' };
-      const provider = { ...(apiKey ? { apiKey } : {}), model };
-      if (!draft) {
-        const response = await apiFetch('/api/generation/outline', { method: 'POST', headers, body: JSON.stringify({ input, ...provider }), signal: controller.signal });
-        const payload = await response.json();
-        if (!response.ok) throw Object.assign(new Error(payload.error || payload.code || '课程总纲生成失败'), { code: payload.code });
-        draft = { input, outline: payload.outline as CurriculumOutline, stages: {} }; persistDraft(draft);
+      const provider = { ...(!accountUser && apiKey ? { apiKey } : {}), model };
+      if (!draft) throw new Error('生成草稿初始化失败');
+      if (draft.finalCampaign && draft.status === 'awaiting-confirmation') {
+        setPendingCampaign(draft.finalCampaign); setPendingDraftId(draft.id); setGenerationMessage('完整课程已从保存草稿恢复，等待你确认创建赛季。'); return;
       }
-      const totalBatches = draft.outline.stages.reduce((sum, stage) => sum + stage.branches.length + 1, 0);
-      const completedBatches = () => Object.values(draft!.stages).reduce((sum, chains) => sum + Object.keys(chains).length, 0);
-      setGenerationMessage(`课程总纲已就绪 · ${completedBatches()}/${totalBatches} 条任务链已生成`);
-      for (const plannedStage of draft.outline.stages) {
+      let callsMade = 0;
+      const requestGeneration = async (path: string, body: unknown) => {
+        let lastError: Error | undefined;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (callsMade >= 40) throw new Error('已达到单轮最多 40 次模型调用上限；草稿可恢复，稍后继续未完成批次。');
+          callsMade++;
+          try {
+            const response = await apiFetch(path, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
+            const payload = await response.json();
+            if (response.ok) return payload;
+            const code = payload.code ?? 'PROVIDER_ERROR';
+            const error = Object.assign(new Error(payload.error ?? code), { code, status: response.status });
+            if (attempt === 0 && ['PROVIDER_RATE_LIMIT','PROVIDER_UNAVAILABLE','REQUEST_TIMEOUT'].includes(code)) { lastError = error; await new Promise<void>((resolve, reject) => { const timer = window.setTimeout(resolve, 800); controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('Aborted','AbortError')); }, { once: true }); }); continue; }
+            throw error;
+          } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') throw error;
+            const transient = error instanceof TypeError;
+            if (attempt === 0 && transient) { lastError = error instanceof Error ? error : new Error('网络连接中断'); continue; }
+            throw error;
+          }
+        }
+        throw lastError ?? new Error('模型调用失败');
+      };
+      if (!draft.outline) {
+        await persistServer({ status: 'generating', progress: { completedTasks: 0, totalTasks: 0 } });
+        const payload = await requestGeneration('/api/generation/outline', { input, ...provider });
+        const nextOutline = payload.outline as CurriculumOutline;
+        draft = { ...draft, input, outline: nextOutline, stages: {}, status: 'partial' }; persistLocal(draft);
+        await persistServer({ status: 'partial', outline: nextOutline, progress: { completedTasks: 0, totalTasks: nextOutline.stages.flatMap(stage => [...stage.mainline, ...stage.branches.flatMap(branch => branch.tasks)]).length } });
+      }
+      const outline = draft.outline!;
+      const plannedTasks = outline.stages.flatMap(stage => [...stage.mainline, ...stage.branches.flatMap(branch => branch.tasks)]);
+      const totalBatches = outline.stages.reduce((sum, stage) => sum + Math.ceil(stage.mainline.length / 5) + stage.branches.reduce((branches, branch) => branches + Math.ceil(branch.tasks.length / 5), 0), 0);
+      const completedTasks = () => Object.values(draft!.stages).flatMap(chains => Object.values(chains)).reduce((sum, tasks) => sum + tasks.length, 0);
+      const completedBatches = () => Object.values(draft!.stages).flatMap(chains => Object.values(chains)).reduce((sum, tasks) => sum + Math.ceil(tasks.length / 5), 0);
+      if (totalBatches + 2 > 40) throw new Error('本课程需要超过 40 次模型调用；请缩小阶段或任务规模后重试。');
+      setGenerationMessage(`课程总纲已就绪 · ${completedBatches()}/${totalBatches} 批次，${completedTasks()}/${plannedTasks.length} 项任务已保存`);
+      for (const plannedStage of outline.stages) {
         const chains = [{ id: `${plannedStage.id}-main`, title: plannedStage.title, tasks: plannedStage.mainline }, ...plannedStage.branches];
         for (const chain of chains) {
-          if (draft.stages[plannedStage.id]?.[chain.id]) continue;
-          setGenerationMessage(`正在生成：${plannedStage.title} / ${chain.title} · 已完成 ${completedBatches()}/${totalBatches} 条链；取消后可从此处继续。`);
-          const response = await apiFetch('/api/generation/stage', { method: 'POST', headers, body: JSON.stringify({ input, outline: draft.outline, stageId: plannedStage.id, chainId: chain.id, ...provider }), signal: controller.signal });
-          const payload = await response.json();
-          if (!response.ok) throw Object.assign(new Error(`${plannedStage.title} / ${chain.title} 生成失败：${payload.error || payload.code || '请重试'}`), { code: payload.code });
-          draft = { ...draft, stages: { ...draft.stages, [plannedStage.id]: { ...draft.stages[plannedStage.id], [chain.id]: payload.tasks as Campaign['stages'][number]['tasks'] } } };
-          persistDraft(draft);
-          setGenerationMessage(`任务链已通过校验并保存：${plannedStage.title} / ${chain.title} · ${completedBatches()}/${totalBatches}。`);
+          for (let offset = 0; offset < chain.tasks.length; offset += 5) {
+            const chunk = chain.tasks.slice(offset, offset + 5);
+            const existing = new Set((draft.stages[plannedStage.id]?.[chain.id] ?? []).map(task => task.id));
+            const missing = chunk.filter(task => !existing.has(task.id));
+            if (!missing.length) continue;
+            setGenerationMessage(`生成 ${plannedStage.title} / ${chain.title} · ${completedBatches()}/${totalBatches} 批次，${completedTasks()}/${plannedTasks.length} 项任务；最多 40 次调用。`);
+            const batchKey = `${offset}-${missing.map(task => task.id).join('_')}`;
+            const payload = await requestGeneration('/api/generation/stage', { input, outline, stageId: plannedStage.id, chainId: chain.id, taskIds: missing.map(task => task.id), ...provider });
+            const tasks = payload.tasks as Campaign['stages'][number]['tasks'];
+            const mergedTasks: Task[] = [...(draft.stages[plannedStage.id]?.[chain.id] ?? []), ...tasks];
+            const mergedById = new Map<string, Task>(mergedTasks.map(task => [task.id, task]));
+            draft = { ...draft, stages: { ...draft.stages, [plannedStage.id]: { ...draft.stages[plannedStage.id], [chain.id]: [...mergedById.values()] }, }, status: 'partial' };
+            persistLocal(draft);
+            await persistServer({ status: 'partial', batch: { stageId: plannedStage.id, chainId: chain.id, batchKey, tasks }, progress: { completedTasks: completedTasks(), totalTasks: plannedTasks.length, stageTitle: plannedStage.title, chainTitle: chain.title } });
+          }
         }
       }
-      const response = await apiFetch('/api/generation/finalize', { method: 'POST', headers, body: JSON.stringify({ input, outline: draft.outline, stages: draft.outline.stages.map(stage => ({ id: stage.id, tasks: [{ id: `${stage.id}-main`, tasks: stage.mainline }, ...stage.branches].flatMap(chain => draft!.stages[stage.id][chain.id]) })) }), signal: controller.signal });
-      const payload = await response.json();
-      if (!response.ok) throw Object.assign(new Error(payload.error || payload.code || '最终课程规则校验失败'), { code: payload.code });
+      const finalizePayload = await requestGeneration('/api/generation/finalize', { input, outline, stages: outline.stages.map(stage => ({ id: stage.id, tasks: [{ id: `${stage.id}-main`, tasks: stage.mainline }, ...stage.branches].flatMap(chain => draft!.stages[stage.id][chain.id]) })) });
+      const payload = finalizePayload;
       const checked = campaignSchema.safeParse((payload as { campaign: Campaign }).campaign);
       if (!checked.success) throw new Error('服务端返回的课程未通过浏览器端 Schema 校验');
       const newCampaign = checked.data;
-      setPendingCampaign(newCampaign);
+      draft = { ...draft, finalCampaign: newCampaign, status: 'awaiting-confirmation' }; persistLocal(draft); await persistServer({ status: 'awaiting-confirmation', finalCampaign: newCampaign, progress: { completedTasks: plannedTasks.length, totalTasks: plannedTasks.length } });
+      setPendingCampaign(newCampaign); setPendingDraftId(draft.id);
       flash({ title: '课程蓝图已生成，等待确认', body: `${newCampaign.stages.length} 个阶段，${newCampaign.stages.reduce((n, stage) => n + stage.tasks.length, 0)} 个课程任务。确认后才会替换当前行动线。`, tone: 'success' });
-      try { sessionStorage.removeItem(storageKey); } catch { /* The confirmed course is already in memory; storage cleanup is best effort. */ }
-      setGenerationDraft(null); setGenerationMessage(`${newCampaign.stages.length} 个阶段的主线与支线均通过 Schema、依赖及预算校验，现可预览确认。`);
+      setGenerationMessage(`${newCampaign.stages.length} 个阶段的主线与支线均通过 Schema、依赖及预算校验；完整蓝图已保存，等待确认创建赛季。`);
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') { setGenerationMessage('生成已取消；总纲与已完成任务链仍暂存在本浏览器会话，点击“继续生成”补齐剩余部分。'); flash({ title: '已取消生成', body: '当前赛季与学习记录没有变化；通过校验的任务链已保留，可继续生成。', tone: 'warning' }); return; }
-      const message = error instanceof Error ? error.message : '连接 DeepSeek 时发生未知错误。';
+      const aborted = error instanceof DOMException && error.name === 'AbortError';
+      const message = aborted ? '生成已取消' : error instanceof Error ? error.message : '连接 DeepSeek 时发生未知错误。';
+      if (recoverableDraft?.id && accountUser) {
+        const code = aborted ? 'CANCELLED' : (error as Error & { code?: string })?.code ?? 'GENERATION_FAILED';
+        void apiFetch(`/api/generation-drafts/${recoverableDraft.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: aborted ? 'cancelled' : 'failed', failure: { code, message }, revision: recoverableDraft.revision }) }).then(async response => { if (response.ok) { const payload = await response.json() as { draft: SavedGenerationDraft }; setSavedGenerationDrafts(previous => [payload.draft, ...previous.filter(item => item.id !== payload.draft.id)]); } }).catch(() => undefined);
+      }
       setGenerationMessage(`生成中断：${message}。已完成阶段保留，点击“继续/重试”只补失败部分。`);
-      flash({ title: message, body: '当前赛季和进度已保留；已完成阶段保留，可重试失败步骤。', tone: 'warning' });
-    } finally { activeRequest.current = null; setBusy(null); }
+      flash({ title: message, body: '当前赛季和进度已保留；已通过校验的批次保留，可从失败位置继续。', tone: 'warning' });
+    } finally { window.clearTimeout(timeout); activeRequest.current = null; setBusy(null); }
   };
 
   const openGoal = () => { setPendingCampaign(null); setGoalOpen(true); };
@@ -479,7 +587,10 @@ function App() {
     setBusy('schedule'); setScheduleError(''); const controller = new AbortController(); activeRequest.current = controller;
     try {
       const budgetMinutes = getDailyBudgetMinutes(state, localDate);
-      const response = await apiFetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, progress: state.progress, reviews: state.reviews.filter(item => Date.parse(item.dueAt) <= Date.now()), minutes: budgetMinutes, date: localDate, adjustment: state.dailyAdjustments?.[localDate] ?? scheduleAdjustment, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+      const due = state.reviews.filter(item => Date.parse(item.dueAt) <= Date.now()).slice(0, 12);
+      const compactTask = (item: Task) => ({ id: item.id, title: item.title, brief: item.brief.slice(0, 500), minutes: item.minutes, track: item.track ?? 'main', chainId: item.chainId, prerequisites: item.prerequisites?.slice(0, 8), recallQuestion: item.recallQuestion?.slice(0, 400), deliverable: item.acceptance.slice(0, 400) });
+      const eligible = readyTasks.slice(0, 12);
+      const response = await apiFetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: { campaign: { id: campaign.id, title: campaign.title, goal: campaign.goal, dailyMinutes: campaign.dailyMinutes }, eligibleTasks: eligible.map(compactTask), completedTaskCount: doneMissions, dueReviews: due.map(card => ({ taskId: card.taskId, dueAt: card.dueAt, repetitions: card.repetitions, recallQuestion: allTasks.find(item => item.id === card.taskId)?.recallQuestion?.slice(0, 400) ?? '' })) }, minutes: budgetMinutes, date: localDate, adjustment: state.dailyAdjustments?.[localDate] ?? scheduleAdjustment, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
       const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? 'AI 节目表生成失败');
       const schedule = payload.schedule;
       if (schedule.totalMinutes > budgetMinutes || schedule.items.some((item: { kind: string }) => item.kind === 'video')) throw new Error('AI 节目表超出预算或包含未经检索核验的视频，请保留本地节目表');
@@ -525,7 +636,10 @@ function App() {
       flash({ title: result.passed ? 'AI 已确认任务掌握' : '发现几个待补线索', body: result.feedback, tone: result.passed ? 'success' : 'warning' });
       if (!result.passed && (connection.configured || apiKey)) {
         try {
-          const response = await apiFetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, currentTaskId: task.id, evidence, history: currentState.current.attempts?.[task.id] ?? [], remainingMinutes: Math.max(1, campaign.dailyMinutes - dailyPlan.totalMinutes), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+          const compactTask = (item: Task) => ({ id: item.id, title: item.title, brief: item.brief.slice(0, 500), minutes: item.minutes, track: item.track ?? 'main', prerequisites: item.prerequisites?.slice(0, 8), recallQuestion: item.recallQuestion?.slice(0, 400), acceptance: item.acceptance.slice(0, 400) });
+          const candidates = readyTasks.filter(item => item.id !== task.id).slice(0, 10);
+          const recentAttempts = (currentState.current.attempts?.[task.id] ?? []).slice(-5).map(attempt => ({ verification: attempt.verification, passed: attempt.passed, score: attempt.score, errorType: attempt.errorType, feedback: attempt.feedback.slice(0, 300) }));
+          const response = await apiFetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: { campaign: { id: campaign.id, title: campaign.title, goal: campaign.goal, dailyMinutes: campaign.dailyMinutes }, currentTask: compactTask(task), availableTasks: [task, ...candidates].map(compactTask) }, currentTaskId: task.id, evidence: evidence.slice(-4000), history: recentAttempts, remainingMinutes: Math.max(1, campaign.dailyMinutes - dailyPlan.totalMinutes), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
           const payload = await response.json(); if (response.ok && payload.recommendation) setAdaptation(payload.recommendation);
         } catch { /* Keep the evaluation feedback usable if adaptation is temporarily unavailable. */ }
       }
@@ -611,7 +725,9 @@ function App() {
   };
 
   const timeLabel = `${String(Math.floor(seconds / 3600)).padStart(2, '0')}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  const stageProgress = currentStage ? (currentStage.gateTaskIds ?? currentStage.mainlineTaskIds ?? currentStage.tasks.filter(item => (item.track ?? 'main') === 'main').map(item => item.id)).filter(id => state.progress[id]?.status === 'completed').length : 0;
+  const stageMainline = currentStage?.mainlineTaskIds ?? currentStage?.tasks.filter(item => (item.track ?? 'main') === 'main').map(item => item.id) ?? [];
+  const stageProgress = stageMainline.filter(id => state.progress[id]?.status === 'completed').length;
+  const renderedStageTasks = hideCompletedTasks ? visibleStageTasks.filter(item => state.progress[item.id]?.status !== 'completed') : visibleStageTasks;
 
   if (!authLoaded) return <main className="account-gate"><div role="status" className="account-panel">正在恢复账号会话…</div></main>;
   if (connection.accounts && !accountUser) return <AccountGate onAuthenticated={setAccountUser}/>;
@@ -657,6 +773,7 @@ function App() {
       </header>
 
       {saveError && <div className="storage-warning" role="alert"><span>{saveError}</span>{accountUser ? <div className="storage-actions">{syncStatus === 'conflict' ? <><button onClick={() => { const blob = new Blob([exportState(currentState.current)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'ninegrid-unsynced-draft.json'; link.click(); URL.revokeObjectURL(link.href); }}>导出本机草稿</button><button onClick={() => void recoverServerArchive('server')}>加载服务器版本（放弃本机草稿）</button></> : <button onClick={() => void recoverServerArchive('retry')}>重试同步</button>}</div> : <button onClick={() => { setAllowOverwrite(true); setSaveError(''); }}>我已备份旧存档，允许使用新存档</button>}</div>}
+      {accountUser && savedGenerationDrafts.find(draft => draft.status !== 'activated') && <div className="storage-warning" role="status"><span>服务器有可恢复的课程草稿：{savedGenerationDrafts.find(draft => draft.status !== 'activated')?.status === 'awaiting-confirmation' ? '完整课程待确认' : '已保存部分生成结果'}。</span><button onClick={() => restoreSavedGenerationDraft(savedGenerationDrafts.find(draft => draft.status !== 'activated')!)}>恢复生成草稿</button></div>}
 
       <div className="page-wrap">
         <section className="season-banner">
@@ -717,15 +834,18 @@ function App() {
           </aside>
 
           <section className="mission-board" aria-label="阶段任务列表">
-            <div className="board-header"><div><span className="micro-label">ZONE {String(selectedStage + 1).padStart(2, '0')} <i>·</i> {String(currentStage?.tasks.length ?? 0).padStart(2, '0')} TASKS</span><h2>{currentStage?.title ?? '行动区域'}</h2><small>阶段通关：完成 {currentStage?.gateTaskIds?.length ?? currentStage?.mainlineTaskIds?.length ?? currentStage?.tasks.filter(item => (item.track ?? 'main') === 'main').length} 项主线任务；支线完全自愿</small></div><span className="stage-counter">{String(stageProgress).padStart(2, '0')} <i>/</i> {String(currentStage?.gateTaskIds?.length ?? currentStage?.mainlineTaskIds?.length ?? currentStage?.tasks.filter(item => (item.track ?? 'main') === 'main').length ?? 0).padStart(2, '0')}<small>主线已验收</small></span></div>
+            <div className="board-header"><div><span className="micro-label">ZONE {String(selectedStage + 1).padStart(2, '0')} <i>·</i> {String(currentStage?.tasks.length ?? 0).padStart(2, '0')} TASKS</span><h2>{currentStage?.title ?? '行动区域'}</h2><small>主线 {stageProgress}/{stageMainline.length} 项完成 · 全部 {currentStage?.tasks.length ?? 0} 项 · 支线自愿</small><small className="stage-completion-note">阶段通关需完成本阶段全部 {stageMainline.length} 项主线任务，支线不计入门槛。</small></div><span className="stage-counter">{String(stageProgress).padStart(2, '0')} <i>/</i> {String(stageMainline.length).padStart(2, '0')}<small>主线任务已完成</small></span></div>
             {currentStage?.chains && <div className="chain-tabs" role="tablist" aria-label="选择主线或支线">{currentStage.chains.map(chain => <button type="button" role="tab" aria-selected={activeChainId === chain.id} key={chain.id} className={activeChainId === chain.id ? 'chain-tab chain-tab-active' : 'chain-tab'} onClick={() => setSelectedChainId(chain.id)}>{chain.track === 'main' ? '主线' : '支线'} · {chain.title}<small>{chain.taskIds.filter(id => state.progress[id]?.status === 'completed').length}/{chain.taskIds.length}</small></button>)}</div>}
+            <div className="mission-list-controls"><span>当前列表 {renderedStageTasks.length}/{visibleStageTasks.length}</span><button type="button" className="text-button" onClick={() => setHideCompletedTasks(value => !value)}>{hideCompletedTasks ? '显示已完成' : '收起已完成'}</button></div>
             <div className="mission-scroll">
-              {visibleStageTasks.map((item, index) => {
+              {renderedStageTasks.map((item, index) => {
                 const progress = state.progress[item.id];
                 const unlocked = isTaskUnlocked(campaign, state.progress, item.id);
                 const active = item.id === task.id;
-                return <button key={item.id} className={`mission-row ${active ? 'mission-active' : ''} ${!unlocked ? 'mission-locked' : ''} ${progress?.status === 'completed' ? 'mission-completed' : ''}`} onClick={() => beginTask(item)}>
-                  <span className="mission-ordinal">{String(index + 1).padStart(2, '0')}</span><span className="mission-data"><span className="mission-kicker"><i className={`task-dot dot-${item.kind}`}/>{item.kind === 'boss' ? '终局任务' : item.kind === 'recall' ? '主动回忆' : item.kind === 'practice' ? '实战突破' : '调查行动'}<span className="mission-xp">★ {item.xp}</span></span><strong>{item.title}</strong><small>{item.minutes} 分钟目标时长</small></span>
+                const missing = [...(item.prerequisites ?? []), ...(item.unlockAfter ?? [])].filter(id => state.progress[id]?.status !== 'completed');
+                const lockReason = unlocked ? '' : missing.length ? `待完成前置：${missing.map(id => allTasks.find(candidate => candidate.id === id)?.title ?? id).join('、')}` : '前置阶段尚未完成验收';
+                return <button key={item.id} data-task-id={item.id} aria-current={active ? 'true' : undefined} className={`mission-row ${active ? 'mission-active' : ''} ${!unlocked ? 'mission-locked' : ''} ${progress?.status === 'completed' ? 'mission-completed' : ''}`} onClick={() => beginTask(item)}>
+                  <span className="mission-ordinal">{String(index + 1).padStart(2, '0')}</span><span className="mission-data"><span className="mission-kicker"><i className={`task-dot dot-${item.kind}`}/>{item.kind === 'boss' ? '终局任务' : item.kind === 'recall' ? '主动回忆' : item.kind === 'practice' ? '实战突破' : '调查行动'}<span className="mission-xp">★ {item.xp}</span></span><strong>{item.title}</strong><small>{item.minutes} 分钟目标时长</small>{lockReason && <small className="mission-lock-reason">{lockReason}</small>}</span>
                   <span className={`mission-status ${progress?.status === 'completed' ? 'done' : ''}`}>{progress?.status === 'completed' ? <CircleCheck size={16}/> : unlocked ? active ? <span className="now-playing"/> : <ChevronDown size={15}/> : <LockKeyhole size={14}/>}</span>
                   <span className="mission-meter">{progress?.status === 'completed' ? '已完成' : unlocked ? '已部署' : '预览 · 待解锁'}<small>+{getTaskReward(item).xp} XP · +{getTaskReward(item).coins} 学习币{getTaskReward(item).items.length ? ' · 徽记' : ''}</small></span>
                 </button>;
@@ -774,7 +894,7 @@ function App() {
         <footer className="global-footer"><span>九格行动 <i>·</i> 每一格，都由真正掌握解锁。</span><span>SESSION <i>—</i> {timeLabel}</span><span>休息也是行动计划的一部分。</span></footer>
       </div>
 
-      {goalOpen && <GoalModal goal={goal} level={level} days={days} minutes={dailyMinutes} reward={reward} connection={connection} model={model} busy={busy === 'generate'} apiKey={apiKey} sourceMaterial={sourceMaterial} language={languagePreference} inferred={extractedPreferences} preview={pendingCampaign} generationMessage={generationMessage} onGoal={handleGoalText} onLevel={setLevel} onDays={setDays} onMinutes={setDailyMinutes} onReward={setReward} onSourceMaterial={setSourceMaterial} onLanguage={setLanguagePreference} onModel={setModel} onApiKey={setApiKey} onLoadNumpy={loadNumpyBlueprint} onAccept={activateBlueprint} onCancelGeneration={() => activeRequest.current?.abort()} onFile={async event=>{const file=event.target.files?.[0];if(!file)return;try{if(file.size>2000000)throw new Error('文本材料不能超过 2 MB');const text=await file.text();setSourceMaterial(text.slice(0,20000));flash({title:'材料已读取',body:`已从 ${file.name} 读取 ${text.length} 个字符；内容会作为课程资料依据。`,tone:'success'});}catch(error){flash({title:'材料读取失败',body:error instanceof Error?error.message:'请粘贴纯文本材料。',tone:'warning'});}finally{event.target.value='';}}} onClose={() => { if(busy==='generate')activeRequest.current?.abort(); setGoalOpen(false); setApiKey(''); }} onGenerate={runGeneration}/>}
+      {goalOpen && <GoalModal goal={goal} level={level} days={days} minutes={dailyMinutes} reward={reward} connection={connection} model={model} busy={busy === 'generate'} apiKey={apiKey} sourceMaterial={sourceMaterial} language={languagePreference} inferred={extractedPreferences} preview={pendingCampaign} generationMessage={generationMessage} onGoal={handleGoalText} onLevel={setLevel} onDays={setDays} onMinutes={setDailyMinutes} onReward={setReward} onSourceMaterial={setSourceMaterial} onLanguage={setLanguagePreference} onModel={setModel} onApiKey={setApiKey} onLoadNumpy={loadNumpyBlueprint} onAccept={activateBlueprint} onCancelGeneration={() => activeRequest.current?.abort()} onFile={async event=>{const file=event.target.files?.[0];if(!file)return;try{if(file.size>2000000)throw new Error('文本材料不能超过 2 MB');const text=await file.text();setSourceMaterial(text);flash({title:'材料已读取',body:`已完整读取 ${file.name}，共 ${text.length} 字符。${text.length>20000?'超出 20000 字符生成上限，请在文本框中手动截取并注明范围。':'内容可作为课程资料依据。'}`,tone:text.length>20000?'warning':'success'});}catch(error){flash({title:'材料读取失败',body:error instanceof Error?error.message:'请粘贴纯文本材料。',tone:'warning'});}finally{event.target.value='';}}} onClose={() => { if(busy==='generate')activeRequest.current?.abort(); setGoalOpen(false); setApiKey(''); }} onGenerate={runGeneration}/>}
       {settingsOpen && <SettingsModal apiKey={apiKey} model={model} connection={connection} onApiKey={setApiKey} onModel={setModel} onClose={() => { setSettingsOpen(false); setApiKey(''); }} onApply={() => { setSettingsOpen(false); flash({ title: '连接设置已应用', body: '密钥仅保留在当前页面内存，刷新后需要重新输入。', tone: 'success' }); }}/ >}
       {notification && <div className={`toast ${notification.tone ?? ''}`} role="status"><span className="toast-icon">{notification.tone === 'success' ? <CircleCheck size={16}/> : <Activity size={16}/>}</span><span><strong>{notification.title}</strong>{notification.body && <small>{notification.body}</small>}</span><button className="icon-button compact" onClick={() => setNotification(null)} aria-label="关闭通知"><X size={14}/></button></div>}
     </main>
@@ -786,7 +906,7 @@ function GoalModal({ goal, level, days, minutes, reward, connection, model, busy
     <div className="modal-topline"><span><Sparkles size={15}/> OPERATION DESIGN TERMINAL</span><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></div>
     <div className="modal-heading"><span className="modal-icon"><Target size={19}/></span><div><h2 id="goal-modal-title">{preview ? '课程蓝图 · 部署前预览' : '输入你想学习的内容。'}</h2><p>自然语言、教学大纲或考试范围均可；AI 会先给出课程蓝图，确认后才开始保存为新目标。</p></div></div>
     {!preview && <><label className="form-field goal-field"><span><b>01</b>你想学习什么？</span><textarea value={goal} onChange={event => onGoal(event.target.value)} minLength={12} maxLength={8000} placeholder="例如：我刚学 NumPy 的 ndarray、shape、dtype，希望四周后能独立完成基础数据处理，为机器学习做准备。每天一小时，英文为主、中文辅助。我看讲解能懂，但自己经常不会写代码。" /><small className="field-hint">系统会从描述中提取起点、预算、周期与偏好；生成后请核对蓝图再确认。</small>{(inferred.days||inferred.dailyMinutes||inferred.language)&&<small className="extracted-preferences">识别到：{inferred.days?`${inferred.days} 天`:'周期未提取'} · {inferred.dailyMinutes?`${inferred.dailyMinutes} 分钟/日`:'每日预算使用可编辑默认值'} · {inferred.language==='en'?'英文':inferred.language==='zh'?'中文':'英文为主、中文辅助'}；下方字段已更新，可直接修改。</small>}</label>
-    <label className="form-field material-field"><span><b>02</b>课程大纲 / 知识点 / 考试范围 <small>可选，可粘贴或读取本地纯文本文件</small></span><textarea value={sourceMaterial} onChange={event=>onSourceMaterial(event.target.value)} maxLength={20000} placeholder="粘贴教材目录、课程大纲或你整理的知识点。链接请粘贴实际摘录；应用不会假装已读取网页。"/><input aria-label="读取本地文本材料" type="file" accept=".txt,.md,.csv,text/plain,text/markdown" onChange={onFile}/><small className="field-hint">仅把粘贴内容或成功读取的文本文件作为依据。链接内容需先自行粘贴。</small></label>
+    <label className="form-field material-field"><span><b>02</b>课程大纲 / 知识点 / 考试范围 <small>可选，可粘贴或读取本地纯文本文件</small></span><textarea value={sourceMaterial} onChange={event=>onSourceMaterial(event.target.value)} placeholder="粘贴教材目录、课程大纲或你整理的知识点。链接请粘贴实际摘录；应用不会假装已读取网页。"/><input aria-label="读取本地文本材料" type="file" accept=".txt,.md,.csv,text/plain,text/markdown" onChange={onFile}/><small className={`field-hint ${sourceMaterial.length>20000?'field-error':''}`}>已读取 {sourceMaterial.length} / 20000 字符。超限时不会截断冒充完整阅读；请手动选择范围并保留页码或段落说明。只有所贴文本会被用于生成。</small></label>
     <div className="form-columns"><label className="form-field"><span><b>02</b>当前基础</span><select value={level} onChange={event => onLevel(event.target.value)}><option>零基础</option><option>了解一些，需要补基础</option><option>已有基础，想进阶</option><option>有经验，冲刺专精</option></select></label><label className="form-field"><span><b>03</b>赛季长度 <small>天</small></span><input type="number" min={1} max={365} value={days} onChange={event => onDays(Math.max(1, Math.min(365, Number(event.target.value))))}/></label></div>
     <div className="form-columns"><label className="form-field"><span><b>04</b>每天预算 <small>分钟</small></span><input type="number" min={1} max={1440} step={5} value={minutes} onChange={event => onMinutes(Math.max(1, Math.min(1440, Number(event.target.value))))}/></label><label className="form-field"><span><b>05</b>最终交付成果 <small>可修改</small></span><input value={reward} maxLength={2000} onChange={event => onReward(event.target.value)} placeholder="描述你想独立完成的成果"/></label></div>
     <label className="form-field"><span><b>06</b>语言偏好</span><select value={language} onChange={event=>onLanguage(event.target.value as 'en'|'zh'|'mixed')}><option value="mixed">英文为主，中文辅助</option><option value="en">简单英文为主</option><option value="zh">中文为主</option></select></label></>}

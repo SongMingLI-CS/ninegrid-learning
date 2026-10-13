@@ -32,8 +32,8 @@ const units: Unit[][] = [
   ],
   [
     ['回忆诊断：索引坐标顺序','从 shape 推导有效下标','对 3×4 数组预测 arr[1,2]，并判断两个边界下标是否合法。','预测、运行输出和边界判断'],
-    ['读取单个二维元素','arr[row, column]','按题目给定行列读取 3 个值，先写坐标再执行。','索引表达式与输出清单'],
-    ['选择完整的一行','整数索引与轴压缩','比较 arr[1] 与 arr[1:2] 的 shape，解释整数索引压掉哪一轴。','两种结果的 shape 和说明'],
+    ['读取单个二维元素','arr[row, column]','使用 scores=np.array([[8,5,9],[6,7,4],[10,3,8]])，先预测 (0,2)、(1,1)、(2,0) 三个坐标的值，再运行核对；最后测试一个越界坐标。','三个坐标的预测与输出、一个越界测试及说明'],
+    ['选择完整的一行','整数索引与轴压缩','对 scores=np.array([[8,5,9],[6,7,4],[10,3,8]]) 比较 scores[1] 与 scores[1:2]，写出两种 shape 并解释保留轴数的差别。','两种结果的 shape 和说明'],
     ['切片起点与终点','半开区间边界','用 1:4 选择行，逐项标注纳入和排除的位置。','下标清单和切片结果'],
     ['同时切行与列','二维切片组合','从 5×4 数组取指定 2×2 子块，写出切片前预测 shape。','子数组、shape 与预测'],
     ['使用省略号保留尾部轴','ellipsis 索引','在三维小数组中固定首轴位置并选取最后一列，解释省略部分。','表达式、输出 shape 与解释'],
@@ -49,7 +49,7 @@ const units: Unit[][] = [
   ],
   [
     ['回忆诊断：预测 axis 输出','维度消去规则','在 3×2 数据上预测 sum(axis=0/1) 的 shape 和值。','预测表与实际核验'],
-    ['按列汇总行样本','axis=0 聚合','计算每列均值并将两个结果对应回数据列语义。','聚合代码与列标签'],
+    ['按列汇总行样本','axis=0 聚合','给定 readings=np.array([[10,12],[14,16],[18,20]])，先手算两列均值，再运行 mean(axis=0) 并把结果对应到温度与湿度标签。','聚合代码、[14,16] 输出与列语义'],
     ['按行汇总观测','axis=1 聚合','计算每行总量，预测输出长度并用手算复核一行。','每行结果与手算记录'],
     ['选择聚合函数','sum / mean / min / max','对同一组值计算四类摘要，说明各自回答的问题。','四类摘要与适用问题'],
     ['保持维度便于广播','keepdims=True','对行求均值并保留轴，打印前后 shape。','两个 shape 与后续用途说明'],
@@ -65,7 +65,7 @@ const units: Unit[][] = [
     ['主线验收：向量化摘要函数','axis、广播和测试迁移','独立实现按列标准化与按行摘要，验证 shape、数值和零值边界。','带断言的小型可复用分析模块'],
   ],
   [
-    ['项目诊断：定义输入输出契约','表格 schema 与检查','给虚构传感器数据定义行列含义、合法 dtype、异常值规则。','输入契约与两条断言'],
+    ['项目诊断：定义输入输出契约','表格 schema 与检查','用虚构表 readings=[[20,45],[22,48],[999,51]]（列为摄氏温度与湿度），定义两列范围、整数/浮点 dtype 约定及异常值行规则；写出拒绝 999 的断言。','输入契约、异常行判断与两条可执行断言'],
     ['生成可重复的模拟数据','default_rng 与随机种子','使用 default_rng 固定 seed 造样本，重复运行并比较完全一致。','随机数据脚本与复现证明'],
     ['拆分特征列与标签列','切片和列语义','从二维样本表分离特征矩阵 X 和目标 y，核对行数。','X/y 构造与 shape 断言'],
     ['检查缺失值分布','isnan 与有效计数','为模拟列插入 NaN，逐列统计缺失比例而不先填补。','缺失计数表和脚本'],
@@ -113,15 +113,15 @@ function task(id: string, unit: Unit, chainId: string, track: TrackName, minutes
     id, title, track, chainId, kind: index === 14 && track === 'main' ? 'boss' : index === 0 ? 'investigate' : 'practice',
     minutes, xp: index === 14 && track === 'main' ? 160 : 35,
     prerequisites, objectives: [{ id: outcomeId, text: artifact }],
-    brief: `${point}。${action}`, curiosity: `好奇问题：什么会改变 ${point} 的结果？先预测，再用最小数据实验验证。`,
-    steps: [`闭卷写下你对 ${point} 的预测。`, `运行或手算一个最小例子：${action}`, `比较预测与实测，记录差异与原因。`],
+    brief: `${point}。${action}`, curiosity: `具体问题：${action} 中改变输入或边界后，${point} 的输出会如何变化？先预测，再验证。`,
+    steps: [`闭卷写下本题输入、预期输出和你对 ${point} 的预测。`, `执行本题练习：${action}`, `将实际结果与预测逐项比较，保留一个边界或错误样例，并说明差异。`],
     acceptance: `交付${artifact}；包含输入与预期，附实际输出，并能解释 ${point} 的关键选择。`,
     recallQuestion: `${point} 的关键规则是什么？给出一个反例或边界情况。`,
     hint: `先把输入 shape 和期望输出写下来，再试最小样本。${action}`,
     resources: [{ title: 'NumPy 官方快速入门', url: doc }],
     knowledgePoints: [point], knownBasis: '已学 Python 列表、数字与 ndarray / shape / dtype；本任务只依赖其明确列出的前置任务。',
     deliverable: `提交：${artifact}`,
-    hints: ['先画出输入的维度与数据标签。', `用 2–4 个值构造最小例子，验证：${action}`, '把边界输入也写成断言，解释失败意味着什么。'],
+    hints: [`先整理本题输入与标签，找出“${point}”对应的轴、索引或类型。`, `按这个具体步骤检查：${action}`, `加入一个边界输入，对“${artifact}”写断言；根据失败值定位原因。`],
   };
 }
 
@@ -148,7 +148,7 @@ const stages: Stage[] = units.map((mainUnits, stageIndex) => {
 
 const gridLabels: [string,string,string][] = [
   ['shape解释','读懂维度','numpy-read-shape'],['array构造','创建规则数据','numpy-build-array'],['dtype核验','检查表示与转换','numpy-v3-foundation-m07'],
-  ['整数索引','定位数组元素','numpy-v3-selection-m02'],['切片选择','按范围取得子数组','numpy-v3-selection-m05'],['布尔筛选','按条件选择记录','numpy-v3-selection-m10'],
+  ['整数索引','定位数组元素','numpy-v3-selection-m03'],['切片选择','按范围取得子数组','numpy-v3-selection-m05'],['布尔筛选','按条件选择记录','numpy-v3-selection-m10'],
   ['筛选作品','独立交付筛选器','numpy-v3-selection-m15'],['广播与向量化','建立兼容计算','numpy-v3-compute-m15'],['数据处理作品','交付可复现项目','numpy-v3-project-m15'],
 ];
 

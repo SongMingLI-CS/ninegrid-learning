@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { randomBytes, createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readFile, readdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -24,6 +24,20 @@ const require = createRequire(import.meta.url);
 const platform = process.platform === 'win32' ? 'windows' : process.platform;
 const native = resolve(dirname(require.resolve(`@embedded-postgres/${platform}-${process.arch}`)), '..', 'native');
 await cp(native, join(root, 'runtime'), { recursive: true, dereference: true });
+if (process.platform === 'darwin') {
+  const libraryDir = join(root, 'runtime', 'lib');
+  for (const component of ['icudata', 'icui18n', 'icuuc', 'zstd', 'lz4', 'z']) {
+    const entries = await readdir(libraryDir);
+    const versioned = entries.find(name => name.startsWith(`lib${component}.`) && name.endsWith('.dylib'));
+    const major = versioned?.match(/\.(\d+)\./)?.[1];
+    if (versioned && major && !entries.includes(`lib${component}.${major}.dylib`)) {
+      await symlink(versioned, join(libraryDir, `lib${component}.${major}.dylib`));
+    }
+    if (versioned && !entries.includes(`lib${component}.dylib`)) {
+      await symlink(versioned, join(libraryDir, `lib${component}.dylib`));
+    }
+  }
+}
 const bin = join(root, 'runtime', 'bin');
 const extension = process.platform === 'win32' ? '.exe' : '';
 const execute = promisify(execFile);
@@ -87,6 +101,18 @@ try {
   const register = async (agent: typeof a, email: string) => { const token = await csrf(agent); return (await agent.post('/api/auth/register').set('x-csrf-token', token).send({ email, password: 'independent-test-passphrase-2026' }).expect(201)).body.user; };
   const userA = await register(a, 'integration-a@example.com'); await register(b, 'integration-b@example.com');
   const created = await a.post('/api/seasons').set('x-csrf-token', await csrf(a)).send({ state: newState() }).expect(201);
+  const draftInput = { goal: NUMPY_DEMO_CAMPAIGN.goal, level: '已学 ndarray、shape、dtype', days: 28, dailyMinutes: 30, ultimateReward: '完成可验证的数据处理作品' };
+  const draftResponse = await a.post('/api/generation-drafts').set('x-csrf-token', await csrf(a)).send({ input: draftInput, rulesVersion: 4 }).expect(201);
+  const draftId = draftResponse.body.draft.id as string;
+  await b.get('/api/generation-drafts').expect(200).then(response => assert.equal(response.body.drafts.some((item: { id: string }) => item.id === draftId), false));
+  const draftCampaign = { ...structuredClone(NUMPY_DEMO_CAMPAIGN), id: randomUUID() };
+  const waitingDraft = await a.patch(`/api/generation-drafts/${draftId}`).set('x-csrf-token', await csrf(a)).send({ revision: draftResponse.body.draft.revision, finalCampaign: draftCampaign, status: 'awaiting-confirmation' }).expect(200);
+  const activated = await a.post(`/api/generation-drafts/${draftId}/activate`).set('x-csrf-token', await csrf(a)).send({}).expect(201);
+  const activatedAgain = await a.post(`/api/generation-drafts/${draftId}/activate`).set('x-csrf-token', await csrf(a)).send({}).expect(200);
+  assert.equal(activated.body.season.id, activatedAgain.body.season.id);
+  assert.equal(activatedAgain.body.idempotent, true);
+  assert.equal(waitingDraft.body.draft.status, 'awaiting-confirmation');
+  results.push('account-scoped generation drafts persist in PostgreSQL and repeated activation creates one season');
   const season = created.body.season; const taskId = season.state.campaign.stages[0].tasks[0].id;
   await b.get(`/api/seasons/${season.id}`).expect(404);
   await b.put(`/api/seasons/${season.id}`).set('x-csrf-token', await csrf(b)).send({ revision: 1, state: season.state }).expect(404);

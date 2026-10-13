@@ -77,6 +77,7 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
     <section className="lesson-objectives"><strong>本次能力目标</strong>{task.objectives.map(objective=><label key={objective.id}><input type="checkbox" checked={progress.completedObjectives.includes(objective.id)} disabled={locked} onChange={()=>onObjective?.(objective.id)}/>{objective.text}</label>)}</section>
     {content ? <>
       <section className="lesson-purpose"><strong>这次要解决的问题</strong><p>{content.purpose}</p></section>
+      {content.sourceBasis && <p className="source-provenance" role="note">材料依据：{content.sourceBasis === 'none' ? '无用户材料，本课使用通用知识。' : content.sourceBasis === 'material' ? '直接依据本次提供的材料摘录。' : '材料摘录与通用补充已区分。'}{content.sourceNotes?.length ? ` ${content.sourceNotes.join('；')}` : ''}</p>}
       <section className="lesson-explanation"><div className="lesson-section-heading"><h3>讲解</h3><button type="button" className="text-button" onClick={() => setShowChinese(value => !value)}>{showChinese ? '收起中文辅助' : '展开中文辅助'}</button></div><div className="lesson-copy">{content.explanation}</div>
         {showChinese && <dl className="term-list">{content.terms.map((term, index) => <div key={`${term.en}-${index}`}><dt>{term.en}<span>{term.zh}</span></dt><dd>{term.context}</dd></div>)}</dl>}
       </section>

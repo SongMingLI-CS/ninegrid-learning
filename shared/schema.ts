@@ -23,6 +23,7 @@ export const lessonContentSchema = z.object({
   example: z.object({ prompt: text(2000), code: text(12000), walkthrough: text(4000) }),
   guidedPractice: z.object({ prompt: text(3000), expected: text(2000), hint: text(1000) }),
   challenge: z.object({ prompt: text(4000), acceptance: text(3000), hints: z.array(text(1000)).min(1).max(5) }),
+  sourceBasis: z.enum(['none','material','mixed']).optional(), sourceNotes: z.array(text(1000)).max(10).optional(),
   language: z.enum(['en', 'zh', 'mixed']), generatedAt: dateSchema, revision: z.number().int().min(1).max(1000),
 });
 export const dailyScheduleSchema = z.object({
@@ -88,23 +89,60 @@ export const campaignSchema = z.object({
   const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
   if (!unique(campaign.stages.map(stage => stage.id))) issue('阶段 ID 必须唯一');
   const tasks = campaign.stages.flatMap(stage => stage.tasks);
+  const declaredMainline = new Set(campaign.stages.flatMap(stage => stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id)));
   if (!unique(tasks.map(task => task.id))) issue('任务 ID 必须唯一');
   if (!unique(tasks.flatMap(task => task.objectives.map(objective => objective.id)))) issue('目标 ID 必须全局唯一');
   const byId = new Map(tasks.map(task => [task.id, task]));
   const taskIds = new Set(byId.keys());
+  const stageByTask = new Map<string, typeof campaign.stages[number]>();
+  for (const stage of campaign.stages) for (const task of stage.tasks) stageByTask.set(task.id, stage);
+  const chainById = new Map<string, { stage: typeof campaign.stages[number]; chain: NonNullable<typeof campaign.stages[number]['chains']>[number] }>();
   for (const stage of campaign.stages) {
+    if (stage.chains && !unique(stage.chains.map(chain => chain.id))) issue(`阶段 ${stage.id} 的任务链 ID 必须唯一`);
+    for (const chain of stage.chains ?? []) {
+      if (chainById.has(chain.id)) issue(`任务链 ID 必须跨阶段唯一：${chain.id}`);
+      chainById.set(chain.id, { stage, chain });
+      if (!chain.taskIds.every(id => stage.tasks.some(task => task.id === id))) issue(`任务链 ${chain.id} 必须只引用当前阶段的任务`);
+      if (chain.track === 'main' && chain.taskIds.some(id => (byId.get(id)?.track ?? 'main') !== 'main')) issue(`主线任务链 ${chain.id} 不能包含支线任务`);
+      if (chain.track === 'branch' && chain.taskIds.some(id => byId.get(id)?.track !== 'branch')) issue(`支线任务链 ${chain.id} 不能包含主线任务`);
+    }
     for (const id of [...(stage.mainlineTaskIds ?? []), ...(stage.gateTaskIds ?? []), ...(stage.chains ?? []).flatMap(chain => chain.taskIds)]) {
       if (!taskIds.has(id)) issue(`阶段 ${stage.id} 引用了不存在的任务：${id}`);
     }
-    for (const chain of stage.chains ?? []) if (chain.track === 'main' && chain.taskIds.some(id => !stage.tasks.some(task => task.id === id))) issue(`主线任务链必须属于当前阶段：${chain.id}`);
-    for (const task of stage.tasks) if (task.chainId && !(stage.chains ?? []).some(chain => chain.id === task.chainId)) issue(`任务 ${task.id} 引用了不存在的任务链`);
+    const mainline = stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id);
+    if (stage.mainlineTaskIds && (!unique(stage.mainlineTaskIds) || stage.mainlineTaskIds.some(id => !stage.tasks.some(task => task.id === id) || (byId.get(id)?.track ?? 'main') !== 'main'))) issue(`阶段 ${stage.id} 的主线引用无效`);
+    if (stage.gateTaskIds && (!stage.gateTaskIds.length || !unique(stage.gateTaskIds) || stage.gateTaskIds.some(id => !mainline.includes(id)))) issue(`阶段 ${stage.id} 的门槛必须属于主线`);
+    for (const task of stage.tasks) {
+      if (campaign.curriculumRulesVersion === 4 && stage.chains?.length && !task.chainId) issue(`阶段 ${stage.id} 的任务必须归属任务链`);
+      if (task.chainId) {
+        const owner = chainById.get(task.chainId);
+        if (!owner || owner.stage.id !== stage.id || !owner.chain.taskIds.includes(task.id)) issue(`任务 ${task.id} 的任务链归属不正确`);
+        else if (owner.chain.track !== (task.track ?? 'main')) issue(`任务 ${task.id} 与任务链类型不一致`);
+      }
+    }
   }
   const stages = new Map(campaign.stages.flatMap((stage, i) => stage.tasks.map(task => [task.id, i] as const)));
   for (const task of tasks) {
-    for (const prerequisite of task.prerequisites) {
+    for (const prerequisite of [...task.prerequisites, ...(task.unlockAfter ?? [])]) {
       if (!byId.has(prerequisite)) issue(`任务 ${task.id} 的前置任务不存在：${prerequisite}`);
       else if (stages.get(prerequisite)! > stages.get(task.id)!) issue(`任务 ${task.id} 不能依赖后续阶段`);
+      else {
+        const parent = byId.get(prerequisite)!;
+        if ((task.track ?? 'main') === 'main' && (parent.track ?? 'main') === 'branch') issue(`主线任务 ${task.id} 不能依赖可选支线`);
+        const taskStage = stageByTask.get(task.id)!;
+        const parentStage = stageByTask.get(prerequisite)!;
+        if (taskStage.id !== parentStage.id) {
+          const parentIndex = campaign.stages.findIndex(item => item.id === parentStage.id);
+          const taskIndex = campaign.stages.findIndex(item => item.id === taskStage.id);
+          if (campaign.curriculumRulesVersion === 4 && (parentIndex !== taskIndex - 1 || !(parentStage.gateTaskIds ?? []).includes(prerequisite))) issue(`跨阶段依赖 ${prerequisite} 必须经过紧邻前一阶段的门槛`);
+        }
+      }
     }
+  }
+  for (const grid of campaign.nineGrid ?? []) {
+    if (!unique(grid.unlockTaskIds) || grid.unlockTaskIds.some(id => !byId.has(id))) issue(`九格成果 ${grid.id} 引用了不存在或重复的任务`);
+    else if (grid.unlockTaskIds.some(id => (byId.get(id)?.track ?? 'main') !== 'main' || !declaredMainline.has(id))) issue(`九格成果 ${grid.id} 必须由主线能力证据解锁`);
+    if (!grid.ability.trim() || !grid.value.trim()) issue(`九格成果 ${grid.id} 必须描述可验证的能力证据`);
   }
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -112,7 +150,7 @@ export const campaignSchema = z.object({
     if (visiting.has(id)) return false;
     if (visited.has(id)) return true;
     visiting.add(id);
-    for (const dependency of byId.get(id)?.prerequisites ?? []) if (!visit(dependency)) return false;
+    for (const dependency of [...(byId.get(id)?.prerequisites ?? []), ...(byId.get(id)?.unlockAfter ?? [])]) if (!visit(dependency)) return false;
     visiting.delete(id); visited.add(id);
     return true;
   };

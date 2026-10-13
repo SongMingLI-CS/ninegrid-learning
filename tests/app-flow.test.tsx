@@ -63,6 +63,16 @@ describe('NumPy learning flow in the interface', () => {
     expect(restored.progress['numpy-read-shape'].evidence).toBe(evidence);
   });
 
+  it('explains full mainline completion and separates optional branch task counts', async () => {
+    render(<App/>);
+    await screen.findByRole('heading', { name: 'NumPy 数据准备行动' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '课程总览' }));
+    expect(screen.getByText(/主线\s+0\s*\/\s*15\s*项完成 · 全部\s+24\s*项 · 支线自愿/)).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /主线 · 主线 · 数组构造、形状与数据类型/ })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /支线 · 支线 · 应用探索/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '收起已完成' })).toBeTruthy();
+  });
+
   it('allows a self-completed task to keep its evidence and upgrade to AI verification once', async () => {
     let evaluationCalls = 0;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

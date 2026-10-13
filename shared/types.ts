@@ -10,6 +10,7 @@ export interface LessonContent {
   example: { prompt: string; code: string; walkthrough: string };
   guidedPractice: { prompt: string; expected: string; hint: string };
   challenge: { prompt: string; acceptance: string; hints: string[] };
+  sourceBasis?: 'none' | 'material' | 'mixed'; sourceNotes?: string[];
   language: 'en' | 'zh' | 'mixed'; generatedAt: string; revision: number;
 }
 export interface ScheduleItem { taskId: string; kind: 'review' | 'lesson' | 'practice' | 'reflection' | 'video'; minutes: number; required: boolean; deliverable: string; resourceId?: string; resourceTitle?: string; resourceUrl?: string; watched?: boolean }

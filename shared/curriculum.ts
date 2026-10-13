@@ -16,39 +16,89 @@ export const curriculumOutlineSchema = z.object({
 export type CurriculumOutline = z.infer<typeof curriculumOutlineSchema>;
 export type OutlineTask = z.infer<typeof outlineTaskSchema> & { track: 'main' | 'branch'; chainId: string };
 
+export interface CurriculumBudgetPlan {
+  feasible: boolean;
+  totalMinutes: number;
+  reviewMinutes: number;
+  mainlineMinutes: number;
+  optionalMinutes: number;
+  stageCount: number;
+  mainlineTaskCounts: number[];
+  branchChainsPerStage: number[];
+  rationale: string;
+  suggestion?: string;
+}
+
+/** Plan curriculum density before asking a model to create any task nodes. */
+export function planCurriculumBudget(input: { days: number; dailyMinutes: number }): CurriculumBudgetPlan {
+  const totalMinutes = input.days * input.dailyMinutes;
+  const reviewMinutes = Math.max(1, Math.floor(totalMinutes * 0.15));
+  const learningMinutes = totalMinutes - reviewMinutes;
+  if (learningMinutes < 5) {
+    const suggestedDailyMinutes = Math.max(input.dailyMinutes + 1, Math.ceil(6 / input.days));
+    return {
+      feasible: false, totalMinutes, reviewMinutes, mainlineMinutes: learningMinutes, optionalMinutes: 0,
+      stageCount: 0, mainlineTaskCounts: [], branchChainsPerStage: [],
+      rationale: '当前总预算连一个最短的实作任务和复习都无法安排。',
+      suggestion: `将每日预算提高到至少 ${suggestedDailyMinutes} 分钟，或把周期延长到至少 ${Math.ceil(6 / input.dailyMinutes)} 天，再生成课程。`,
+    };
+  }
+  const taskCapacity = Math.max(1, Math.min(60, Math.floor(learningMinutes / 12)));
+  const stageCount = Math.max(1, Math.min(4, Math.ceil(taskCapacity / 15)));
+  const base = Math.floor(taskCapacity / stageCount);
+  const remainder = taskCapacity % stageCount;
+  const mainlineTaskCounts = Array.from({ length: stageCount }, (_, index) => base + (index < remainder ? 1 : 0));
+  const mainlineMinutes = taskCapacity * 12;
+  const optionalMinutes = Math.max(0, totalMinutes - reviewMinutes - mainlineMinutes);
+  const optionalPerStage = optionalMinutes / stageCount;
+  const branches = optionalPerStage >= 45 ? 3 : optionalPerStage >= 30 ? 2 : optionalPerStage >= 15 ? 1 : 0;
+  const branchChainsPerStage = Array.from({ length: stageCount }, () => branches);
+  const standard = stageCount === 4 && mainlineTaskCounts.every(count => count === 15) && branches === 3;
+  const rationale = standard
+    ? '预算支持四个完整阶段；主线按每项约 12 分钟预留，并保留 15% 复习时间，支线只在剩余时间内提供。'
+    : `预算支持 ${stageCount} 个阶段、${taskCapacity} 个主线任务；按每项约 12 分钟和 15% 复习时间测算，支线为可选内容。${branches < 3 ? '由于可选时间较少，支线数量相应减少。' : ''}`;
+  return { feasible: true, totalMinutes, reviewMinutes, mainlineMinutes, optionalMinutes, stageCount, mainlineTaskCounts, branchChainsPerStage, rationale };
+}
+
 export function validateCurriculumOutline(outline: CurriculumOutline, input: { days: number; dailyMinutes: number }): boolean {
-  const stages = outline.stages;
-  const tasks = stages.flatMap(stage => [
+  const budget = planCurriculumBudget(input);
+  if (!budget.feasible || outline.stages.length !== budget.stageCount) return false;
+  const tasks = outline.stages.flatMap(stage => [
     ...stage.mainline.map(task => ({ ...task, track: 'main' as const, chainId: `${stage.id}-main`, stageId: stage.id })),
     ...stage.branches.flatMap(branch => branch.tasks.map(task => ({ ...task, track: 'branch' as const, chainId: branch.id, stageId: stage.id }))),
   ]);
-  const ids = [
-    ...stages.map(stage => stage.id), ...stages.flatMap(stage => stage.branches.map(branch => branch.id)),
-    ...stages.map(stage => `${stage.id}-main`),
+  const structuralIds = [
+    ...outline.stages.map(stage => stage.id),
+    ...outline.stages.flatMap(stage => [
+      `${stage.id}-main`, ...stage.branches.map(branch => branch.id),
+    ]),
     ...tasks.map(task => task.id), ...outline.nineGrid.map(grid => grid.id),
   ];
-  if (new Set(ids).size !== ids.length || new Set(tasks.map(task => task.id)).size !== tasks.length) return false;
+  if (new Set(structuralIds).size !== structuralIds.length) return false;
   const byId = new Map(tasks.map(task => [task.id, task]));
-  if (stages.some(stage => !stage.mainline.some(task => task.id === stage.gateTaskId))) return false;
-  if (outline.nineGrid.some(grid => grid.taskIds.some(taskId => !byId.has(taskId)) || !grid.taskIds.some(taskId => byId.get(taskId)?.track === 'main'))) return false;
-  const stageOrder = new Map(stages.map((stage, index) => [stage.id, index]));
+  if (outline.stages.some((stage, index) => stage.mainline.length !== budget.mainlineTaskCounts[index] || !stage.mainline.some(task => task.id === stage.gateTaskId))) return false;
+  if (outline.stages.some((stage, index) => stage.branches.length !== budget.branchChainsPerStage[index] || stage.branches.some(branch => branch.tasks.length !== 3))) return false;
+  const canonicalDensity = budget.stageCount === 4 && budget.mainlineTaskCounts.every(count => count === 15) && budget.branchChainsPerStage.every(count => count === 3);
+  if (!canonicalDensity && !outline.densityRationale?.trim()) return false;
+  if (outline.nineGrid.some(grid => new Set(grid.taskIds).size !== grid.taskIds.length || grid.taskIds.some(taskId => !byId.has(taskId)) || !grid.taskIds.some(taskId => byId.get(taskId)?.track === 'main'))) return false;
+  const stageOrder = new Map(outline.stages.map((stage, index) => [stage.id, index]));
   const taskOrder = new Map<string, number>();
-  for (const stage of stages) {
+  for (const stage of outline.stages) {
     stage.mainline.forEach((task, index) => taskOrder.set(task.id, index));
     stage.branches.forEach(branch => branch.tasks.forEach((task, index) => taskOrder.set(task.id, index)));
   }
-  const dense = input.days >= 14 && input.dailyMinutes >= 20;
-  if (dense) {
-    if (stages.some(stage => stage.mainline.length !== 15 || stage.branches.length !== 3 || stage.branches.some(branch => branch.tasks.length !== 3))) return false;
-  } else if (!outline.densityRationale) return false;
-  for (let i = 1; i < stages.length; i++) if (!stages[i].mainline[0].prerequisites.includes(stages[i-1].gateTaskId)) return false;
+  for (let i = 1; i < outline.stages.length; i++) {
+    if (!outline.stages[i].mainline[0].prerequisites.includes(outline.stages[i - 1].gateTaskId)) return false;
+  }
   for (const task of tasks) {
     if (new Set(task.prerequisites).size !== task.prerequisites.length || task.prerequisites.some(dep => !byId.has(dep) || dep === task.id)) return false;
-    const depTask = task.prerequisites.map(dep => byId.get(dep)!);
-    if (depTask.some(dep => (stageOrder.get(dep.stageId) ?? -1) > (stageOrder.get(task.stageId) ?? -1))) return false;
-    if (depTask.some(dep => dep.stageId === task.stageId && dep.chainId === task.chainId && (taskOrder.get(dep.id) ?? -1) >= (taskOrder.get(task.id) ?? -1))) return false;
-    if (task.track === 'main' && depTask.some(dep => dep.track === 'branch')) return false;
-    if (task.track === 'branch' && depTask.some(dep => dep.stageId !== task.stageId && dep.track === 'branch')) return false;
+    const depTasks = task.prerequisites.map(dep => byId.get(dep)!);
+    if (depTasks.some(dep => (stageOrder.get(dep.stageId) ?? -1) > (stageOrder.get(task.stageId) ?? -1))) return false;
+    if (depTasks.some(dep => dep.stageId === task.stageId && dep.chainId === task.chainId && (taskOrder.get(dep.id) ?? -1) >= (taskOrder.get(task.id) ?? -1))) return false;
+    if (task.track === 'main' && depTasks.some(dep => dep.track === 'branch')) return false;
+    if (task.track === 'branch' && depTasks.some(dep => dep.stageId !== task.stageId && dep.track === 'branch')) return false;
+    const taskStageIndex = stageOrder.get(task.stageId)!;
+    if (depTasks.some(dep => stageOrder.get(dep.stageId)! < taskStageIndex && dep.id !== outline.stages[taskStageIndex - 1]?.gateTaskId)) return false;
   }
   const visiting = new Set<string>(), visited = new Set<string>();
   const cycle = (taskId: string): boolean => {
@@ -59,7 +109,7 @@ export function validateCurriculumOutline(outline: CurriculumOutline, input: { d
     visiting.delete(taskId); visited.add(taskId); return false;
   };
   if (tasks.some(task => cycle(task.id))) return false;
-  const requiredMinutes = stages.reduce((sum, stage) => sum + stage.mainline.reduce((stageSum, task) => stageSum + task.minutes, 0), 0);
-  // Reserve roughly 15% for retrieval and spaced review instead of consuming every available minute with new material.
-  return requiredMinutes * 1.15 <= input.days * input.dailyMinutes;
+  const requiredMinutes = outline.stages.reduce((sum, stage) => sum + stage.mainline.reduce((stageSum, task) => stageSum + task.minutes, 0), 0);
+  const optionalMinutes = outline.stages.reduce((sum, stage) => sum + stage.branches.reduce((branchSum, branch) => branchSum + branch.tasks.reduce((taskSum, task) => taskSum + task.minutes, 0), 0), 0);
+  return requiredMinutes >= budget.mainlineMinutes && requiredMinutes + budget.reviewMinutes <= budget.totalMinutes && optionalMinutes <= budget.optionalMinutes;
 }

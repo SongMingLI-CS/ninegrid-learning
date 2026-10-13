@@ -132,12 +132,14 @@ describe('YouTube metadata search boundary', () => {
 });
 
 describe('curriculum orchestration endpoints', () => {
-  const shortInput = { ...input, days: 2, dailyMinutes: 15 };
+  const shortInput = { ...input, days: 2, dailyMinutes: 15, sourceMaterial: 'NDARRAY NOTES: A nested list with two rows and three columns becomes shape (2, 3).\nINDEX NOTES: Integer row and column coordinates select one value.' };
   const shortOutline = {
     title: 'Compact skills course', subtitle: 'A focused practice route', prerequisites: [], densityRationale: 'Two days of budget; focus on a single independently verifiable skill.',
     stages: [
-      { id: 'stage-one', title: 'Make a first result', description: 'Create and verify a small artifact.', gateTaskId: 'task-one', mainline: [{ id: 'task-one', title: 'Create one array', knowledgePoint: 'Construct an ndarray from nested data', minutes: 10, prerequisites: [] }], branches: [] },
-      { id: 'stage-two', title: 'Explain the result', description: 'Explain shape from evidence.', gateTaskId: 'task-two', mainline: [{ id: 'task-two', title: 'Predict the shape', knowledgePoint: 'Connect nested dimensions to shape', minutes: 10, prerequisites: ['task-one'] }], branches: [] },
+      { id: 'stage-one', title: 'Make and explain an array', description: 'Create and verify a small artifact.', gateTaskId: 'task-two', mainline: [
+        { id: 'task-one', title: 'Create one array', knowledgePoint: 'Construct an ndarray from nested data', minutes: 12, prerequisites: [] },
+        { id: 'task-two', title: 'Predict the shape', knowledgePoint: 'Connect nested dimensions to shape', minutes: 12, prerequisites: ['task-one'] },
+      ], branches: [] },
     ],
     nineGrid: Array.from({ length: 9 }, (_, i) => ({ id: `outcome-${i}`, title: `Outcome ${i}`, ability: 'Make and explain an array', value: 'A runnable array example', taskIds: ['task-one', 'task-two'] })),
   };
@@ -184,43 +186,54 @@ describe('curriculum orchestration endpoints', () => {
     const app = createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
       const payload = JSON.parse(String(options?.body));
       const prompt = payload.messages[0].content as string;
-      if (prompt.includes('concise version-3 curriculum outline')) { calls.push('outline'); return provider(shortOutline); }
-      if (prompt.includes('this single stage only')) {
+      if (prompt.includes('concise version-4 curriculum outline')) {
+        calls.push('outline');
+        const context = JSON.parse(payload.messages[1].content);
+        expect(context.input.sourceMaterial).toBeUndefined();
+        expect(context.sourceMaterialExcerpt).toContain('nested list');
+        expect(context.sourceMaterialExcerptInfo.includedRanges[0].start).toBe(0);
+        return provider(shortOutline);
+      }
+      if (prompt.includes('exactly this batch')) {
         const context = JSON.parse(payload.messages[1].content);
         calls.push(`chain:${context.stage.chain.id}`);
-        expect(['stage-one-main', 'stage-two-main']).toContain(context.stage.chain.id);
-        if (context.stage.chain.id === 'stage-two-main') expect(JSON.stringify(context)).not.toContain('stage-one');
-        return provider(stageDetails([context.stage.tasks[0].id]));
+        expect(context.stage.chain.id).toBe('stage-one-main');
+        expect(context.sourceMaterialExcerpt).toContain('nested list');
+        expect(context.sourceMaterialExcerptInfo.truncated).toBe(false);
+        return provider(stageDetails(context.stage.tasks.map((task: { id: string }) => task.id)));
       }
       throw new Error('Unexpected model request');
     } });
     const outlineResponse = await request(app).post('/api/generation/outline').send({ input: shortInput });
     expect(outlineResponse.status).toBe(200);
-    expect(outlineResponse.body.curriculumRulesVersion).toBe(3);
-    const stageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-two', chainId: 'stage-two-main' });
+    expect(outlineResponse.body.curriculumRulesVersion).toBe(4);
+    const stageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-one', chainId: 'stage-one-main', taskIds: ['task-one','task-two'] });
     expect(stageResponse.status).toBe(200);
     expect(stageResponse.body.generationState).toBe('complete');
-    expect(stageResponse.body.tasks[0]).toMatchObject({ id: 'task-two', prerequisites: ['task-one'], track: 'main', minutes: 10 });
-    const firstStageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-one', chainId: 'stage-one-main' });
-    expect(firstStageResponse.status).toBe(200);
-    expect(calls).toEqual(['outline', 'chain:stage-two-main', 'chain:stage-one-main']);
-    const incomplete = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: firstStageResponse.body.tasks }] });
+    expect(stageResponse.body.tasks[1]).toMatchObject({ id: 'task-two', prerequisites: ['task-one'], track: 'main', minutes: 12 });
+    expect(calls).toEqual(['outline', 'chain:stage-one-main']);
+    const incomplete = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [] });
     expect(incomplete.status).toBe(400);
     expect(incomplete.body.code).toBe('INCOMPLETE_GENERATION');
-    firstStageResponse.body.tasks[0].title = 'client cannot replace outline title';
-    const finalResponse = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: firstStageResponse.body.tasks }, { id: 'stage-two', tasks: stageResponse.body.tasks }] });
+    stageResponse.body.tasks[0].title = 'client cannot replace outline title';
+    const finalResponse = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: stageResponse.body.tasks }] });
     expect(finalResponse.status, JSON.stringify(finalResponse.body)).toBe(200);
-    expect(finalResponse.body.campaign.curriculumRulesVersion).toBe(3);
-    expect(finalResponse.body.campaign.stages).toHaveLength(2);
+    expect(finalResponse.body.campaign.curriculumRulesVersion).toBe(4);
+    expect(finalResponse.body.campaign.sourceMaterial).toBe(shortInput.sourceMaterial);
+    expect(finalResponse.body.campaign.stages).toHaveLength(1);
     expect(finalResponse.body.campaign.stages[0].tasks[0].title).toBe('Create one array');
   });
 
-  it('rejects malformed or underfilled long-course outlines before requesting stage content', async () => {
+  it('returns an actionable budget mismatch instead of treating an underfilled course as a generic schema error', async () => {
     let providerCalls = 0;
-    const app = createApp({ apiKey: 'test-only', fetchImpl: async () => { providerCalls++; return provider(shortOutline); } });
-    const response = await request(app).post('/api/generation/outline').send({ input });
-    expect(response.status).toBe(502);
-    expect(response.body.code).toBe('INVALID_AI_OUTPUT');
+    const overlongShortOutline = structuredClone(shortOutline);
+    overlongShortOutline.stages[0].mainline.forEach(task => { task.minutes = 90; });
+    const app = createApp({ apiKey: 'test-only', fetchImpl: async () => { providerCalls++; return provider(overlongShortOutline); } });
+    const response = await request(app).post('/api/generation/outline').send({ input: shortInput });
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe('BUDGET_UNSUITABLE');
+    expect(response.body.error).toMatch(/增加周期|每日时间/);
+    expect(response.body.budget.totalMinutes).toBe(shortInput.days * shortInput.dailyMinutes);
     expect(providerCalls).toBe(1);
   });
   it('generates a lazy lesson from a validated campaign and task, not from a free-form task id', async () => {
@@ -242,6 +255,20 @@ describe('curriculum orchestration endpoints', () => {
     expect(userPrompt).toContain(task.id);
     expect(userPrompt).not.toContain(generated.stages[0].tasks[1].id);
   });
+  it('passes a relevant material excerpt and exact omission notice into a long-course lesson', async () => {
+    let sent: any;
+    const campaign = structuredClone(generated) as any;
+    campaign.sourceMaterial = `${'General glossary sentence about unrelated context. '.repeat(160)}\nInteger indexing selects one array value using row and column coordinates.`;
+    const task = structuredClone(campaign.stages[0].tasks[0]) as any;
+    task.title = 'Integer indexing'; task.brief = 'Use row and column coordinates to select one array value.'; task.knowledgePoints = ['integer indexing'];
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => { sent = JSON.parse(String(options?.body)); return provider({ ...lesson, sourceBasis: 'material', sourceNotes: ['整数索引依据：行列坐标选出一个元素。'] }); } }))
+      .post('/api/lesson').send({ campaignContext: { goal: campaign.goal, level: campaign.level, sourceMaterial: campaign.sourceMaterial }, task, taskId: task.id, language: 'mixed' });
+    expect(response.status).toBe(200);
+    const context = JSON.parse(sent.messages[1].content);
+    expect(context.campaign.sourceMaterial).toContain('Integer indexing selects one array value');
+    expect(context.campaign.sourceMaterialNotice).toMatch(/仅提供了 .*字符范围/);
+    expect(response.body.lesson).toMatchObject({ sourceBasis: 'material', sourceNotes: ['整数索引依据：行列坐标选出一个元素。'] });
+  });
   it('rejects malformed lazy lesson output', async () => {
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({ ...lesson, challenge: { prompt: 'Do it', acceptance: 'Pass', hints: [] } }) }))
       .post('/api/lesson').send({ campaign: generated, taskId: 't0' });
@@ -257,6 +284,17 @@ describe('curriculum orchestration endpoints', () => {
     const rejected = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(invalid) }))
       .post('/api/schedule').send({ campaign: generated, date: '2026-10-13', progress: {}, reviews: [], minutes: 30 });
     expect(rejected.status).toBe(502);
+  });
+  it('accepts compact long-course schedule context and sends only eligible tasks and due reviews', async () => {
+    let sent: any;
+    const compactSchedule = { ...schedule, items: [{ taskId: 'past-task', kind: 'review', minutes: 5, required: true, deliverable: 'Recall the previous rule' }, { taskId: 't0', kind: 'lesson', minutes: 25, required: true, deliverable: 'Explain current result' }] };
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => { sent = JSON.parse(String(options?.body)); return provider(compactSchedule); } }))
+      .post('/api/schedule').send({ context: { campaign: { id: 'course', title: 'Long course', goal: 'Finish a data project', dailyMinutes: 30 }, eligibleTasks: [{ id: 't0', title: 'Current', brief: 'Predict shape', minutes: 15, track: 'main', deliverable: 'Explain result' }], completedTaskCount: 95, dueReviews: [{ taskId: 'past-task', dueAt: '2026-10-12T00:00:00.000Z', repetitions: 2, recallQuestion: 'How do row and column coordinates work?' }] }, date: '2026-10-13', minutes: 30 });
+    expect(response.status).toBe(200);
+    const userContext = JSON.parse(sent.messages[1].content);
+    expect(userContext.eligibleTasks).toHaveLength(1);
+    expect(userContext.campaign.stages).toBeUndefined();
+    expect(userContext.completedTaskCount).toBe(95);
   });
   it('rejects required branch work in a daily schedule', async () => {
     const invalid = { ...schedule, items: [{ taskId: 'branch0', kind: 'practice', minutes: 20, required: true, deliverable: 'Optional branch' }], totalMinutes: 20 };
@@ -281,6 +319,21 @@ describe('curriculum orchestration endpoints', () => {
       .post('/api/adapt').send({ campaign: generated, currentTaskId: 't0', evidence: 'I can explain shape but I could not write the indexing code.', history: [{ type: 'hint_used', hintUsed: true, passed: false }], remainingMinutes: 20 });
     expect(res.status).toBe(200);
     expect(res.body.recommendation.nextTaskId).toBe('branch0');
+  });
+  it('adapts from compact current-task context and restricts results to the supplied executable set', async () => {
+    let sent: any;
+    const recommendation = { recommendation: 'advance', reason: 'The learner explained the shape and should now practice indexing.', nextTaskId: 'next-index', minutes: 15 };
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => { sent = JSON.parse(String(options?.body)); return provider(recommendation); } }))
+      .post('/api/adapt').send({ context: { campaign: { id: 'course', title: 'Long course', goal: 'Finish a data project', dailyMinutes: 30 }, currentTask: { id: 'current', title: 'Shape', brief: 'Explain dimensions', minutes: 10 }, availableTasks: [{ id: 'current', title: 'Shape', brief: 'Explain dimensions', minutes: 10 }, { id: 'next-index', title: 'Indexing', brief: 'Select an element', minutes: 15 }] }, currentTaskId: 'current', evidence: 'I predicted the dimensions and explained each output value.', history: [{ verification: 'ai', passed: true, score: 90, feedback: 'Clear explanation.' }], remainingMinutes: 20 });
+    expect(response.status).toBe(200);
+    expect(response.body.recommendation.nextTaskId).toBe('next-index');
+    const context = JSON.parse(sent.messages[1].content);
+    expect(context.availableTasks).toHaveLength(2);
+    expect(context.campaign.stages).toBeUndefined();
+    const invalid = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({ ...recommendation, nextTaskId: 'outside-context' }) }))
+      .post('/api/adapt').send({ context: { campaign: { id: 'course', title: 'Long course', goal: 'Finish a data project', dailyMinutes: 30 }, currentTask: { id: 'current', title: 'Shape', brief: 'Explain dimensions', minutes: 10 }, availableTasks: [{ id: 'current', title: 'Shape', brief: 'Explain dimensions', minutes: 10 }] }, currentTaskId: 'current', evidence: 'A useful explanation of the task output.', history: [], remainingMinutes: 20 });
+    expect(invalid.status).toBe(502);
+    expect(invalid.body.code).toBe('INVALID_AI_OUTPUT');
   });
   it.each([
     ['/api/blueprint', { input }], ['/api/lesson', { campaign: generated, taskId: 't0' }],
