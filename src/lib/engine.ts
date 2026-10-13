@@ -65,7 +65,7 @@ export function buildDailySchedule(campaign: Campaign, progress: LearningState['
 
 export function getTaskReward(task: Task): RewardBundle {
   const item = task.kind === 'boss' ? [{ itemId: `${task.id}-field-notes`, name: '验证记录徽记', description: '完成综合任务后获得的原创学习收藏品。', rarity: 'rare' as const, icon: '✦', quantity: 1 }] : [];
-  return { xp: task.xp, coins: Math.max(1, Math.ceil(task.xp / 10)), items: item };
+  return { xp: task.xp, coins: Math.max(1, Math.ceil(task.xp / 30)), items: item };
 }
 
 function applyReward(state: LearningState, task: Task, reward: RewardBundle, kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season', now: Date, ownerId = task.id): LearningState {

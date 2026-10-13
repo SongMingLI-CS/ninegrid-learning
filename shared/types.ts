@@ -22,6 +22,7 @@ export interface Task {
   prerequisites: string[]; objectives: Objective[]; curiosity: string; steps: string[];
   acceptance: string; recallQuestion: string; hint: string; resources: Resource[];
   track?: LearningTrack; chainId?: string; unlockAfter?: string[]; reward?: RewardBundle;
+  knowledgePoints?: string[]; knownBasis?: string; deliverable?: string; hints?: string[];
   teaching?: LessonContent;
 }
 export interface TaskChain { id: string; title: string; track: LearningTrack; taskIds: string[]; completionReward?: RewardBundle }
@@ -31,6 +32,7 @@ export interface Campaign {
   dailyMinutes: number; ultimateReward: string; createdAt: string;
   source: 'demo' | 'deepseek'; stages: Stage[]; prerequisites?: string[]; nineGrid?: GridOutcome[];
   desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
+  curriculumRulesVersion?: number; densityRationale?: string;
 }
 export interface Evaluation {
   passed: boolean; score: number; feedback: string; gaps: string[]; nextStep: string;

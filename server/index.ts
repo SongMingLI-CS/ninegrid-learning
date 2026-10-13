@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { createServer } from 'node:http';
 import { createApp } from './app';
 import { createPool, runMigrations } from './db';
+import { sessionCookieIsSecure } from './config';
 
 const port = Number(process.env.PORT ?? 8787);
 const production = process.env.NODE_ENV === 'production';
@@ -16,12 +17,14 @@ async function start() {
   if (production && !databaseUrl) throw new Error('DATABASE_URL is required in production; refusing to start without persistent account storage');
   const sessionSecret = process.env.SESSION_SECRET?.trim();
   if (production && (!sessionSecret || sessionSecret.length < 32)) throw new Error('SESSION_SECRET must be at least 32 characters in production');
+  const appOrigin = process.env.APP_ORIGIN?.trim();
+  const secureCookie = sessionCookieIsSecure(production, appOrigin);
   const pool = databaseUrl ? createPool(databaseUrl) : undefined;
   if (pool) await runMigrations(pool);
   const app = createApp({
     ...(process.env.DEEPSEEK_API_KEY ? { apiKey: process.env.DEEPSEEK_API_KEY } : {}),
     ...(process.env.YOUTUBE_API_KEY ? { youtubeApiKey: process.env.YOUTUBE_API_KEY } : {}),
-    ...(pool && sessionSecret ? { auth: { pool, sessionSecret, secureCookie: production, appOrigin: process.env.APP_ORIGIN } } : {}),
+    ...(pool && sessionSecret ? { auth: { pool, sessionSecret, secureCookie, appOrigin } } : {}),
   });
   const trustProxy = process.env.TRUST_PROXY?.trim();
   if (trustProxy === '1') app.set('trust proxy', 1);

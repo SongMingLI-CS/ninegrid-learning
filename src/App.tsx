@@ -7,6 +7,8 @@ import {
   Sparkles, SquareArrowOutUpRight, Target, TerminalSquare, Trophy, X, Zap,
 } from 'lucide-react';
 import type { Campaign, GoalInput, LearningState, Task, TaskProgress } from '../shared/types';
+import type { CurriculumOutline } from '../shared/curriculum';
+import { campaignSchema } from '../shared/schema';
 import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask } from './lib/engine';
 import { loadStateSafely, saveStateSafely, exportState, importState } from './lib/storage';
 import { LessonWorkspace } from './components/LessonWorkspace';
@@ -25,6 +27,7 @@ import { getDailyBudgetMinutes, markVideoWatched, scheduleVideo as addVideoToSch
 type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews' | 'inventory';
 type Notification = { title: string; body?: string; tone?: 'success' | 'warning' } | null;
 type Connection = { configured: boolean; model: string; accounts?: boolean };
+type GenerationDraft = { input: GoalInput; outline: CurriculumOutline; stages: Record<string, Record<string, Campaign['stages'][number]['tasks']>> };
 
 const defaultGoal = NUMPY_DEMO_CAMPAIGN.goal;
 
@@ -73,6 +76,8 @@ function App() {
   const [syncStatus, setSyncStatus] = useState<'loading' | 'saving' | 'saved' | 'error' | 'conflict'>('loading');
   const [allowOverwrite, setAllowOverwrite] = useState(false);
   const [pendingCampaign, setPendingCampaign] = useState<Campaign | null>(null);
+  const [generationDraft, setGenerationDraft] = useState<GenerationDraft | null>(null);
+  const [generationMessage, setGenerationMessage] = useState('');
   const [sourceMaterial, setSourceMaterial] = useState('');
   const [languagePreference, setLanguagePreference] = useState<'en'|'zh'|'mixed'>('mixed');
   const [extractedPreferences, setExtractedPreferences] = useState<ExtractedGoalPreferences>({});
@@ -286,7 +291,7 @@ function App() {
     if (!cached && (connection.configured || apiKey) && !busy) {
       setBusy('lesson'); setLessonError(''); const controller = new AbortController(); activeRequest.current = controller;
       try {
-        const response = await apiFetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+        const response = await apiFetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignContext: { goal: campaign.goal, level: campaign.level, prerequisites: campaign.prerequisites, desiredArtifact: campaign.desiredArtifact, sourceMaterial: campaign.sourceMaterial }, task: nextTask, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
         const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '课程内容生成失败');
         setState(previous => previous.campaign.id === campaign.id ? cacheLesson(previous, nextTask.id, payload.lesson, false) : previous);
       } catch (error) { if(!(error instanceof DOMException&&error.name==='AbortError'))setLessonError(error instanceof Error ? error.message : '内容生成失败，可重试或继续看任务概要。'); }
@@ -381,20 +386,56 @@ function App() {
 
   const runGeneration = async () => {
     if (goal.trim().length < 12) { flash({ title: '行动目标还不够具体', body: '写明想达成什么，以及最终要交付什么。', tone: 'warning' }); return; }
-    setBusy('generate');
+    setBusy('generate'); setGenerationMessage('准备课程总纲…');
     try {
       const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: reward.trim() || '完成一项真实可用的成果', desiredArtifact: reward.trim() || undefined, language: languagePreference, sourceMaterial: sourceMaterial.slice(0, 20000) || undefined };
       const controller = new AbortController(); activeRequest.current = controller;
-      const response = await apiFetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+      const storageKey = `ninegrid.curriculum-draft.v3.${accountUser?.id ?? 'guest'}`;
+      const sameInput = (candidate: GoalInput) => JSON.stringify(candidate) === JSON.stringify(input);
+      let draft = generationDraft && sameInput(generationDraft.input) ? structuredClone(generationDraft) : null;
+      if (!draft) {
+        try { const saved = sessionStorage.getItem(storageKey); if (saved) { const parsed = JSON.parse(saved) as GenerationDraft; if (sameInput(parsed.input)) draft = parsed; } } catch { /* Session storage is optional; this run can continue in memory. */ }
+      }
+      const persistDraft = (next: GenerationDraft) => { draft = next; setGenerationDraft(next); try { sessionStorage.setItem(storageKey, JSON.stringify(next)); } catch { setGenerationMessage('当前浏览器无法保存生成草稿；已生成阶段仍保留在本页内存中。'); } };
+      const headers = { 'Content-Type': 'application/json' };
+      const provider = { ...(apiKey ? { apiKey } : {}), model };
+      if (!draft) {
+        const response = await apiFetch('/api/generation/outline', { method: 'POST', headers, body: JSON.stringify({ input, ...provider }), signal: controller.signal });
+        const payload = await response.json();
+        if (!response.ok) throw Object.assign(new Error(payload.error || payload.code || '课程总纲生成失败'), { code: payload.code });
+        draft = { input, outline: payload.outline as CurriculumOutline, stages: {} }; persistDraft(draft);
+      }
+      const totalBatches = draft.outline.stages.reduce((sum, stage) => sum + stage.branches.length + 1, 0);
+      const completedBatches = () => Object.values(draft!.stages).reduce((sum, chains) => sum + Object.keys(chains).length, 0);
+      setGenerationMessage(`课程总纲已就绪 · ${completedBatches()}/${totalBatches} 条任务链已生成`);
+      for (const plannedStage of draft.outline.stages) {
+        const chains = [{ id: `${plannedStage.id}-main`, title: plannedStage.title, tasks: plannedStage.mainline }, ...plannedStage.branches];
+        for (const chain of chains) {
+          if (draft.stages[plannedStage.id]?.[chain.id]) continue;
+          setGenerationMessage(`正在生成：${plannedStage.title} / ${chain.title} · 已完成 ${completedBatches()}/${totalBatches} 条链；取消后可从此处继续。`);
+          const response = await apiFetch('/api/generation/stage', { method: 'POST', headers, body: JSON.stringify({ input, outline: draft.outline, stageId: plannedStage.id, chainId: chain.id, ...provider }), signal: controller.signal });
+          const payload = await response.json();
+          if (!response.ok) throw Object.assign(new Error(`${plannedStage.title} / ${chain.title} 生成失败：${payload.error || payload.code || '请重试'}`), { code: payload.code });
+          draft = { ...draft, stages: { ...draft.stages, [plannedStage.id]: { ...draft.stages[plannedStage.id], [chain.id]: payload.tasks as Campaign['stages'][number]['tasks'] } } };
+          persistDraft(draft);
+          setGenerationMessage(`任务链已通过校验并保存：${plannedStage.title} / ${chain.title} · ${completedBatches()}/${totalBatches}。`);
+        }
+      }
+      const response = await apiFetch('/api/generation/finalize', { method: 'POST', headers, body: JSON.stringify({ input, outline: draft.outline, stages: draft.outline.stages.map(stage => ({ id: stage.id, tasks: [{ id: `${stage.id}-main`, tasks: stage.mainline }, ...stage.branches].flatMap(chain => draft!.stages[stage.id][chain.id]) })) }), signal: controller.signal });
       const payload = await response.json();
-      if (!response.ok) throw Object.assign(new Error(payload.error || '行动线生成失败'), { code: payload.code });
-      const newCampaign = (payload as { campaign: Campaign }).campaign;
+      if (!response.ok) throw Object.assign(new Error(payload.error || payload.code || '最终课程规则校验失败'), { code: payload.code });
+      const checked = campaignSchema.safeParse((payload as { campaign: Campaign }).campaign);
+      if (!checked.success) throw new Error('服务端返回的课程未通过浏览器端 Schema 校验');
+      const newCampaign = checked.data;
       setPendingCampaign(newCampaign);
       flash({ title: '课程蓝图已生成，等待确认', body: `${newCampaign.stages.length} 个阶段，${newCampaign.stages.reduce((n, stage) => n + stage.tasks.length, 0)} 个课程任务。确认后才会替换当前行动线。`, tone: 'success' });
+      try { sessionStorage.removeItem(storageKey); } catch { /* The confirmed course is already in memory; storage cleanup is best effort. */ }
+      setGenerationDraft(null); setGenerationMessage(`${newCampaign.stages.length} 个阶段的主线与支线均通过 Schema、依赖及预算校验，现可预览确认。`);
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') { flash({ title: '已取消生成', body: '当前赛季与学习记录没有变化。', tone: 'warning' }); return; }
+      if (error instanceof DOMException && error.name === 'AbortError') { setGenerationMessage('生成已取消；总纲与已完成任务链仍暂存在本浏览器会话，点击“继续生成”补齐剩余部分。'); flash({ title: '已取消生成', body: '当前赛季与学习记录没有变化；通过校验的任务链已保留，可继续生成。', tone: 'warning' }); return; }
       const message = error instanceof Error ? error.message : '连接 DeepSeek 时发生未知错误。';
-      flash({ title: message, body: '当前赛季和进度已保留，可以先继续预置训练。', tone: 'warning' });
+      setGenerationMessage(`生成中断：${message}。已完成阶段保留，点击“继续/重试”只补失败部分。`);
+      flash({ title: message, body: '当前赛季和进度已保留；已完成阶段保留，可重试失败步骤。', tone: 'warning' });
     } finally { activeRequest.current = null; setBusy(null); }
   };
 
@@ -606,7 +647,7 @@ function App() {
           {accountUser && <button className={`nav-link ${tab === 'inventory' ? 'active' : ''}`} onClick={() => { setTab('inventory'); setMobileNav(false); }}><Backpack size={15}/>个人仓库</button>}
         </nav>
         <div className="topbar-actions">
-          {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录">{accountUser.email} · 退出</button>}
+          {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录" aria-label="退出登录">{accountUser.email} · 退出</button>}
           {accountUser && serverSeasons.length > 0 && <select aria-label="切换服务器学习赛季" className="campaign-switch" value={serverArchive.current?.id ?? ''} onChange={event => void switchServerSeason(event.target.value)}>{serverSeasons.map(season => <option key={season.id} value={season.id}>{season.title}</option>)}</select>}
           {state.history?.length ? <select aria-label="切换学习目标" className="campaign-switch" value={campaign.id} onChange={event => switchToCampaign(event.target.value)}><option value={campaign.id}>{campaign.title}</option>{state.history.map(item=><option key={item.campaign.id} value={item.campaign.id}>{item.campaign.title}</option>)}</select> : null}
           <div className="connection-pill"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`} />{accountUser ? syncStatus === 'saved' ? '服务器已同步' : syncStatus === 'saving' ? '同步中…' : syncStatus === 'conflict' ? '版本冲突' : syncStatus === 'error' ? '尚未同步' : '载入中…' : connection.configured || apiKey ? 'AI 已就绪' : '本地训练'}<ChevronDown size={13} /></div>
@@ -650,7 +691,7 @@ function App() {
               if (confidence === 'known') next = completeTask(next, task.id, 'self');
               next = recordAttempt(next, task.id, { answer, hintLevelsUsed: 0, verification: 'none', passed: confidence === 'known', feedback: confidence === 'known' ? `自行诊断达到标准：${task.acceptance}` : `诊断未通过，返回练习：${task.acceptance}` });
               update(next);
-              if (confidence === 'known') { setTab('today'); flash({ title: '诊断通过 · 主线已通关', body: '回答和诊断记录已保存；本次计为自行完成，不授予 AI 验证或高价值道具。', tone: 'success' }); }
+              if (confidence === 'known') { setTab('today'); flash({ title: '诊断通过 · 已记录掌握', body: '回答和诊断记录已保存；本次计为自行完成，不授予 AI 验证或高价值道具。阶段仍须完成主线验收任务。', tone: 'success' }); }
               else flash({ title: '回答已保存 · 进入补练', body: '完成讲解、示例和独立挑战后再提交通关。', tone: 'warning' });
             } catch (error) { flash({ title: '诊断未能保存', body: error instanceof Error ? error.message : '请检查诊断内容后重试。', tone: 'warning' }); }
           }}/>
@@ -733,14 +774,14 @@ function App() {
         <footer className="global-footer"><span>九格行动 <i>·</i> 每一格，都由真正掌握解锁。</span><span>SESSION <i>—</i> {timeLabel}</span><span>休息也是行动计划的一部分。</span></footer>
       </div>
 
-      {goalOpen && <GoalModal goal={goal} level={level} days={days} minutes={dailyMinutes} reward={reward} connection={connection} model={model} busy={busy === 'generate'} apiKey={apiKey} sourceMaterial={sourceMaterial} language={languagePreference} inferred={extractedPreferences} preview={pendingCampaign} onGoal={handleGoalText} onLevel={setLevel} onDays={setDays} onMinutes={setDailyMinutes} onReward={setReward} onSourceMaterial={setSourceMaterial} onLanguage={setLanguagePreference} onModel={setModel} onApiKey={setApiKey} onLoadNumpy={loadNumpyBlueprint} onAccept={activateBlueprint} onCancelGeneration={() => activeRequest.current?.abort()} onFile={async event=>{const file=event.target.files?.[0];if(!file)return;try{if(file.size>2000000)throw new Error('文本材料不能超过 2 MB');const text=await file.text();setSourceMaterial(text.slice(0,20000));flash({title:'材料已读取',body:`已从 ${file.name} 读取 ${text.length} 个字符；内容会作为课程资料依据。`,tone:'success'});}catch(error){flash({title:'材料读取失败',body:error instanceof Error?error.message:'请粘贴纯文本材料。',tone:'warning'});}finally{event.target.value='';}}} onClose={() => { if(busy==='generate')activeRequest.current?.abort(); setGoalOpen(false); setApiKey(''); }} onGenerate={runGeneration}/>}
+      {goalOpen && <GoalModal goal={goal} level={level} days={days} minutes={dailyMinutes} reward={reward} connection={connection} model={model} busy={busy === 'generate'} apiKey={apiKey} sourceMaterial={sourceMaterial} language={languagePreference} inferred={extractedPreferences} preview={pendingCampaign} generationMessage={generationMessage} onGoal={handleGoalText} onLevel={setLevel} onDays={setDays} onMinutes={setDailyMinutes} onReward={setReward} onSourceMaterial={setSourceMaterial} onLanguage={setLanguagePreference} onModel={setModel} onApiKey={setApiKey} onLoadNumpy={loadNumpyBlueprint} onAccept={activateBlueprint} onCancelGeneration={() => activeRequest.current?.abort()} onFile={async event=>{const file=event.target.files?.[0];if(!file)return;try{if(file.size>2000000)throw new Error('文本材料不能超过 2 MB');const text=await file.text();setSourceMaterial(text.slice(0,20000));flash({title:'材料已读取',body:`已从 ${file.name} 读取 ${text.length} 个字符；内容会作为课程资料依据。`,tone:'success'});}catch(error){flash({title:'材料读取失败',body:error instanceof Error?error.message:'请粘贴纯文本材料。',tone:'warning'});}finally{event.target.value='';}}} onClose={() => { if(busy==='generate')activeRequest.current?.abort(); setGoalOpen(false); setApiKey(''); }} onGenerate={runGeneration}/>}
       {settingsOpen && <SettingsModal apiKey={apiKey} model={model} connection={connection} onApiKey={setApiKey} onModel={setModel} onClose={() => { setSettingsOpen(false); setApiKey(''); }} onApply={() => { setSettingsOpen(false); flash({ title: '连接设置已应用', body: '密钥仅保留在当前页面内存，刷新后需要重新输入。', tone: 'success' }); }}/ >}
       {notification && <div className={`toast ${notification.tone ?? ''}`} role="status"><span className="toast-icon">{notification.tone === 'success' ? <CircleCheck size={16}/> : <Activity size={16}/>}</span><span><strong>{notification.title}</strong>{notification.body && <small>{notification.body}</small>}</span><button className="icon-button compact" onClick={() => setNotification(null)} aria-label="关闭通知"><X size={14}/></button></div>}
     </main>
   );
 }
 
-function GoalModal({ goal, level, days, minutes, reward, connection, model, busy, apiKey, sourceMaterial, language, inferred, preview, onGoal, onLevel, onDays, onMinutes, onReward, onSourceMaterial, onLanguage, onModel, onApiKey, onLoadNumpy, onAccept, onCancelGeneration, onFile, onClose, onGenerate }: { goal: string; level: string; days: number; minutes: number; reward: string; connection: Connection; model: string; busy: boolean; apiKey: string; sourceMaterial: string; language: 'en'|'zh'|'mixed'; inferred: ExtractedGoalPreferences; preview: Campaign|null; onGoal:(s:string)=>void; onLevel:(s:string)=>void; onDays:(n:number)=>void; onMinutes:(n:number)=>void; onReward:(s:string)=>void; onSourceMaterial:(s:string)=>void; onLanguage:(s:'en'|'zh'|'mixed')=>void; onModel:(s:string)=>void; onApiKey:(s:string)=>void; onLoadNumpy:()=>void; onAccept:()=>void; onCancelGeneration:()=>void; onFile:(e:React.ChangeEvent<HTMLInputElement>)=>void; onClose:()=>void; onGenerate:()=>void }) {
+function GoalModal({ goal, level, days, minutes, reward, connection, model, busy, apiKey, sourceMaterial, language, inferred, preview, generationMessage, onGoal, onLevel, onDays, onMinutes, onReward, onSourceMaterial, onLanguage, onModel, onApiKey, onLoadNumpy, onAccept, onCancelGeneration, onFile, onClose, onGenerate }: { goal: string; level: string; days: number; minutes: number; reward: string; connection: Connection; model: string; busy: boolean; apiKey: string; sourceMaterial: string; language: 'en'|'zh'|'mixed'; inferred: ExtractedGoalPreferences; preview: Campaign|null; generationMessage: string; onGoal:(s:string)=>void; onLevel:(s:string)=>void; onDays:(n:number)=>void; onMinutes:(n:number)=>void; onReward:(s:string)=>void; onSourceMaterial:(s:string)=>void; onLanguage:(s:'en'|'zh'|'mixed')=>void; onModel:(s:string)=>void; onApiKey:(s:string)=>void; onLoadNumpy:()=>void; onAccept:()=>void; onCancelGeneration:()=>void; onFile:(e:React.ChangeEvent<HTMLInputElement>)=>void; onClose:()=>void; onGenerate:()=>void }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><section className="goal-modal" role="dialog" aria-modal="true" aria-labelledby="goal-modal-title">
     <div className="modal-topline"><span><Sparkles size={15}/> OPERATION DESIGN TERMINAL</span><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></div>
     <div className="modal-heading"><span className="modal-icon"><Target size={19}/></span><div><h2 id="goal-modal-title">{preview ? '课程蓝图 · 部署前预览' : '输入你想学习的内容。'}</h2><p>自然语言、教学大纲或考试范围均可；AI 会先给出课程蓝图，确认后才开始保存为新目标。</p></div></div>
@@ -752,7 +793,8 @@ function GoalModal({ goal, level, days, minutes, reward, connection, model, busy
     {preview && <div className="blueprint-preview"><div className="blueprint-summary"><span className="micro-label">{preview.source==='deepseek'?'AI BLUEPRINT · REAL API RESPONSE':'LOCAL NUMPY WALKTHROUGH · NO AI CLAIM'}</span><h3>{preview.title}</h3><p>{preview.goal}</p><p><strong>起点：</strong>{preview.level}</p><p><strong>最终作品：</strong>{preview.desiredArtifact??preview.ultimateReward}</p><p><strong>前置知识：</strong>{preview.prerequisites?.join('；')??'将按已知起点逐步补足，不默认高级基础。'}</p></div>{preview.stages.map((stage,index)=><section className="blueprint-stage" key={stage.id}><header><span>阶段 {String(index+1).padStart(2,'0')}</span><strong>{stage.title}</strong><small>{stage.tasks.reduce((sum,item)=>sum+item.minutes,0)} 分钟 · 主线 {stage.mainlineTaskIds?.length??stage.tasks.filter(item=>(item.track??'main')==='main').length} 项</small></header><p>{stage.description}</p><div className="blueprint-chain-list">{stage.chains?.map(chain=><div key={chain.id}><b>{chain.track==='main'?'主线':'支线'} · {chain.title}</b><span>{chain.taskIds.map(id=>stage.tasks.find(task=>task.id===id)?.title??id).join(' → ')}</span></div>)??stage.tasks.map(task=><div key={task.id}><b>{task.track==='branch'?'支线':'主线'} · {task.title}</b><span>{task.acceptance}</span></div>)}</div></section>)}<div className="blueprint-controls"><label>目标周期（天）<input type="number" min={1} max={365} value={days} onChange={event=>onDays(Math.max(1,Math.min(365,Number(event.target.value))))}/></label><label>每日预算（分钟）<input type="number" min={1} max={1440} value={minutes} onChange={event=>onMinutes(Math.max(1,Math.min(1440,Number(event.target.value))))}/></label><label>难度 / 当前基础<input value={level} onChange={event=>onLevel(event.target.value)}/></label><button onClick={onGenerate} disabled={busy}>按调整后的预算重新生成</button></div><div className="blueprint-grid">{preview.nineGrid?.map(grid=><div key={grid.id}><strong>{grid.title}</strong><span>{grid.ability}</span><small>解锁：{grid.unlockTaskIds.map(id=>preview.stages.flatMap(stage=>stage.tasks).find(task=>task.id===id)?.title??id).join('、')}</small></div>)}</div><p className="source-provenance">生成状态：{preview.source==='deepseek'?'已收到并通过 Schema 校验的 AI 蓝图。':'离线预置 NumPy 示例，没有调用或模拟 DeepSeek。'}</p></div>}
     <details className="model-connection"><summary><span><KeyRound size={14}/> DeepSeek 连接 <i>{connection.configured ? '· 本机服务已连接' : '· 也可在服务器 .env 配置'}</i></span><ChevronDown size={14}/></summary><div className="connection-fields"><label className="form-field"><span>模型</span><select value={model} onChange={event => onModel(event.target.value)}><option value="deepseek-flash">DeepSeek Flash · 高效部署</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label><label className="form-field"><span>本次密钥 <small>离开页面即清除</small></span><input type="password" autoComplete="off" value={apiKey} onChange={event => onApiKey(event.target.value)} placeholder={connection.configured ? '已在本机 .env 配置，留空即可' : 'sk-… · 只发往官方 DeepSeek API'} /></label><p className="key-privacy"><ShieldCheck size={13}/> 密钥只在此页面内存中，并经本地服务端发送到 api.deepseek.com。不含在备份里。</p></div></details>
     <div className="method-callout"><Orbit size={16}/><span><strong>这条行动线会如何学习</strong><small>持续调查概念关系 → 关掉资料主动回忆 → 产出作品 → 按记忆情况安排复习。阶段梯度帮助开始和坚持，不以连续时长发奖。</small></span></div>
-    <div className="modal-actions"><span>旧赛季保留于本机历史；示例无需 API，生成真实蓝图需要 Key。</span>{busy ? <button className="text-button" onClick={onCancelGeneration}>取消生成</button> : <><button className="text-button" onClick={onLoadNumpy}>预览离线 NumPy 示例</button>{preview ? <button className="modal-submit" onClick={onAccept}><Check size={15}/>确认蓝图并开始</button> : <button className="modal-submit" onClick={onGenerate} disabled={goal.trim().length < 12}><Crosshair size={16}/>生成课程蓝图<ArrowRight size={15}/></button>}</>}</div>
+    {!preview && generationMessage && <p className="source-provenance" role="status" aria-live="polite">生成进度：{generationMessage}</p>}
+    <div className="modal-actions"><span>旧赛季保留于本机历史；示例无需 API，生成真实蓝图需要 Key。</span>{busy ? <button className="text-button" onClick={onCancelGeneration}>取消生成</button> : <><button className="text-button" onClick={onLoadNumpy}>预览离线 NumPy 示例</button>{preview ? <button className="modal-submit" onClick={onAccept}><Check size={15}/>确认蓝图并开始</button> : <button className="modal-submit" onClick={onGenerate} disabled={goal.trim().length < 12}><Crosshair size={16}/>{generationMessage.includes('生成中断')||generationMessage.includes('生成已取消')?'继续生成':'生成课程蓝图'}<ArrowRight size={15}/></button>}</>}</div>
   </section></div>;
 }
 

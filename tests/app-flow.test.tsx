@@ -56,10 +56,10 @@ describe('NumPy learning flow in the interface', () => {
     const switcher = screen.getByRole('combobox', { name: '切换学习目标' });
     fireEvent.change(switcher, { target: { value: 'python-intelligence' } });
     await screen.findByRole('heading', { name: '情报归档行动' });
-    fireEvent.change(screen.getByRole('combobox', { name: '切换学习目标' }), { target: { value: 'numpy-first-analysis' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '切换学习目标' }), { target: { value: 'numpy-data-ops-v3' } });
     await screen.findByRole('heading', { name: 'NumPy 数据准备行动' });
     const restored = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
-    expect(restored.campaign.id).toBe('numpy-first-analysis');
+    expect(restored.campaign.id).toBe('numpy-data-ops-v3');
     expect(restored.progress['numpy-read-shape'].evidence).toBe(evidence);
   });
 
@@ -169,10 +169,12 @@ describe('NumPy learning flow in the interface', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '两分钟诊断回答' }), { target: { value: diagnostic } });
     fireEvent.click(screen.getByRole('button', { name: '我达到标准 · 记录诊断通关' }));
     expect(await screen.findByRole('heading', { name: '今天先做这一项' })).toBeTruthy();
-    expect(screen.getByText(/主线已通关/)).toBeTruthy();
+    expect(screen.getByText(/诊断通过 · 已记录掌握/)).toBeTruthy();
     const saved = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
     expect(saved.progress['numpy-read-shape'].status).toBe('completed');
     expect(saved.progress['numpy-read-shape'].verification).toBe('self');
+    expect(saved.progress['numpy-v3-foundation-m15'].status).toBe('idle');
+    expect(saved.campaign.stages[0].gateTaskIds).toEqual(['numpy-v3-foundation-m15']);
     expect(saved.progress['numpy-read-shape'].evidence).toBe(diagnostic);
     expect(saved.attempts['numpy-read-shape'].at(-1)).toMatchObject({ answer: diagnostic, verification: 'none', passed: true });
     expect(saved.rewardLedger.find((entry: { kind: string }) => entry.kind === 'mission').reward.items).toEqual([]);

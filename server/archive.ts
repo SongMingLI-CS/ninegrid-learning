@@ -94,7 +94,7 @@ function normalizeCampaignRewards(campaign: any): void {
       task.reward = { xp, coins, items: task.kind === 'boss' ? [{ itemId: `${task.id}-field-notes`, name: '验证记录徽记', description: '完成综合任务后获得的原创学习收藏品。', rarity: 'rare', icon: '✦', quantity: 1 }] : [] };
     }
     stage.reward = { xp: 100, coins: 8, items: [] };
-    for (const chain of stage.chains ?? []) chain.completionReward = { xp: Math.min(500, chain.taskIds.length * 20), coins: chain.track === 'main' ? 5 : 3, items: [] };
+    for (const chain of stage.chains ?? []) chain.completionReward = { xp: Math.min(120, Math.floor(chain.taskIds.reduce((sum: number, id: string) => sum + (stage.tasks.find((task: any) => task.id === id)?.minutes ?? 0), 0) * 0.4)), coins: chain.track === 'main' ? 3 : 1, items: [] };
   }
 }
 

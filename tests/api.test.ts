@@ -30,6 +30,24 @@ function missionBase(id: string, prerequisites: string[] = []) {
 const provider = (value: unknown, finishReason = 'stop') => new Response(JSON.stringify({ choices: [{ finish_reason: finishReason, message: { content: typeof value === 'string' ? value : JSON.stringify(value) } }] }), { status: 200 });
 
 describe('DeepSeek boundary', () => {
+  it('keeps static application assets available when a browser visits through an origin alias', async () => {
+    const oldNodeEnv = process.env.NODE_ENV;
+    const oldAppOrigin = process.env.APP_ORIGIN;
+    process.env.NODE_ENV = 'production';
+    process.env.APP_ORIGIN = 'https://learn.example';
+    try {
+      const app = createApp();
+      const asset = await request(app).get('/favicon.svg').set('Origin', 'http://127.0.0.1:18787');
+      const api = await request(app).get('/api/status').set('Origin', 'http://127.0.0.1:18787');
+      expect(asset.status).not.toBe(403);
+      expect(api.status).toBe(403);
+      expect(api.body.code).toBe('ORIGIN_FORBIDDEN');
+    } finally {
+      if (oldNodeEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = oldNodeEnv;
+      if (oldAppOrigin === undefined) delete process.env.APP_ORIGIN; else process.env.APP_ORIGIN = oldAppOrigin;
+    }
+  });
+
   it('does not call the provider when no API credential is configured', async () => {
     const app = createApp({ apiKey: '' });
     const res = await request(app).post('/api/generate').send({ input });
@@ -114,6 +132,16 @@ describe('YouTube metadata search boundary', () => {
 });
 
 describe('curriculum orchestration endpoints', () => {
+  const shortInput = { ...input, days: 2, dailyMinutes: 15 };
+  const shortOutline = {
+    title: 'Compact skills course', subtitle: 'A focused practice route', prerequisites: [], densityRationale: 'Two days of budget; focus on a single independently verifiable skill.',
+    stages: [
+      { id: 'stage-one', title: 'Make a first result', description: 'Create and verify a small artifact.', gateTaskId: 'task-one', mainline: [{ id: 'task-one', title: 'Create one array', knowledgePoint: 'Construct an ndarray from nested data', minutes: 10, prerequisites: [] }], branches: [] },
+      { id: 'stage-two', title: 'Explain the result', description: 'Explain shape from evidence.', gateTaskId: 'task-two', mainline: [{ id: 'task-two', title: 'Predict the shape', knowledgePoint: 'Connect nested dimensions to shape', minutes: 10, prerequisites: ['task-one'] }], branches: [] },
+    ],
+    nineGrid: Array.from({ length: 9 }, (_, i) => ({ id: `outcome-${i}`, title: `Outcome ${i}`, ability: 'Make and explain an array', value: 'A runnable array example', taskIds: ['task-one', 'task-two'] })),
+  };
+  const stageDetails = (ids: string[]) => ({ tasks: ids.map(id => ({ id, brief: 'Predict, run, and inspect one small array.', kind: 'practice', curiosity: 'Why does nested list structure change shape?', steps: ['Write a nested list.', 'Convert it with np.array.', 'Print shape and compare your prediction.'], acceptance: 'Submit runnable code, its shape output, and a correct explanation.', recallQuestion: 'What does each value in shape count?', hint: 'Count each nested level.', knowledgePoints: ['ndarray shape'], knownBasis: 'The learner has seen Python lists.', deliverable: 'A short code snippet and shape explanation.', hints: ['Count outer entries first.', 'Then count entries in an inner row.'], resources: [] })) });
   const lesson = {
     purpose: 'Use ndarray shape to predict a result before running code.', explanation: 'An ndarray stores values in dimensions. shape reports each dimension size.',
     terms: [{ en: 'shape', zh: '形状', context: 'A 2 by 3 array has shape (2, 3).' }],
@@ -144,12 +172,56 @@ describe('curriculum orchestration endpoints', () => {
     expect(stages[0].mainlineTaskIds).toEqual([stages[0].tasks[0].id]);
     expect(stages[0].chains.some((c: any) => c.track === 'branch')).toBe(true);
     expect(stages[0].tasks.find((t: any) => t.track === 'branch').prerequisites).toEqual([stages[0].mainlineTaskIds[0]]);
-    expect(stages[0].tasks[0].reward).toEqual({ xp: 16, coins: 2, items: [] });
+    expect(stages[0].tasks[0].reward).toEqual({ xp: 16, coins: 1, items: [] });
   });
   it('preserves /api/generate as the blueprint alias', async () => {
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(generated) })).post('/api/generate').send({ input });
     expect(res.status).toBe(200);
     expect(res.body.campaign.stages[0].chains).toHaveLength(2);
+  });
+  it('generates an outline first, generates only the requested stage, and finalizes validated stage batches', async () => {
+    const calls: string[] = [];
+    const app = createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
+      const payload = JSON.parse(String(options?.body));
+      const prompt = payload.messages[0].content as string;
+      if (prompt.includes('concise version-3 curriculum outline')) { calls.push('outline'); return provider(shortOutline); }
+      if (prompt.includes('this single stage only')) {
+        const context = JSON.parse(payload.messages[1].content);
+        calls.push(`chain:${context.stage.chain.id}`);
+        expect(['stage-one-main', 'stage-two-main']).toContain(context.stage.chain.id);
+        if (context.stage.chain.id === 'stage-two-main') expect(JSON.stringify(context)).not.toContain('stage-one');
+        return provider(stageDetails([context.stage.tasks[0].id]));
+      }
+      throw new Error('Unexpected model request');
+    } });
+    const outlineResponse = await request(app).post('/api/generation/outline').send({ input: shortInput });
+    expect(outlineResponse.status).toBe(200);
+    expect(outlineResponse.body.curriculumRulesVersion).toBe(3);
+    const stageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-two', chainId: 'stage-two-main' });
+    expect(stageResponse.status).toBe(200);
+    expect(stageResponse.body.generationState).toBe('complete');
+    expect(stageResponse.body.tasks[0]).toMatchObject({ id: 'task-two', prerequisites: ['task-one'], track: 'main', minutes: 10 });
+    const firstStageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-one', chainId: 'stage-one-main' });
+    expect(firstStageResponse.status).toBe(200);
+    expect(calls).toEqual(['outline', 'chain:stage-two-main', 'chain:stage-one-main']);
+    const incomplete = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: firstStageResponse.body.tasks }] });
+    expect(incomplete.status).toBe(400);
+    expect(incomplete.body.code).toBe('INCOMPLETE_GENERATION');
+    firstStageResponse.body.tasks[0].title = 'client cannot replace outline title';
+    const finalResponse = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: firstStageResponse.body.tasks }, { id: 'stage-two', tasks: stageResponse.body.tasks }] });
+    expect(finalResponse.status, JSON.stringify(finalResponse.body)).toBe(200);
+    expect(finalResponse.body.campaign.curriculumRulesVersion).toBe(3);
+    expect(finalResponse.body.campaign.stages).toHaveLength(2);
+    expect(finalResponse.body.campaign.stages[0].tasks[0].title).toBe('Create one array');
+  });
+
+  it('rejects malformed or underfilled long-course outlines before requesting stage content', async () => {
+    let providerCalls = 0;
+    const app = createApp({ apiKey: 'test-only', fetchImpl: async () => { providerCalls++; return provider(shortOutline); } });
+    const response = await request(app).post('/api/generation/outline').send({ input });
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe('INVALID_AI_OUTPUT');
+    expect(providerCalls).toBe(1);
   });
   it('generates a lazy lesson from a validated campaign and task, not from a free-form task id', async () => {
     let sent: any;
@@ -159,6 +231,16 @@ describe('curriculum orchestration endpoints', () => {
     expect(res.body.lesson.explanation).toContain('shape');
     expect(sent.messages[0].content).toMatch(/untrusted/i);
     expect(sent.messages[1].content).toContain('调查变量与文件路径');
+  });
+  it('accepts a compact single-task lesson request without sending the whole campaign to the provider', async () => {
+    let sent: any;
+    const task = generated.stages[0].tasks[0];
+    const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => { sent = JSON.parse(String(options?.body)); return provider(lesson); } }))
+      .post('/api/lesson').send({ campaignContext: { goal: generated.goal, level: generated.level }, task, taskId: task.id, language: 'mixed' });
+    expect(res.status).toBe(200);
+    const userPrompt = sent.messages[1].content as string;
+    expect(userPrompt).toContain(task.id);
+    expect(userPrompt).not.toContain(generated.stages[0].tasks[1].id);
   });
   it('rejects malformed lazy lesson output', async () => {
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({ ...lesson, challenge: { prompt: 'Do it', acceptance: 'Pass', hints: [] } }) }))

@@ -64,6 +64,7 @@ export const taskSchema = z.object({
   curiosity: text(), steps: z.array(text(2000)).min(1).max(30), acceptance: text(),
   recallQuestion: text(), hint: text(), resources: z.array(resourceSchema).max(20),
   track: z.enum(['main', 'branch']).optional(), chainId: idSchema.optional(), unlockAfter: z.array(idSchema).max(100).optional(),
+  knowledgePoints: z.array(text(300)).max(20).optional(), knownBasis: text(1000).optional(), deliverable: text(1000).optional(), hints: z.array(text(1000)).max(5).optional(),
   reward: rewardBundleSchema.optional(), teaching: lessonContentSchema.optional(),
 });
 
@@ -81,6 +82,7 @@ export const campaignSchema = z.object({
     chains: z.array(z.object({ id: idSchema, title: text(200), track: z.enum(['main','branch']), taskIds: z.array(idSchema).min(1).max(100), completionReward: rewardBundleSchema.optional() })).max(20).optional(),
   })).min(1).max(20),
   prerequisites: z.array(text(500)).max(100).optional(),
+  curriculumRulesVersion: z.number().int().min(1).max(100).optional(), densityRationale: text(2000).optional(),
   nineGrid: z.array(z.object({ id: idSchema, title: text(200), ability: text(1000), value: text(1000), unlockTaskIds: z.array(idSchema).min(1).max(100), artifact: text(2000).optional() })).length(9).optional(),
 }).superRefine((campaign, ctx) => {
   const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
