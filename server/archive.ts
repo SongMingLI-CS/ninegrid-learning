@@ -195,9 +195,10 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     const tier = CHALLENGES[tierId as ChallengeTier]; const client = await pool.connect();
     try {
       await client.query('BEGIN'); await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
-      const season = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [seasonId, ownerOf(req)]);
+      const season = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [seasonId, ownerOf(req)]);
       const row = season.rows[0]; const task = row?.state.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === taskId);
       if (!row || !task) { await client.query('ROLLBACK'); res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
+      if(row.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:row.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       if (row.state.progress[taskId]?.status === 'completed' || !isTaskUnlocked(row.state.campaign, row.state.progress, taskId)) { await client.query('ROLLBACK'); res.status(409).json({ error: 'CHALLENGE_TASK_NOT_AVAILABLE' }); return; }
       const recent = await client.query('SELECT 1 FROM challenge_runs WHERE user_id=$1 AND started_at>now()-interval \'24 hours\' AND status IN (\'active\',\'evaluating\',\'passed\',\'failed\',\'abandoned\') LIMIT 1', [ownerOf(req)]);
       if (recent.rowCount) { await client.query('ROLLBACK'); res.status(429).json({ error: 'DAILY_CHALLENGE_LIMIT' }); return; }
@@ -220,7 +221,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const [user, profile, seasons, wallet, items, rewards, challenges, seasonalCollectibles, currentSelection] = await Promise.all([
         pool.query('SELECT email,created_at FROM users WHERE id=$1', [userId]),
         pool.query('SELECT nickname,avatar_url,bio,is_public FROM user_profiles WHERE user_id=$1', [userId]),
-        pool.query<{ id:string; title:string; state:LearningState; updated_at:Date|string; created_at:Date|string; lifecycle_status:string }>('SELECT id,title,state,updated_at,created_at,lifecycle_status FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [userId]),
+        pool.query<{ id:string; title:string; state:LearningState; revision:number; updated_at:Date|string; created_at:Date|string; lifecycle_status:string }>('SELECT id,title,state,revision,updated_at,created_at,lifecycle_status FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [userId]),
         pool.query('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\'', [userId]),
         pool.query(`SELECT i.item_id,i.definition,i.quantity,i.acquired_at,COALESCE(p.is_showcased,false) is_showcased,COALESCE(p.showcase_order,0) showcase_order FROM inventory_items i LEFT JOIN inventory_item_preferences p ON p.user_id=i.user_id AND p.item_id=i.item_id WHERE i.user_id=$1 AND i.quantity>0`, [userId]),
         pool.query('SELECT reward FROM reward_ledger WHERE user_id=$1', [userId]),
@@ -229,7 +230,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
           EXISTS(SELECT 1 FROM season_collectible_claims x WHERE x.owner_user_id=c.owner_user_id AND x.reward_key=c.reward_key) AS claimed,
           s.state->'progress'->c.final_task_id->>'evidence' AS final_evidence
           FROM season_collectibles c JOIN seasons s ON s.id=c.season_id WHERE c.owner_user_id=$1 ORDER BY c.created_at DESC`, [userId]),
-        pool.query('SELECT season_id FROM user_current_seasons WHERE user_id=$1',[userId]),
+        pool.query('SELECT season_id,revision FROM user_current_seasons WHERE user_id=$1',[userId]),
       ]);
       const kinds = items.rows.filter((item: any) => COLLECTION_CATALOG.some(entry => entry.id === item.item_id)).length;
       const seasonalByTarget = new Map<string, (typeof seasonalCollectibles.rows)[number]>();
@@ -242,13 +243,15 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
         const mainTasks=allTasks.filter((task:any)=>(task.track??'main')==='main');
         const completedTasks=allTasks.filter((task:any)=>row.state.progress[task.id]?.status==='completed');
         const mainCompleted=mainTasks.filter((task:any)=>row.state.progress[task.id]?.status==='completed');
-        const nextTask=mainTasks.find((task:any)=>row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id))??allTasks.find((task:any)=>row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id));
+        const lastTask=allTasks.find((task:any)=>task.id===row.state.lastTaskId&&row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id));
+        const nextTask=lastTask??mainTasks.find((task:any)=>row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id))??allTasks.find((task:any)=>row.state.progress[task.id]?.status!=='completed'&&isTaskUnlocked(row.state.campaign,row.state.progress,task.id));
         const nextStageIndex=nextTask?row.state.campaign.stages.findIndex((stage:any)=>stage.tasks.some((task:any)=>task.id===nextTask.id)):-1;
-        const finalTask=allTasks.at(-1);
+        const finalId=row.state.campaign.seasonalCollectible?.finalTaskId??row.state.campaign.stages.at(-1)?.gateTaskIds?.at(-1);
+        const finalTask=allTasks.find((task:any)=>task.id===finalId)??mainTasks.at(-1);
         const mainlineDone=mainCompleted.length===mainTasks.length;
-        const status=mainlineDone?'completed':row.lifecycle_status;
+        const status=row.lifecycle_status!=='active'?row.lifecycle_status:mainlineDone?'completed':'active';
         const studyDates=[...completedTasks.map((task:any)=>row.state.progress[task.id]?.completedAt),...(row.state.reviews??[]).flatMap((card:any)=>card.history?.map((entry:any)=>entry.at)??[])].filter(Boolean).sort();
-        return {id:row.id,title:row.title,goal:row.state.campaign.goal,createdAt:row.created_at,updatedAt:row.updated_at,lastStudyAt:studyDates.at(-1)??null,
+        return {id:row.id,revision:row.revision,title:row.title,goal:row.state.campaign.goal,createdAt:row.created_at,updatedAt:row.updated_at,lastStudyAt:studyDates.at(-1)??null,
           desiredArtifact:row.state.campaign.desiredArtifact??row.state.campaign.ultimateReward,
           finalProjectEvidence:finalTask&&row.state.progress[finalTask.id]?.status==='completed'?row.state.progress[finalTask.id]?.evidence:null,
           status,completed:completedTasks.length,total:allTasks.length,mainlineCompleted:mainCompleted.length,mainlineTotal:mainTasks.length,
@@ -261,7 +264,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       });
       const showcased=items.rows.filter((item:any)=>item.is_showcased).sort((a:any,b:any)=>a.showcase_order-b.showcase_order).slice(0,4).map((item:any)=>({...(COLLECTION_CATALOG.find(def=>def.id===item.item_id)??item.definition),quantity:item.quantity,itemId:item.item_id,showcaseOrder:item.showcase_order}));
       const activity=[...seasons.rows.flatMap((row:any)=>Object.entries(row.state.progress).filter(([,progress]:any)=>progress.status==='completed').map(([taskId,progress]:any)=>({kind:'learning',seasonId:row.id,seasonTitle:row.title,taskId,title:row.state.campaign.stages.flatMap((stage:any)=>stage.tasks).find((task:any)=>task.id===taskId)?.title??taskId,verification:progress.verification??'self',at:progress.completedAt??row.updated_at}))),...challenges.rows.map((run:any)=>({kind:'challenge',id:run.id,tier:run.tier,status:run.status,at:run.settled_at??run.started_at}))].sort((a:any,b:any)=>new Date(b.at).getTime()-new Date(a.at).getTime()).slice(0,40);
-      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), currentSeasonId:currentSelection.rows[0]?.season_id??null,seasons:profileSeasons, collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, seasonalCollectibles: [...seasonalByTarget.values()], showcased,activity, challenges: challenges.rows, private: !profileData.is_public });
+      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), currentSeasonId:currentSelection.rows[0]?.season_id??null,selectionRevision:Number(currentSelection.rows[0]?.revision??0),seasons:profileSeasons, collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, seasonalCollectibles: [...seasonalByTarget.values()], showcased,activity, challenges: challenges.rows, private: !profileData.is_public });
     } catch (error) { next(error); }
   });
   app.post('/api/profile', async (req, res, next) => {
@@ -305,6 +308,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   app.post('/api/inventory/preferences', async (req, res, next) => {
     const items = req.body?.items;
     if (!Array.isArray(items) || items.length < 1 || items.length > 155 || items.some((item: any) => typeof item?.itemId !== 'string' || item.itemId.length > 128 || typeof item.locked !== 'boolean' || typeof item.showcased !== 'boolean' || (item.showcaseOrder !== undefined && (!Number.isInteger(item.showcaseOrder) || item.showcaseOrder < 0 || item.showcaseOrder > 3)))) { res.status(400).json({ error: 'INVALID_INVENTORY_PREFERENCES' }); return; }
+    if (new Set(items.map((item:any)=>item.itemId)).size !== items.length || items.filter((item:any)=>item.showcased).length > 4) { res.status(400).json({error:'SHOWCASE_LIMIT'}); return; }
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -312,9 +316,17 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       for (const item of items) {
         const owned = await client.query('SELECT 1 FROM inventory_items WHERE user_id=$1 AND item_id=$2 AND quantity>0', [ownerOf(req), item.itemId]);
         if (!owned.rowCount) { await client.query('ROLLBACK'); res.status(404).json({ error: 'ITEM_NOT_OWNED', itemId: item.itemId }); return; }
+        let order=item.showcaseOrder;
+        if(order===undefined&&item.showcased){
+          const existing=await client.query<{item_id:string;showcase_order:number}>('SELECT item_id,showcase_order FROM inventory_item_preferences WHERE user_id=$1 AND is_showcased=true',[ownerOf(req)]);
+          order=existing.rows.find(row=>row.item_id===item.itemId)?.showcase_order??[0,1,2,3].find(slot=>!existing.rows.some(row=>row.showcase_order===slot));
+          if(order===undefined){await client.query('ROLLBACK');res.status(409).json({error:'SHOWCASE_LIMIT'});return;}
+        }
         await client.query(`INSERT INTO inventory_item_preferences(user_id,item_id,is_locked,is_showcased,showcase_order) VALUES($1,$2,$3,$4,$5)
-        ON CONFLICT(user_id,item_id) DO UPDATE SET is_locked=EXCLUDED.is_locked,is_showcased=EXCLUDED.is_showcased,showcase_order=EXCLUDED.showcase_order,updated_at=now()`, [ownerOf(req), item.itemId, item.locked, item.showcased,item.showcaseOrder??0]);
+        ON CONFLICT(user_id,item_id) DO UPDATE SET is_locked=EXCLUDED.is_locked,is_showcased=EXCLUDED.is_showcased,showcase_order=EXCLUDED.showcase_order,updated_at=now()`, [ownerOf(req), item.itemId, item.locked, item.showcased,order??0]);
       }
+      const showcase=await client.query<{showcase_order:number}>('SELECT showcase_order FROM inventory_item_preferences WHERE user_id=$1 AND is_showcased=true',[ownerOf(req)]);
+      if(showcase.rows.length>4||new Set(showcase.rows.map(row=>row.showcase_order)).size!==showcase.rows.length){await client.query('ROLLBACK');res.status(409).json({error:'SHOWCASE_LIMIT_OR_ORDER_CONFLICT'});return;}
       await client.query('COMMIT'); res.json({ saved: items.length });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
     finally { client.release(); }
@@ -357,12 +369,21 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
 
   app.get('/api/seasons', async (req, res, next) => {
     try {
-      const result = await pool.query<Row & { current_season_id: string | null; selection_revision: number | null }>(`SELECT s.id,s.campaign_id,s.title,s.revision,s.state,s.created_at,s.updated_at,s.lifecycle_status,
-        u.season_id current_season_id,u.revision selection_revision
-        FROM seasons s LEFT JOIN user_current_seasons u ON u.user_id=s.owner_user_id
-        WHERE s.owner_user_id=$1 ORDER BY s.updated_at DESC`, [ownerOf(req)]);
-      res.json({ seasons: result.rows.map(publicSeason), currentSeasonId: result.rows[0]?.current_season_id ?? result.rows.find(row=>row.lifecycle_status!=='archived')?.id ?? null, selectionRevision: result.rows[0]?.selection_revision ?? 0 });
+      const [result, selection] = await Promise.all([
+        pool.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [ownerOf(req)]),
+        pool.query<{ season_id:string|null; revision:number }>('SELECT season_id,revision FROM user_current_seasons WHERE user_id=$1', [ownerOf(req)]),
+      ]);
+      res.json({ seasons: result.rows.map(publicSeason), currentSeasonId: selection.rows[0]?.season_id ?? null, selectionRevision: Number(selection.rows[0]?.revision ?? 0) });
     } catch (error) { next(error); }
+  });
+
+  app.get('/api/seasons/current', async (req,res,next) => {
+    try {
+      const result=await pool.query<{season_id:string|null;revision:number;id?:string;campaign_id?:string;title?:string;season_revision?:number;state?:LearningState;created_at?:Date|string;updated_at?:Date|string;lifecycle_status?:'active'|'paused'|'archived'}>(`SELECT u.season_id,u.revision,s.id,s.campaign_id,s.title,s.revision season_revision,s.state,s.created_at,s.updated_at,s.lifecycle_status
+        FROM user_current_seasons u LEFT JOIN seasons s ON s.id=u.season_id AND s.owner_user_id=u.user_id WHERE u.user_id=$1`,[ownerOf(req)]);
+      const row=result.rows[0];
+      res.json({currentSeasonId:row?.season_id??null,selectionRevision:Number(row?.revision??0),...(row?.id?{season:publicSeason({id:row.id,campaign_id:row.campaign_id!,title:row.title!,revision:row.season_revision!,state:row.state!,created_at:row.created_at!,updated_at:row.updated_at!,lifecycle_status:row.lifecycle_status})}:{})});
+    }catch(error){next(error);}
   });
 
   app.put('/api/seasons/current', async (req,res,next) => {
@@ -384,25 +405,31 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   });
 
   app.patch('/api/seasons/:id/lifecycle', async(req,res,next)=>{
-    const {status,revision}=req.body??{};
-    if(!idPattern.test(req.params.id)||!['active','paused','archived'].includes(status)||!Number.isInteger(revision)||revision<1){res.status(400).json({error:'INVALID_SEASON_LIFECYCLE'});return;}
+    const {status,revision,selectionRevision}=req.body??{};
+    if(!idPattern.test(req.params.id)||!['active','paused','archived'].includes(status)||!Number.isInteger(revision)||revision<1||!Number.isInteger(selectionRevision)||selectionRevision<0){res.status(400).json({error:'INVALID_SEASON_LIFECYCLE'});return;}
     const client=await pool.connect();
     try{
       await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[ownerOf(req)]);
+      const current=await client.query<{season_id:string|null;revision:number}>('SELECT season_id,revision FROM user_current_seasons WHERE user_id=$1 FOR UPDATE',[ownerOf(req)]);
+      const actualSelectionRevision=Number(current.rows[0]?.revision??0);
+      if(actualSelectionRevision!==selectionRevision){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_SELECTION_CONFLICT',selectionRevision:actualSelectionRevision,currentSeasonId:current.rows[0]?.season_id??null});return;}
       const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
       const old=found.rows[0];if(!old){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}
       if(old.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',season:publicSeason(old)});return;}
       if(old.lifecycle_status==='archived'&&status!=='archived'){await client.query('ROLLBACK');res.status(409).json({error:'ARCHIVED_SEASON_READ_ONLY'});return;}
+      if(old.lifecycle_status===status){await client.query('COMMIT');res.json({season:publicSeason(old),currentSeasonId:current.rows[0]?.season_id??null,selectionRevision:actualSelectionRevision,idempotent:true});return;}
       const updated=await client.query<Row>(`UPDATE seasons SET lifecycle_status=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3 RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`,[status,req.params.id,ownerOf(req)]);
+      let currentSeasonId=current.rows[0]?.season_id??null;let nextSelectionRevision=actualSelectionRevision;
       if(status==='archived'){
-        const current=await client.query('SELECT season_id FROM user_current_seasons WHERE user_id=$1 FOR UPDATE',[ownerOf(req)]);
-        if(current.rows[0]?.season_id===req.params.id){
-          const fallback=await client.query<{id:string}>('SELECT id FROM seasons WHERE owner_user_id=$1 AND id<>$2 AND lifecycle_status<>\'archived\' ORDER BY updated_at DESC LIMIT 1',[ownerOf(req),req.params.id]);
-          if(fallback.rows[0]) await client.query('UPDATE user_current_seasons SET season_id=$1,revision=revision+1,updated_at=now() WHERE user_id=$2',[fallback.rows[0].id,ownerOf(req)]);
-          else await client.query('DELETE FROM user_current_seasons WHERE user_id=$1',[ownerOf(req)]);
+        if(currentSeasonId===req.params.id){
+          const fallback=await client.query<{id:string}>('SELECT id FROM seasons WHERE owner_user_id=$1 AND id<>$2 AND lifecycle_status=\'active\' ORDER BY updated_at DESC,id LIMIT 1',[ownerOf(req),req.params.id]);
+          currentSeasonId=fallback.rows[0]?.id??null;
+          const selection=await client.query<{revision:number}>('UPDATE user_current_seasons SET season_id=$1,revision=revision+1,updated_at=now() WHERE user_id=$2 RETURNING revision',[currentSeasonId,ownerOf(req)]);
+          nextSelectionRevision=Number(selection.rows[0]?.revision??actualSelectionRevision);
         }
       }
-      await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0])});
+      await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0]),currentSeasonId,selectionRevision:nextSelectionRevision});
     }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
 
@@ -463,18 +490,30 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     const parsed = learningStateSchema.safeParse(stripClientAuthority(req.body?.state));
     if (!parsed.success) { res.status(400).json({ error: 'INVALID_ARCHIVE' }); return; }
     const state = withoutClientAuthority(parsed.data);
+    const expectedSelectionRevision = req.body?.selectionRevision;
+    if (expectedSelectionRevision !== undefined && (!Number.isInteger(expectedSelectionRevision) || expectedSelectionRevision < 0)) { res.status(400).json({ error: 'INVALID_SEASON_SELECTION' }); return; }
     const id = randomUUID();
+    const client = await pool.connect();
     try {
-      const result = await pool.query<Row>(`INSERT INTO seasons (id,owner_user_id,campaign_id,title,revision,state)
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      const pointer = await client.query<{season_id:string|null;revision:number}>('SELECT season_id,revision FROM user_current_seasons WHERE user_id=$1 FOR UPDATE', [ownerOf(req)]);
+      const actualRevision = Number(pointer.rows[0]?.revision ?? 0);
+      if (expectedSelectionRevision !== undefined && expectedSelectionRevision !== actualRevision) {
+        await client.query('ROLLBACK'); res.status(409).json({ error: 'SEASON_SELECTION_CONFLICT', currentSeasonId: pointer.rows[0]?.season_id ?? null, selectionRevision: actualRevision }); return;
+      }
+      const result = await client.query<Row>(`INSERT INTO seasons (id,owner_user_id,campaign_id,title,revision,state)
         VALUES ($1,$2,$3,$4,1,$5) RETURNING id,campaign_id,title,revision,state,created_at,updated_at`,
       [id, ownerOf(req), state.campaign.id, state.campaign.title, JSON.stringify(state)]);
-      await pool.query(`INSERT INTO user_current_seasons(user_id,season_id) VALUES($1,$2)
-        ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now()`,[ownerOf(req),id]);
-      res.status(201).json({ season: publicSeason(result.rows[0]) });
+      const selected = await client.query<{revision:number}>(`INSERT INTO user_current_seasons(user_id,season_id,revision) VALUES($1,$2,1)
+        ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now() RETURNING revision`, [ownerOf(req), id]);
+      await client.query('COMMIT');
+      res.status(201).json({ season: publicSeason(result.rows[0]), currentSeasonId: id, selectionRevision: Number(selected.rows[0].revision) });
     } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
       if (error && typeof error === 'object' && 'code' in error && error.code === '23505') { res.status(409).json({ error: 'SEASON_EXISTS' }); return; }
       next(error);
-    }
+    } finally { client.release(); }
   });
 
   app.get('/api/seasons/:id', async (req, res, next) => {
@@ -494,6 +533,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id = $1 AND owner_user_id = $2 FOR UPDATE', [req.params.id, ownerOf(req)]);
       const old = found.rows[0];
       if (!old) { await client.query('ROLLBACK'); res.status(404).json({ error: 'NOT_FOUND' }); return; }
+      if (old.lifecycle_status !== 'active') { await client.query('ROLLBACK'); res.status(409).json({ error: old.lifecycle_status === 'paused' ? 'SEASON_PAUSED' : 'ARCHIVED_SEASON_READ_ONLY' }); return; }
       if (old.revision !== req.body.revision) { await client.query('ROLLBACK'); res.status(409).json({ error: 'REVISION_CONFLICT', revision: old.revision, season: publicSeason(old) }); return; }
       if (req.body?.state?.campaign?.id !== old.campaign_id) { await client.query('ROLLBACK'); res.status(400).json({ error: 'CAMPAIGN_IMMUTABLE' }); return; }
       const parsed = learningStateSchema.safeParse(stripClientAuthority(req.body?.state, old.state));
@@ -516,9 +556,11 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [req.params.id, ownerOf(req)]);
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[ownerOf(req)]);
+      const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [req.params.id, ownerOf(req)]);
       const row = found.rows[0];
       if (!row) { await client.query('ROLLBACK'); res.status(404).json({ error: 'NOT_FOUND' }); return; }
+      if (row.lifecycle_status !== 'active') { await client.query('ROLLBACK'); res.status(409).json({ error: row.lifecycle_status === 'paused' ? 'SEASON_PAUSED' : 'ARCHIVED_SEASON_READ_ONLY' }); return; }
       if (row.revision !== req.body.revision) { await client.query('ROLLBACK'); res.status(409).json({ error: 'REVISION_CONFLICT', revision: row.revision }); return; }
       const previous = row.state;
       const task = previous.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === req.body.taskId);
@@ -591,8 +633,9 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     if(!idPattern.test(req.params.id)||typeof taskId!=='string'||!Number.isInteger(rating)||rating<1||rating>4||typeof answer!=='string'||answer.trim().length<8||answer.length>10000||typeof hintUsed!=='boolean'||!Number.isInteger(revision)||revision<1){res.status(400).json({error:'INVALID_REVIEW'});return;}
     const client=await pool.connect();
     try{
-      await client.query('BEGIN');const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);const row=found.rows[0];
+      await client.query('BEGIN');const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);const row=found.rows[0];
       if(!row){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}if(row.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',revision:row.revision});return;}
+      if(row.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:row.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       const card=row.state.reviews.find(item=>item.taskId===taskId);if(!card||row.state.progress[taskId]?.status!=='completed'||Date.parse(card.dueAt)>Date.now()){await client.query('ROLLBACK');res.status(409).json({error:'REVIEW_NOT_DUE'});return;}
       const key=`review:${row.campaign_id}:${taskId}:${card.history.length+1}`;const coins=rating>=3&&answer.trim().length>=30&&!hintUsed?EFFECTIVE_REVIEW_COINS:0;const reward={xp:0,coins,items:[]};
       const next=rateReview(row.state,taskId,rating,new Date(),{answer:answer.trim(),hintUsed});
@@ -607,9 +650,10 @@ export async function persistEvaluation(pool: Pool, userId: string, seasonId: st
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [seasonId, userId]);
+    const found = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [seasonId, userId]);
     const row = found.rows[0];
     if (!row) throw new Error('SEASON_NOT_FOUND');
+    if (row.lifecycle_status !== 'active') throw new Error(row.lifecycle_status === 'paused' ? 'SEASON_PAUSED' : 'ARCHIVED_SEASON_READ_ONLY');
     const taskExists = row.state.campaign.stages.some(stage => stage.tasks.some(task => task.id === taskId));
     if (!taskExists || taskEvidence(row.state, taskId) !== evidence) throw new Error('EVIDENCE_STALE');
     const hash = evidenceHash(evidence);

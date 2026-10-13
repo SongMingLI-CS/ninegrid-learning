@@ -51,7 +51,8 @@ function restoreGenerationDraft(saved: SavedGenerationDraft): GenerationDraft {
 const defaultGoal = NUMPY_DEMO_CAMPAIGN.goal;
 
 function createSeasonState(campaign: Campaign): LearningState {
-  return { version: 2, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {} };
+  const independentCampaign = { ...campaign, id: `${campaign.id.slice(0, 90)}-${crypto.randomUUID()}` };
+  return { version: 2, campaign: independentCampaign, progress: createProgressForCampaign(independentCampaign), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {} };
 }
 function localArchiveCandidates(state: LearningState): LearningState[] {
   const current = { ...state, history: [] };
@@ -113,7 +114,7 @@ function App() {
   const [gridDrafts, setGridDrafts] = useState<Record<string, string>>({});
   const activeRequest = useRef<AbortController | null>(null);
   const archiveRequest = useRef<AbortController | null>(null);
-  const serverArchive = useRef<{ id: string; revision: number; userId: string; conflicted?: boolean } | null>(null);
+  const serverArchive = useRef<{ id: string; revision: number; userId: string; conflicted?: boolean; lifecycleStatus?: 'active'|'paused'|'archived' } | null>(null);
   const archiveWriteQueue = useRef<Promise<void>>(Promise.resolve());
   const seasonSwitchSequence = useRef(0);
   const seasonSelectionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -172,7 +173,10 @@ function App() {
     return () => cancelAnimationFrame(frame);
   }, [tab, selectedTaskId, selectedStage, activeChainId]);
 
-  const update = useCallback((next: LearningState) => setState(next), []);
+  const update = useCallback((next: LearningState) => {
+    if (currentAccountId.current && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived')) return;
+    setState(next);
+  }, []);
   const flash = useCallback((value: Notification) => setNotification(value), []);
   const queueServerRequest = <T,>(operation: (archive: NonNullable<typeof serverArchive.current>) => Promise<T>): Promise<T> => {
     const archive = serverArchive.current;
@@ -187,6 +191,7 @@ function App() {
     return pending;
   };
   const writeServerArchive = async (archive: NonNullable<typeof serverArchive.current>, snapshot: LearningState): Promise<void> => {
+    if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived') throw new Error('此赛季为只读，请在个人主页恢复或创建新赛季');
     if (archive.conflicted) throw new Error('档案存在版本冲突，请导出草稿或明确选择服务器版本');
     if (snapshot.campaign.id !== currentState.current.campaign.id) throw new DOMException('赛季已切换', 'AbortError');
     setSyncStatus('saving');
@@ -242,6 +247,7 @@ function App() {
   useEffect(() => {
     if (!accountUser) { archiveRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false; setSavedGenerationDrafts([]); setPendingDraftId(undefined); setScopedUserId(undefined); setStorageScope(); return; }
     const controller = new AbortController(); archiveRequest.current?.abort(); archiveRequest.current = controller;
+    seasonSwitchSequence.current += 1; seasonSelectionQueue.current = Promise.resolve(); seasonSelectionRevisionRef.current = 0; setSeasonSelectionRevision(0);
     serverHydrated.current = false; serverArchive.current = null; setScopedUserId(undefined);
     setServerSeasons([]); setServerWallet(0); setServerInventory([]); setServerLedger([]); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null);
     setStorageScope(accountUser.id);
@@ -251,7 +257,12 @@ function App() {
         if (!response.ok) throw new Error('服务器档案读取失败');
         const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?:string; updatedAt?:string; lifecycleStatus?:'active'|'paused'|'archived' }>; currentSeasonId?:string|null; selectionRevision?:number };
         if (controller.signal.aborted) return;
-        let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived') ?? payload.seasons?.find(item=>item.lifecycleStatus!=='archived');
+        let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived');
+        if (!season && payload.seasons?.length) {
+          setServerSeasons(payload.seasons); setCurrentSeasonId(''); seasonSelectionRevisionRef.current = payload.selectionRevision ?? 0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
+          setScopedUserId(accountUser.id); setSyncStatus('saved'); setSaveError(''); setTab(pathTab(window.location.pathname) ?? 'profile');
+          return;
+        }
         if (!season) {
           if (!loaded.isNew) {
             setLegacyImportPending(localArchiveCandidates(loaded.state));
@@ -260,13 +271,14 @@ function App() {
           }
           const local = loadStateSafely();
           const initial = local.isNew ? switchCampaign(local.state, NUMPY_DEMO_CAMPAIGN) : local.state;
-          const created = await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: initial }), signal: controller.signal });
+          const created = await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: initial, selectionRevision: payload.selectionRevision ?? 0 }), signal: controller.signal });
           if (!created.ok) throw new Error('无法创建服务器学习档案');
-          season = (await created.json() as { season: { id: string; revision: number; title: string; state: LearningState } }).season;
+          const createdPayload = await created.json() as { season: { id: string; revision: number; title: string; state: LearningState }; selectionRevision:number };
+          season = createdPayload.season; payload.selectionRevision = createdPayload.selectionRevision;
         }
         if (controller.signal.aborted) return;
         setServerSeasons(payload.seasons?.length ? payload.seasons : [season]);
-        setCurrentSeasonId(season.id); seasonSelectionRevisionRef.current=payload.seasons?.length?(payload.selectionRevision??0):1; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
+        setCurrentSeasonId(season.id); seasonSelectionRevisionRef.current=payload.selectionRevision??0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
         try {
           const draftResponse = await apiFetch('/api/generation-drafts', { signal: controller.signal });
           if (draftResponse.ok) {
@@ -283,7 +295,7 @@ function App() {
           conflicted = pending.revision !== season.revision;
           if (JSON.stringify(restored) === JSON.stringify(season.state)) { clearPendingDraft(accountUser.id, season.id, pending.state); restored = season.state; conflicted = false; }
         }
-        serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, conflicted };
+        serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, conflicted, lifecycleStatus: season.lifecycleStatus ?? 'active' };
         setState(restored); setSelectedTaskId(restored.lastTaskId ?? restored.campaign.stages[0]?.tasks[0]?.id ?? '');
         setSelectedStage(0); if (!pathTab(window.location.pathname)) setTab('missions'); else setTab(pathTab(window.location.pathname)!); serverHydrated.current = true;
         setSaveError(conflicted ? '服务器已有较新版本，已恢复本机未发送草稿；请导出草稿或明确选择服务器版本，当前不会覆盖服务器。' : ''); setSyncStatus(conflicted ? 'conflict' : pending ? 'saving' : 'saved'); setScopedUserId(accountUser.id);
@@ -297,7 +309,7 @@ function App() {
   }, [accountUser?.id]);
   useEffect(() => {
     const current = serverArchive.current;
-    if (!accountUser || !serverHydrated.current || !current || current.userId !== accountUser.id) return;
+    if (!accountUser || !serverHydrated.current || !current || current.userId !== accountUser.id || current.lifecycleStatus === 'paused' || current.lifecycleStatus === 'archived') return;
     const timer = window.setTimeout(() => {
       void putServerArchive(state).then(() => { if (serverArchive.current === current) setSaveError(''); })
         .catch(error => { if (serverArchive.current === current && !(error instanceof DOMException && error.name === 'AbortError')) setSaveError(`尚未同步到服务器：${error instanceof Error ? error.message : '网络错误'}。本机缓存仍保留。`); });
@@ -324,6 +336,9 @@ function App() {
   }, [campaign.id, localDate]);
 
   const beginTask = async (nextTask: Task, options: { diagnostic?: boolean } = {}) => {
+    if (accountUser && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived')) {
+      setSelectedTaskId(nextTask.id); setTab('workspace'); setSaveError('赛季暂停或归档后仅可预览。请在个人主页恢复赛季后继续学习。'); return;
+    }
     const unlocked = isTaskUnlocked(campaign, state.progress, nextTask.id);
     if (!options.diagnostic) setDiagnosticMode(false);
     setSelectedTaskId(nextTask.id);
@@ -359,10 +374,11 @@ function App() {
     if (accountUser) {
       try {
         const response = pendingDraftId
-          ? await apiFetch(`/api/generation-drafts/${pendingDraftId}/activate`, { method: 'POST' })
-          : await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: createSeasonState(pendingCampaign) }) });
+          ? await apiFetch(`/api/generation-drafts/${pendingDraftId}/activate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selectionRevision: seasonSelectionRevisionRef.current }) })
+          : await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: createSeasonState(pendingCampaign), selectionRevision: seasonSelectionRevisionRef.current }) });
         const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? payload.code ?? '新赛季创建失败');
         const season = payload.season as { id: string; revision: number; title: string; state: LearningState };
+        seasonSelectionRevisionRef.current = Number(payload.selectionRevision ?? seasonSelectionRevisionRef.current); setSeasonSelectionRevision(seasonSelectionRevisionRef.current); setCurrentSeasonId(season.id);
         serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
         setServerSeasons(previous => [season, ...previous.filter(item => item.id !== season.id)]); setState(season.state); setSelectedStage(0); setSelectedTaskId(season.state.campaign.stages[0].tasks[0].id);
         setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setPendingDraftId(undefined); setGenerationDraft(null); setSavedGenerationDrafts(previous => previous.filter(item => item.id !== pendingDraftId)); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
@@ -377,11 +393,10 @@ function App() {
 
   const switchServerSeason = async (id: string): Promise<boolean> => {
     if (!accountUser) return false;
-    if (id === serverArchive.current?.id) return true;
     const sequence=++seasonSwitchSequence.current;
     let controller: AbortController | undefined;
     try {
-      if (serverArchive.current && !serverArchive.current.conflicted) await putServerArchive(currentState.current);
+      if (serverArchive.current && !serverArchive.current.conflicted && serverArchive.current.lifecycleStatus !== 'paused' && serverArchive.current.lifecycleStatus !== 'archived') await putServerArchive(currentState.current);
       if (serverArchive.current?.conflicted) throw new Error('当前赛季有版本冲突，请先导出草稿或加载服务器版本');
       const response = await apiFetch(`/api/seasons/${id}`);
       if (!response.ok) throw new Error('无法读取该学习赛季');
@@ -398,10 +413,13 @@ function App() {
       const pending=seasonSelectionQueue.current.then(select); seasonSelectionQueue.current=pending.then(()=>undefined,()=>undefined); await pending;
       if(sequence!==seasonSwitchSequence.current) return false;
       archiveRequest.current?.abort(); activeRequest.current?.abort(); controller = new AbortController(); archiveRequest.current = controller;
-      serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
+      const draft=readPendingDraft(accountUser.id,season.id);
+      const restored=draft?.state??season.state;
+      const conflicted=!!draft&&draft.revision!==season.revision&&JSON.stringify(restored)!==JSON.stringify(season.state);
+      serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, lifecycleStatus: season.lifecycleStatus ?? 'active', conflicted }; serverHydrated.current = true;
       setCurrentSeasonId(id); setServerSeasons(prev=>prev.map(item=>item.id===id?{...item,...season}:item));
-      setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0]?.tasks[0]?.id ?? ''); setSelectedStage(0); setTab('missions');
-      setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError(''); setSyncStatus('saved');
+      currentState.current = restored; setState(restored); setSelectedTaskId(restored.lastTaskId ?? restored.campaign.stages[0]?.tasks[0]?.id ?? ''); setSelectedStage(0); setTab('missions');
+      setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError(conflicted?'该赛季保留着本机草稿，但服务器版本已更新；请导出草稿或加载服务器版本。':''); setSyncStatus(conflicted?'conflict':draft?'saving':'saved');
       return true;
     } catch (error) { if (!controller?.signal.aborted && sequence===seasonSwitchSequence.current) setSaveError(`赛季切换失败：${error instanceof Error ? error.message : '网络错误'}；当前内容仍保留。`); return false; }
   };
@@ -445,9 +463,10 @@ function App() {
   const startFreshServerSeason = async () => {
     if (!accountUser) return;
     try {
-      const response = await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: createSeasonState(NUMPY_DEMO_CAMPAIGN) }) });
+      const response = await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: createSeasonState(NUMPY_DEMO_CAMPAIGN), selectionRevision: seasonSelectionRevisionRef.current }) });
       const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '创建新赛季失败');
       const season = payload.season as { id: string; revision: number; title: string; state: LearningState };
+      seasonSelectionRevisionRef.current = Number(payload.selectionRevision ?? seasonSelectionRevisionRef.current); setSeasonSelectionRevision(seasonSelectionRevisionRef.current); setCurrentSeasonId(season.id);
       serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
       setServerSeasons([season]); setState(season.state); setSelectedTaskId(season.state.campaign.stages[0].tasks[0].id); setSelectedStage(0);
       setLegacyImportPending(null); setSaveError(''); setScopedUserId(accountUser.id); await refreshServerRewards();
@@ -791,6 +810,7 @@ function App() {
     try {
       const response = await apiFetch('/api/auth/logout', { method: 'POST' });
       if (!response.ok) throw new Error('退出登录失败');
+      seasonSwitchSequence.current += 1; seasonSelectionQueue.current = Promise.resolve(); seasonSelectionRevisionRef.current = 0; setCurrentSeasonId('');
       archiveRequest.current?.abort(); activeRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false;
       setState(loaded.isNew ? switchCampaign(loaded.state, NUMPY_DEMO_CAMPAIGN) : loaded.state);
       setServerSeasons([]); setServerWallet(0); setServerInventory([]); setServerLedger([]); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null);
@@ -800,13 +820,41 @@ function App() {
 
   const navigateRoute = (path: string) => { window.history.pushState({}, '', path); setTab(pathTab(path) ?? 'missions'); };
   const exitStandalone = () => navigateRoute('/');
+  const flushProfileSeason = async (id: string): Promise<number | undefined> => {
+    const archive = serverArchive.current;
+    if (archive?.id !== id) return undefined;
+    if (archive.lifecycleStatus !== 'paused' && archive.lifecycleStatus !== 'archived') await putServerArchive(currentState.current);
+    return archive.revision;
+  };
+  const applyLifecycle = async (payload: {season:{id:string;revision:number;lifecycleStatus:'active'|'paused'|'archived';state:LearningState};currentSeasonId:string|null;selectionRevision:number}) => {
+    const userId = accountUser!.id; const sequence = ++seasonSwitchSequence.current;
+    setServerSeasons(previous => previous.map(item => item.id === payload.season.id ? {...item, ...payload.season} : item));
+    seasonSelectionRevisionRef.current = payload.selectionRevision; setSeasonSelectionRevision(payload.selectionRevision); setCurrentSeasonId(payload.currentSeasonId ?? '');
+    if (serverArchive.current?.id === payload.season.id) { serverArchive.current.revision = payload.season.revision; serverArchive.current.lifecycleStatus = payload.season.lifecycleStatus; }
+    if (payload.season.lifecycleStatus !== 'archived' || serverArchive.current?.id !== payload.season.id) return;
+    serverHydrated.current = false; serverArchive.current = null; activeRequest.current?.abort();
+    if (!payload.currentSeasonId) return;
+    const response = await apiFetch(`/api/seasons/${payload.currentSeasonId}`);
+    if (!response.ok) throw new Error('已归档，但备用赛季读取失败，请刷新重试');
+    const {season} = await response.json();
+    if (currentAccountId.current !== userId || sequence !== seasonSwitchSequence.current) return;
+    serverArchive.current = {id:season.id,revision:season.revision,userId,lifecycleStatus:season.lifecycleStatus}; serverHydrated.current = true;
+    currentState.current = season.state; setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0].tasks[0].id); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError('');
+  };
+  const continueProfileSeason = async (id: string, taskId?: string) => {
+    if (!await switchServerSeason(id)) return;
+    const next = currentState.current;
+    const selected = taskId ?? next.lastTaskId ?? next.campaign.stages[0]?.tasks[0]?.id;
+    if (!selected || !next.progress[selected]) return;
+    setSelectedTaskId(selected); setState({...next,lastTaskId:selected}); window.history.pushState({}, '', '/'); setTab('workspace');
+  };
 
   if (accountUser && ['inventory','shop','challenges','profile'].includes(tab)) {
     return <Suspense fallback={<main className="account-gate"><div className="account-panel">正在打开页面…</div></main>}>
       {tab==='inventory' ? <WarehouseScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()}/> :
        tab==='shop' ? <ShopScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
        tab==='challenges' ? <ChallengesScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
-       <ProfileScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/>}</Suspense>;
+       <ProfileScreen key={accountUser.id} account={accountUser.email} currentSeasonId={currentSeasonId} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute} onCreateSeason={()=>{navigateRoute('/');setGoalOpen(true);}} onSelectSeason={switchServerSeason} onContinueSeason={continueProfileSeason} onFlushSeason={flushProfileSeason} onLifecycleChanged={applyLifecycle}/>}</Suspense>;
   }
 
   return (

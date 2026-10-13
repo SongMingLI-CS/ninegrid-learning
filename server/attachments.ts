@@ -5,7 +5,7 @@ import type { Express, Request } from 'express';
 import multer from 'multer';
 import sharp from 'sharp';
 import { fileTypeFromBuffer } from 'file-type';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 
 type Options = { pool: Pool; directory?: string; apiKey?: string; fetchImpl?: typeof fetch };
@@ -39,10 +39,12 @@ export function mountAttachmentRoutes(app: Express, options: Options): void {
     const file = req.file;
     if (!uuid.test(req.params.seasonId) || !file) { res.status(400).json({ error: 'IMAGE_REQUIRED' }); return; }
     let storageKey: string | undefined;
+    let client: PoolClient | undefined;
     try {
-      const owned = await pool.query<{ id: string; state: { campaign: { stages: Array<{ tasks: Array<{ id: string }> }> } } }>('SELECT id,state FROM seasons WHERE id=$1 AND owner_user_id=$2', [req.params.seasonId, owner(req)]);
+      const owned = await pool.query<{ id: string; lifecycle_status:string; state: { campaign: { stages: Array<{ tasks: Array<{ id: string }> }> } } }>('SELECT id,state,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2', [req.params.seasonId, owner(req)]);
       const season = owned.rows[0];
       if (!season || !season.state.campaign.stages.some(stage => stage.tasks.some(task => task.id === req.params.taskId))) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
+      if(season.lifecycle_status!=='active'){res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       const used = await pool.query<{ bytes: number }>('SELECT COALESCE(SUM(byte_size),0)::integer AS bytes FROM attachments WHERE owner_user_id=$1', [owner(req)]);
       if ((used.rows[0]?.bytes ?? 0) + file.size > 50 * 1024 * 1024) { res.status(413).json({ error: 'ATTACHMENT_QUOTA_EXCEEDED' }); return; }
       const detected = await fileTypeFromBuffer(file.buffer);
@@ -53,15 +55,23 @@ export function mountAttachmentRoutes(app: Express, options: Options): void {
       const optimized = await image.rotate().resize({ width: 4096, height: 4096, fit: 'inside', withoutEnlargement: true }).webp({ quality: 82 }).toBuffer({ resolveWithObject: true });
       if (optimized.data.byteLength > 5 * 1024 * 1024) { res.status(413).json({ error: 'IMAGE_TOO_LARGE_AFTER_PROCESSING' }); return; }
       const id = randomUUID(); storageKey = `${randomUUID()}.webp`;
+      client=await pool.connect();await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[owner(req)]);
+      const locked=await client.query<{lifecycle_status:string}>('SELECT lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR SHARE',[season.id,owner(req)]);
+      if(locked.rows[0]?.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_NOT_WRITABLE'});return;}
+      const quota=await client.query<{bytes:number}>('SELECT COALESCE(SUM(byte_size),0)::integer AS bytes FROM attachments WHERE owner_user_id=$1',[owner(req)]);
+      if(Number(quota.rows[0]?.bytes??0)+optimized.data.byteLength>50*1024*1024){await client.query('ROLLBACK');res.status(413).json({error:'ATTACHMENT_QUOTA_EXCEEDED'});return;}
       await mkdir(directory, { recursive: true, mode: 0o700 });
       await writeFile(resolve(directory, storageKey), optimized.data, { flag: 'wx', mode: 0o600 });
-      await pool.query(`INSERT INTO attachments (id,owner_user_id,season_id,task_id,storage_key,mime_type,byte_size,width,height,sha256)
+      await client.query(`INSERT INTO attachments (id,owner_user_id,season_id,task_id,storage_key,mime_type,byte_size,width,height,sha256)
         VALUES ($1,$2,$3,$4,$5,'image/webp',$6,$7,$8,$9)`, [id, owner(req), season.id, req.params.taskId, storageKey, optimized.data.byteLength, optimized.info.width, optimized.info.height, createHash('sha256').update(optimized.data).digest('hex')]);
+      await client.query('COMMIT');
       res.status(201).json({ attachment: { id, seasonId: season.id, taskId: req.params.taskId, mimeType: 'image/webp', byteSize: optimized.data.byteLength, width: optimized.info.width, height: optimized.info.height } });
     } catch (error) {
+      await client?.query('ROLLBACK').catch(()=>undefined);
       if (storageKey) await unlink(resolve(directory, storageKey)).catch(() => undefined);
       next(error);
-    }
+    } finally { client?.release(); }
   });
 
   app.get('/api/attachments/:id', async (req, res, next) => {

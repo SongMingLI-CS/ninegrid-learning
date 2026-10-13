@@ -807,10 +807,11 @@ export function createApp(options: Options = {}) {
     }
     let task: Task;
     if (options.auth) {
-      const owned = await options.auth.pool.query<{ state: LearningState }>('SELECT state FROM seasons WHERE id=$1 AND owner_user_id=$2', [body.seasonId, req.session.userId]);
+      const owned = await options.auth.pool.query<{ state: LearningState; lifecycle_status:string }>('SELECT state,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2', [body.seasonId, req.session.userId]);
       const season = owned.rows[0]?.state;
       task = season?.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === body.taskId)!;
       if (!season || !task) { res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
+      if(owned.rows[0].lifecycle_status!=='active'){res.status(409).json({error:owned.rows[0].lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       if (taskEvidence(season, task.id) !== body.evidence) { res.status(409).json({ error: 'EVIDENCE_NOT_SYNCED' }); return; }
     } else task = parsedTask.data as Task;
     const evidence = body.evidence;
@@ -830,7 +831,7 @@ export function createApp(options: Options = {}) {
       catch (error) {
         const code = error instanceof Error ? error.message : '';
         if (code === 'SEASON_NOT_FOUND' || code === 'TASK_COMPLETED') { res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
-        if (code === 'EVIDENCE_STALE' || code === 'REVISION_CONFLICT') { res.status(409).json({ error: code }); return; }
+        if (['EVIDENCE_STALE','REVISION_CONFLICT','SEASON_PAUSED','ARCHIVED_SEASON_READ_ONLY'].includes(code)) { res.status(409).json({ error: code }); return; }
         throw error;
       }
     }
