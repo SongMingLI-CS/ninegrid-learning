@@ -47,7 +47,10 @@
 - 今日节目表按预算安排复习、主线与可选支线；学习工作区提供 16px 起正文、术语解释、示例、挑战、验收和提示。
 - 课程规划、日程、任务讲解、提示、验收与学习调整分别走服务端 API；AI 结果由 Zod Schema 和任务依赖关系校验。
 - 确定性奖励规则为任务、任务链、阶段与赛季发 XP、学习币和占位道具；流水可追溯且防重复。九格能力成果与钱包/道具仓库分开。
-- 完成记录、答案、复习历史、课程内容缓存、多个目标档案及奖励流水保存于当前浏览器，可导出/校验导入；不提供云同步或加密。
+- 登录账号的赛季档案保存于 PostgreSQL；赛季读写按 `owner_user_id` 校验并使用 revision 乐观并发控制，浏览器 localStorage 仅作辅助缓存。每个新蓝图会创建独立赛季。
+- 任务结算由服务器检查任务解锁、当前证据和自评/服务端 AI 评价；数据库事务写入赛季进度、奖励流水、钱包与仓库，唯一领取键用于重复请求去重。
+- 学习图片保存在私有持久目录，按用户/赛季/任务授权访问；上传校验实际图片格式并重编码，视觉分析经服务端将实际图片内容发送给 `deepseek-flash`。图片本身不会通过验收。
+- 个人仓库从服务器读取钱包、道具及奖励流水；九格成果仍与普通道具分开。
 - 预置 NumPy 学习行动从已学 ndarray、shape、dtype 开始，不假定掌握高级索引或机器学习。原 Python 赛季仍作为示例与可切换档案。
 
 ## 验证
@@ -55,7 +58,7 @@
     npm test
     npm run build
 
-测试覆盖 API Schema 与提示、任务进度/奖励/复习/多目标切换、自然语言字段提取，以及 NumPy 界面流程。若未配置 DeepSeek Key，API 端到端生成和 AI 验收不会发生；本地 NumPy 预置课程也不会伪装成真实 AI 输出。
+测试覆盖 API Schema 与提示、任务进度/奖励/复习/多目标切换、自然语言字段提取、视频总预算和仓库界面，以及 NumPy 学习流程。若未配置 DeepSeek Key，外部生成、评价和视觉分析不可用；本地 NumPy 预置课程与模拟接口均明确区分。
 
 界面截图：[1366×768 课程总览](output/playwright/ninegrid-overview.png) · [1920×1080 学习工作区](output/playwright/ninegrid-workspace.png)
 
@@ -65,14 +68,14 @@
 
 ## Ubuntu 部署预备
 
-当前分支包含 Ubuntu/Docker Compose 部署骨架、PostgreSQL 初始迁移、Argon2id 账号会话和数据库备份/恢复脚本。配置文件可静态解析；尚未在这台开发机实启 Docker/PostgreSQL，也没有连接实际 DeepSeek/YouTube API 密钥做线上请求验证。
+Ubuntu 部署使用独立 PostgreSQL 与持久附件卷；`APP_PORT` 默认仅映射到 `127.0.0.1:8787`。请在已确认空闲的备用端口和独立 Compose 项目名下测试。登录 Cookie 在生产模式要求 HTTPS，因此反向代理需终止 TLS，并把请求转发到本机端口。
 
 1. Ubuntu 安装 Docker Engine 与 Compose 插件；将仓库克隆到服务器，复制 `.env.example` 为 `.env`。
 2. 设置 `POSTGRES_PASSWORD`、`SESSION_SECRET`、`APP_ORIGIN`。密码与会话密钥必须换成随机值，可用 `openssl rand -hex 32` 生成；`APP_ORIGIN` 填实际 HTTPS 域名。按需配置 `DEEPSEEK_API_KEY`、`YOUTUBE_API_KEY`。
 3. 执行 `docker compose config --quiet` 检查配置，再执行 `docker compose up -d --build`。应用启动时自动迁移数据库；Nginx/Caddy 等 TLS 反向代理应转发到本机 `127.0.0.1:8787`。
-4. 备份：`sh scripts/backup-db.sh ./backups`。恢复：`sh scripts/restore-db.sh ./backups/文件.dump`；恢复会清理数据库对象，先另做备份，并单独备份 `ninegrid-uploads` 卷。
+4. TLS 反向代理转发至 `127.0.0.1:8787`，并仅在确认可信代理跳数后设置 `TRUST_PROXY=1`。备份：`sh scripts/backup-db.sh ./backups`，会生成数据库、私有图片附件和校验文件。恢复到隔离的新数据库：`RESTORE_DB=ninegrid_restore sh scripts/restore-db.sh ./backups/文件.dump ./backups/附件.tar.gz`；脚本拒绝覆盖当前配置的应用数据库，并将附件恢复到单独目录。
 
-本轮登录后的档案按账号隔离在当前浏览器 localStorage 中；账号认证已接入，但服务端赛季读写、跨设备同步、旧浏览器档案确认迁移和服务端权威奖励流水尚未完成。因此不得把登录视为云端备份；本机档案在迁移入口实现前保持原样。图片附件/视觉分析接口、YouTube 候选的视频内容匹配审阅、完整道具仓库筛选详情也尚未实现。
+`npm run test:postgres` 在本机启动临时原生 PostgreSQL，并验证重复迁移、注册/登录、所有权隔离、存档读写、并发奖励、证据版本、私有附件、服务重启和独立库备份恢复；Windows 需安装 PostgreSQL 客户端工具，非标准目录用 `PG_TOOLS_DIR` 指定。Ubuntu 集成部署和真实 DeepSeek/YouTube 在线请求需分别报告；缺少外部密钥时不会把模拟测试描述成在线验证。浏览器端保留原始本机档案，确认导入时服务器会将旧成果记为自行完成，不采信旧钱包或 AI 标记。
 
 ## 方法出处
 

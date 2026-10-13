@@ -1,0 +1,74 @@
+.personal-inventory {
+  --pi-text: #ecf2ed;
+  --pi-muted: #b7c5bf;
+  --pi-line: #52635e;
+  --pi-accent: #b5e5c9;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: clamp(16px, 3vw, 32px);
+  background: #101a1d;
+  color: var(--pi-text);
+  font: 16px/1.6 system-ui, 'Noto Sans SC', sans-serif;
+  border: 1px solid var(--pi-line);
+  border-top: 3px solid var(--pi-accent);
+  overflow-wrap: anywhere;
+}
+.personal-inventory *, .personal-inventory *::before, .personal-inventory *::after { box-sizing: border-box; }
+.personal-inventory h2 { margin: 8px 0; font-size: clamp(26px, 4vw, 36px); line-height: 1.3; }
+.personal-inventory h3 { margin: 0; font-size: 22px; }
+.personal-inventory h4 { font-size: 18px; }
+.personal-inventory p { margin: 8px 0 16px; }
+.personal-inventory button, .personal-inventory select { font: inherit; color: var(--pi-text); min-height: 44px; }
+.personal-inventory button { padding: 8px 14px; border: 1px solid var(--pi-line); border-radius: 4px; background: #23332f; cursor: pointer; }
+.personal-inventory button:hover { border-color: var(--pi-accent); }
+.personal-inventory button:focus-visible, .personal-inventory select:focus-visible, .personal-inventory .pi-details:focus-visible { outline: 3px solid var(--pi-accent); outline-offset: 4px; }
+.personal-inventory .pi-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid var(--pi-line); }
+.personal-inventory .pi-header p, .personal-inventory .pi-wallet > p, .personal-inventory .pi-history > p { color: var(--pi-muted); }
+.personal-inventory .pi-eyebrow, .personal-inventory .pi-stamp { color: var(--pi-accent); font-size: 16px; letter-spacing: .04em; }
+.personal-inventory .pi-stamp { border: 1px solid var(--pi-line); padding: 8px 12px; flex-shrink: 0; }
+.personal-inventory .pi-wallet { margin: 24px 0; padding: 20px; background: #152522; border: 1px solid var(--pi-line); }
+.personal-inventory dl { margin: 0; }
+.personal-inventory .pi-wallet dl { display: flex; flex-wrap: wrap; gap: 20px 48px; }
+.personal-inventory dt { color: var(--pi-muted); }
+.personal-inventory dd { margin: 0; }
+.personal-inventory .pi-wallet dd { color: #d9f5df; font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.personal-inventory .pi-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 24px 0; }
+.personal-inventory .pi-filters label { display: grid; gap: 6px; flex: 1 1 200px; min-width: 0; }
+.personal-inventory select { width: 100%; padding: 10px; background: #152024; border: 1px solid var(--pi-line); border-radius: 4px; }
+.personal-inventory .pi-section-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.personal-inventory .pi-section-heading > span { color: var(--pi-muted); }
+.personal-inventory .pi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 18px; }
+.personal-inventory .pi-card { --pi-rarity: #c4d2c9; display: flex; flex-direction: column; align-items: stretch; gap: 12px; min-width: 0; padding: 20px; text-align: left; border: 1px solid var(--pi-line); border-top: 3px solid var(--pi-rarity); background: linear-gradient(145deg, #22312f, #121e22); box-shadow: inset 0 0 0 5px #111b1c; }
+.personal-inventory .pi-rarity-rare { --pi-rarity: #b0d8fb; background: linear-gradient(145deg, #233744, #121e22); }
+.personal-inventory .pi-rarity-legendary { --pi-rarity: #ffd3a1; background: linear-gradient(145deg, #3a2d26, #1b1e22); }
+.personal-inventory .pi-card[aria-expanded=true] { outline: 2px solid var(--pi-rarity); outline-offset: 3px; }
+.personal-inventory .pi-card-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--pi-rarity); }
+.personal-inventory .pi-emblem { display: grid; place-items: center; align-self: center; width: 88px; height: 88px; margin: 8px 0; border: 1px solid var(--pi-rarity); border-radius: 18px 4px; color: var(--pi-rarity); background: repeating-linear-gradient(45deg, transparent, transparent 10px, #ffffff05 10px, #ffffff05 11px); font-size: 40px; overflow: hidden; }
+.personal-inventory .pi-card strong { font-size: 22px; }
+.personal-inventory .pi-description, .personal-inventory .pi-source { color: var(--pi-muted); }
+.personal-inventory .pi-source { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--pi-line); }
+.personal-inventory .pi-card-action { color: var(--pi-rarity); }
+.personal-inventory .pi-details { margin: 24px 0; padding: 20px; border: 1px solid var(--pi-accent); background: #172622; }
+.personal-inventory .pi-metadata { display: flex; flex-wrap: wrap; gap: 16px 36px; }
+.personal-inventory .pi-provenance { padding: 0; list-style: none; }
+.personal-inventory .pi-provenance li { display: grid; gap: 4px; padding: 12px 0; border-top: 1px solid var(--pi-line); }
+.personal-inventory time { color: var(--pi-muted); font-size: 16px; }
+.personal-inventory .pi-history { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--pi-line); }
+.personal-inventory .pi-history ol { padding: 0; list-style: none; display: grid; gap: 12px; }
+.personal-inventory .pi-history li { padding: 16px; border: 1px solid var(--pi-line); background: #152024; }
+.personal-inventory .pi-history-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.personal-inventory .pi-history li p { color: var(--pi-muted); }
+.personal-inventory .pi-rewards { display: flex; flex-wrap: wrap; gap: 8px; }
+.personal-inventory .pi-rewards span { padding: 4px 10px; color: #d9f5df; border: 1px solid var(--pi-line); background: #1c3029; }
+.personal-inventory .pi-notice { padding: 24px; border: 1px dashed var(--pi-line); background: #152024; color: var(--pi-muted); }
+.personal-inventory .pi-error { color: #ffcfbf; border-color: #ca9b88; }
+@media (max-width: 600px) {
+  .personal-inventory .pi-header { flex-direction: column; }
+  .personal-inventory .pi-grid { grid-template-columns: 1fr; }
+  .personal-inventory .pi-filters { align-items: stretch; }
+  .personal-inventory .pi-filters label { flex-basis: 100%; }
+  .personal-inventory .pi-filters > button { width: 100%; }
+  .personal-inventory .pi-details, .personal-inventory .pi-wallet { padding: 16px; }
+}

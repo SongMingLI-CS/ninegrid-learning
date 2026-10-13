@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 RUN npm run build \
     && mkdir -p /var/lib/ninegrid/uploads \
-    && chown -R node:node /var/lib/ninegrid
+    && chown -R node:node /app /var/lib/ninegrid
 
 ENV NODE_ENV=production PORT=8787 HOST=0.0.0.0 UPLOAD_DIR=/var/lib/ninegrid/uploads
 EXPOSE 8787

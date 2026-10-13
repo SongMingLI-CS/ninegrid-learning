@@ -12,7 +12,7 @@ export interface LessonContent {
   challenge: { prompt: string; acceptance: string; hints: string[] };
   language: 'en' | 'zh' | 'mixed'; generatedAt: string; revision: number;
 }
-export interface ScheduleItem { taskId: string; kind: 'review' | 'lesson' | 'practice' | 'reflection'; minutes: number; required: boolean; deliverable: string }
+export interface ScheduleItem { taskId: string; kind: 'review' | 'lesson' | 'practice' | 'reflection' | 'video'; minutes: number; required: boolean; deliverable: string; resourceId?: string; resourceTitle?: string; resourceUrl?: string; watched?: boolean }
 export interface DailySchedule { date: string; theme: string; items: ScheduleItem[]; totalMinutes: number; outcome: string; nextUnlock: string; revision: number }
 export interface RewardEntry { id: string; campaignId: string; taskId: string; at: string; reward: RewardBundle; kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season' | 'review'; idempotencyKey: string }
 export interface TaskAttempt { at: string; answer: string; hintLevelsUsed: number; verification: 'self' | 'ai' | 'none'; passed: boolean; score?: number; errorType?: 'concept' | 'operation' | 'hint-dependence' | 'prerequisite' | 'none'; feedback: string }

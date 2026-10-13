@@ -68,11 +68,12 @@ function detailsRows(payload: unknown): VideoDetails[] {
   });
 }
 
-export async function searchTaskVideos(task: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance'>, options: {
+export async function searchTaskVideos(task: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance'> & Partial<Pick<Task, 'objectives' | 'steps' | 'curiosity'>>, options: {
   apiKey?: string; budgetMinutes: number; language?: 'en' | 'zh' | 'mixed'; fetchImpl?: typeof fetch; now?: () => Date;
 }): Promise<YouTubeSearchResult> {
   const language = options.language ?? 'mixed';
-  const query = `${task.title} ${task.brief}`.slice(0, 300);
+  const knowledgeTerms = [...(task.objectives ?? []).map(item => item.text), ...(task.steps ?? []).slice(0, 2), task.curiosity ?? ''];
+  const query = [task.title, task.brief, ...knowledgeTerms, task.acceptance].filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 500);
   const fallbackResult = fallback(query);
   const key = options.apiKey?.trim();
   if (!key || !Number.isInteger(options.budgetMinutes) || options.budgetMinutes < 1 || options.budgetMinutes > 1440) return fallbackResult;

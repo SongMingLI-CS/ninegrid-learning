@@ -2,27 +2,47 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Aperture, ArrowDown, ArrowRight, ArrowUpRight, Award, BookOpen, Check,
   ChevronDown, ChevronLeft, ChevronRight, CircleCheck, CircleHelp, Clock3, Crosshair,
-  FileText, Fingerprint, Flame, Headphones, KeyRound, Layers2, LockKeyhole, Maximize2,
+  FileText, Fingerprint, Flame, Headphones, KeyRound, Layers2, LockKeyhole, Maximize2, Backpack,
   Menu, Orbit, Play, Plus, Radio, RotateCcw, Search, Send, Settings2, ShieldCheck,
   Sparkles, SquareArrowOutUpRight, Target, TerminalSquare, Trophy, X, Zap,
 } from 'lucide-react';
 import type { Campaign, GoalInput, LearningState, Task, TaskProgress } from '../shared/types';
-import { completeTask, buildDailySchedule, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask } from './lib/engine';
+import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask } from './lib/engine';
 import { loadStateSafely, saveStateSafely, exportState, importState } from './lib/storage';
 import { LessonWorkspace } from './components/LessonWorkspace';
 import { TodaySchedule } from './components/TodaySchedule';
 import { YouTubeResources } from './components/YouTubeResources';
+import type { VerifiedVideo } from '../server/youtube';
 import { AccountGate, type AccountUser } from './components/AccountGate';
+import { InventoryScreen } from './components/InventoryScreen';
 import { apiFetch } from './lib/api';
 import { setStorageScope } from './lib/storage';
 import { NUMPY_DEMO_CAMPAIGN } from './lib/numpyDemo';
 import { extractGoalPreferences, type ExtractedGoalPreferences } from './lib/goalParser';
+import { reconcileServerState, savePendingDraft, readPendingDraft, clearPendingDraft, discardPendingDraft } from './lib/serverSync';
+import { getDailyBudgetMinutes, markVideoWatched, scheduleVideo as addVideoToSchedule } from './lib/videoSchedule';
 
-type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews';
+type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews' | 'inventory';
 type Notification = { title: string; body?: string; tone?: 'success' | 'warning' } | null;
 type Connection = { configured: boolean; model: string; accounts?: boolean };
 
 const defaultGoal = NUMPY_DEMO_CAMPAIGN.goal;
+
+function createSeasonState(campaign: Campaign): LearningState {
+  return { version: 2, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {} };
+}
+function localArchiveCandidates(state: LearningState): LearningState[] {
+  const current = { ...state, history: [] };
+  const prior = (state.history ?? []).map(snapshot => ({
+    version: 2 as const, campaign: snapshot.campaign, progress: snapshot.progress, reviews: snapshot.reviews, notes: snapshot.notes,
+    content: snapshot.content ?? {}, schedules: snapshot.schedules ?? {}, attempts: snapshot.attempts ?? {}, contentHistory: snapshot.contentHistory ?? {},
+    gridOutcomes: snapshot.gridOutcomes ?? {}, dailyAdjustments: snapshot.dailyAdjustments ?? {}, knownTasks: snapshot.knownTasks ?? {},
+    wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], lastTaskId: snapshot.lastTaskId,
+  }));
+  const unique = new Map<string, LearningState>();
+  for (const archive of [...prior, current]) if (!unique.has(archive.campaign.id)) unique.set(archive.campaign.id, archive);
+  return [...unique.values()];
+}
 
 function App() {
   const [loaded] = useState(() => loadStateSafely());
@@ -38,13 +58,19 @@ function App() {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [scopedUserId, setScopedUserId] = useState<string>();
+  const [serverSeasons, setServerSeasons] = useState<Array<{ id: string; revision: number; title: string; state: LearningState }>>([]);
+  const [serverWallet, setServerWallet] = useState(0);
+  const [serverInventory, setServerInventory] = useState<Array<{ item_id: string; definition: { itemId?: string; name?: string; description?: string; rarity?: string; icon?: string }; quantity: number; sources: Array<{ seasonId: string; taskId: string }> }>>([]);
+  const [serverLedger, setServerLedger] = useState<Array<{ id: string; task_id: string; reward: { coins?: number; items?: Array<{ name: string }> } }>>([]);
+  const [legacyImportPending, setLegacyImportPending] = useState<LearningState[] | null>(null);
   const [goal, setGoal] = useState(defaultGoal);
   const [level, setLevel] = useState('零基础');
   const [days, setDays] = useState(28);
   const [dailyMinutes, setDailyMinutes] = useState(45);
   const [reward, setReward] = useState('把第一个真正能用的小工具部署起来');
-  const [busy, setBusy] = useState<'generate' | 'evaluate' | 'lesson' | 'schedule' | null>(null);
+  const [busy, setBusy] = useState<'generate' | 'evaluate' | 'lesson' | 'schedule' | 'settle' | null>(null);
   const [saveError, setSaveError] = useState(loaded.warning ?? '');
+  const [syncStatus, setSyncStatus] = useState<'loading' | 'saving' | 'saved' | 'error' | 'conflict'>('loading');
   const [allowOverwrite, setAllowOverwrite] = useState(false);
   const [pendingCampaign, setPendingCampaign] = useState<Campaign | null>(null);
   const [sourceMaterial, setSourceMaterial] = useState('');
@@ -58,6 +84,11 @@ function App() {
   const [selectedChainId, setSelectedChainId] = useState('');
   const [gridDrafts, setGridDrafts] = useState<Record<string, string>>({});
   const activeRequest = useRef<AbortController | null>(null);
+  const archiveRequest = useRef<AbortController | null>(null);
+  const serverArchive = useRef<{ id: string; revision: number; userId: string; conflicted?: boolean } | null>(null);
+  const archiveWriteQueue = useRef<Promise<void>>(Promise.resolve());
+  const settlementInFlight = useRef(false);
+  const serverHydrated = useRef(false);
   const [notification, setNotification] = useState<Notification>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [seconds, setSeconds] = useState(0);
@@ -72,9 +103,15 @@ function App() {
 
   const campaign = state.campaign;
   const currentState = useRef(state); currentState.current = state;
+  const currentAccountId = useRef(accountUser?.id); currentAccountId.current = accountUser?.id;
   const task = useMemo(() => campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === selectedTaskId) ?? campaign.stages[0]?.tasks[0], [campaign, selectedTaskId]);
   const taskProgress: TaskProgress | undefined = task ? state.progress[task.id] : undefined;
   const stats = useMemo(() => getStats(state), [state]);
+  const inventoryEntries: Array<{ item: NonNullable<LearningState['inventory']>[string]['item']; quantity: number; sources: string[] }> = accountUser
+    ? serverInventory.map(entry => ({ item: entry.definition as NonNullable<LearningState['inventory']>[string]['item'], quantity: entry.quantity, sources: entry.sources.map(source => source.taskId) }))
+    : Object.values(state.inventory ?? {});
+  const inventoryBalance = accountUser ? serverWallet : state.wallet?.balance ?? 0;
+  const rewardHistory = accountUser ? serverLedger.map(entry => ({ id: entry.id, taskId: entry.task_id, reward: { coins: entry.reward.coins ?? 0, items: entry.reward.items ?? [] } })) : state.rewardLedger ?? [];
   const currentStage = campaign.stages[selectedStage] ?? campaign.stages[0];
   const allTasks = campaign.stages.flatMap(stage => stage.tasks);
   const doneMissions = allTasks.filter(item => state.progress[item.id]?.status === 'completed').length;
@@ -84,7 +121,7 @@ function App() {
   const dueReview = state.reviews.filter(card => new Date(card.dueAt).getTime() <= Date.now());
   const nextReview = state.reviews.find(card => new Date(card.dueAt).getTime() <= Date.now());
   const localDate = new Date().toLocaleDateString('sv-SE');
-  const dailyPlan = state.schedules?.[localDate] ?? buildDailySchedule(campaign, state.progress, state.reviews, localDate, scheduleAdjustment);
+  const dailyPlan = state.schedules?.[localDate] ?? buildDailySchedule(campaign, state.progress, state.reviews, localDate, state.dailyAdjustments?.[localDate] ?? scheduleAdjustment);
   const readyTasks = allTasks.filter(item => state.progress[item.id]?.status !== 'completed' && isTaskUnlocked(campaign, state.progress, item.id));
   const diagnosedAsKnown = state.dailyAdjustments?.[localDate] === 'skip-known';
   const recommendationTasks = readyTasks.filter(item => !state.knownTasks?.[item.id]);
@@ -92,9 +129,53 @@ function App() {
 
   const update = useCallback((next: LearningState) => setState(next), []);
   const flash = useCallback((value: Notification) => setNotification(value), []);
+  const queueServerRequest = <T,>(operation: (archive: NonNullable<typeof serverArchive.current>) => Promise<T>): Promise<T> => {
+    const archive = serverArchive.current;
+    if (!archive || archive.userId !== accountUser?.id) return Promise.reject(new Error('账号档案尚未完成服务器载入'));
+    const pending = archiveWriteQueue.current.then(async () => {
+      if (serverArchive.current !== archive) throw new DOMException('赛季或账号已切换', 'AbortError');
+      const value = await operation(archive);
+      if (serverArchive.current !== archive) throw new DOMException('赛季或账号已切换', 'AbortError');
+      return value;
+    });
+    archiveWriteQueue.current = pending.then(() => undefined, () => undefined);
+    return pending;
+  };
+  const writeServerArchive = async (archive: NonNullable<typeof serverArchive.current>, snapshot: LearningState): Promise<void> => {
+    if (archive.conflicted) throw new Error('档案存在版本冲突，请导出草稿或明确选择服务器版本');
+    if (snapshot.campaign.id !== currentState.current.campaign.id) throw new DOMException('赛季已切换', 'AbortError');
+    setSyncStatus('saving');
+    const response = await apiFetch(`/api/seasons/${archive.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: archive.revision, state: snapshot }), signal: archiveRequest.current?.signal });
+    const payload = await response.json();
+    if (!response.ok) { if (response.status === 409) { archive.conflicted = true; setSyncStatus('conflict'); } else setSyncStatus('error'); throw new Error(response.status === 409 ? '服务器档案版本冲突，草稿已保留，请选择如何恢复' : payload.error ?? '服务器未确认保存'); }
+    if (serverArchive.current === archive) {
+      archive.revision = payload.season.revision;
+      clearPendingDraft(archive.userId, archive.id, snapshot);
+      const latest = readPendingDraft(archive.userId, archive.id);
+      if (latest) savePendingDraft({ ...latest, revision: archive.revision });
+      setSyncStatus(latest ? 'saving' : 'saved');
+    }
+  };
+  const putServerArchive = (snapshot: LearningState): Promise<void> => queueServerRequest(archive => writeServerArchive(archive, snapshot));
+  const refreshServerRewards = async (signal?: AbortSignal) => {
+    const requestingUser = currentAccountId.current;
+    const [walletResponse, inventoryResponse] = await Promise.all([apiFetch('/api/wallet', { signal }), apiFetch('/api/inventory', { signal })]);
+    if (!walletResponse.ok || !inventoryResponse.ok) throw new Error('仓库同步失败');
+    const wallet = await walletResponse.json() as { wallets: Array<{ currency: string; balance: number }>; ledger: typeof serverLedger };
+    const inventory = await inventoryResponse.json() as { items: typeof serverInventory };
+    if (signal?.aborted || currentAccountId.current !== requestingUser) return;
+    setServerWallet(wallet.wallets.find(item => item.currency === 'learning-coin')?.balance ?? 0);
+    setServerLedger(wallet.ledger); setServerInventory(inventory.items);
+  };
 
   useEffect(() => {
     if (!authLoaded || (connection.accounts && (!accountUser || scopedUserId !== accountUser.id))) return;
+    if (accountUser) {
+      const cached = saveStateSafely(state);
+      try { if (serverArchive.current && serverHydrated.current && !serverArchive.current.conflicted) savePendingDraft({ userId: accountUser.id, seasonId: serverArchive.current.id, revision: serverArchive.current.revision, state, updatedAt: new Date().toISOString() }); }
+      catch { setSaveError('本机草稿缓存不可用，请保持页面打开并重试服务器保存'); }
+      if (!cached.ok) setSaveError(`本机辅助缓存失败：${cached.error}`); return;
+    }
     if (loaded.warning && !allowOverwrite && !accountUser) return;
     const result = saveStateSafely(state);
     if (!result.ok) setSaveError(`自动保存失败：${result.error}`);
@@ -114,14 +195,62 @@ function App() {
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
-    if (!accountUser) { setScopedUserId(undefined); setStorageScope(); return; }
+    if (!accountUser) { archiveRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false; setScopedUserId(undefined); setStorageScope(); return; }
+    const controller = new AbortController(); archiveRequest.current?.abort(); archiveRequest.current = controller;
+    serverHydrated.current = false; serverArchive.current = null; setScopedUserId(undefined);
+    setServerSeasons([]); setServerWallet(0); setServerInventory([]); setServerLedger([]); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null);
     setStorageScope(accountUser.id);
-    const accountArchive = loadStateSafely();
-    setState(accountArchive.isNew ? switchCampaign(accountArchive.state, NUMPY_DEMO_CAMPAIGN) : accountArchive.state);
-    setSelectedTaskId(accountArchive.state.lastTaskId ?? accountArchive.state.campaign.stages[0]?.tasks[0]?.id ?? '');
-    setSelectedStage(0); setTab('missions'); setScopedUserId(accountUser.id);
-    if (accountArchive.warning) setSaveError(accountArchive.warning);
+    const restore = async () => {
+      try {
+        const response = await apiFetch('/api/seasons', { signal: controller.signal });
+        if (!response.ok) throw new Error('服务器档案读取失败');
+        const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState }> };
+        if (controller.signal.aborted) return;
+        let season = payload.seasons?.[0];
+        if (!season) {
+          if (!loaded.isNew) {
+            setLegacyImportPending(localArchiveCandidates(loaded.state));
+            setSaveError('发现浏览器中的旧学习档案。请先预览并确认迁移；原档案会保留，旧奖励和 AI 标记不会成为服务器可信记录。');
+            return;
+          }
+          const local = loadStateSafely();
+          const initial = local.isNew ? switchCampaign(local.state, NUMPY_DEMO_CAMPAIGN) : local.state;
+          const created = await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: initial }), signal: controller.signal });
+          if (!created.ok) throw new Error('无法创建服务器学习档案');
+          season = (await created.json() as { season: { id: string; revision: number; title: string; state: LearningState } }).season;
+        }
+        if (controller.signal.aborted) return;
+        setServerSeasons(payload.seasons?.length ? payload.seasons : [season]);
+        await refreshServerRewards(controller.signal);
+        if (controller.signal.aborted) return;
+        const pending = readPendingDraft(accountUser.id, season.id);
+        let restored = season.state; let conflicted = false;
+        if (pending) {
+          restored = importState(JSON.stringify(pending.state));
+          conflicted = pending.revision !== season.revision;
+          if (JSON.stringify(restored) === JSON.stringify(season.state)) { clearPendingDraft(accountUser.id, season.id, pending.state); restored = season.state; conflicted = false; }
+        }
+        serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, conflicted };
+        setState(restored); setSelectedTaskId(restored.lastTaskId ?? restored.campaign.stages[0]?.tasks[0]?.id ?? '');
+        setSelectedStage(0); setTab('missions'); serverHydrated.current = true;
+        setSaveError(conflicted ? '服务器已有较新版本，已恢复本机未发送草稿；请导出草稿或明确选择服务器版本，当前不会覆盖服务器。' : ''); setSyncStatus(conflicted ? 'conflict' : pending ? 'saving' : 'saved'); setScopedUserId(accountUser.id);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setSaveError(`服务器档案尚未同步：${error instanceof Error ? error.message : '连接失败'}。请检查连接后重试。`);
+      }
+    };
+    void restore();
+    return () => controller.abort();
   }, [accountUser?.id]);
+  useEffect(() => {
+    const current = serverArchive.current;
+    if (!accountUser || !serverHydrated.current || !current || current.userId !== accountUser.id) return;
+    const timer = window.setTimeout(() => {
+      void putServerArchive(state).then(() => { if (serverArchive.current === current) setSaveError(''); })
+        .catch(error => { if (serverArchive.current === current && !(error instanceof DOMException && error.name === 'AbortError')) setSaveError(`尚未同步到服务器：${error instanceof Error ? error.message : '网络错误'}。本机缓存仍保留。`); });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [state, accountUser?.id]);
   useEffect(() => {
     if (!notification) return;
     const handle = window.setTimeout(() => setNotification(null), 4200);
@@ -159,7 +288,7 @@ function App() {
       try {
         const response = await apiFetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
         const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '课程内容生成失败');
-        setState(previous => cacheLesson(previous, nextTask.id, payload.lesson, false));
+        setState(previous => previous.campaign.id === campaign.id ? cacheLesson(previous, nextTask.id, payload.lesson, false) : previous);
       } catch (error) { if(!(error instanceof DOMException&&error.name==='AbortError'))setLessonError(error instanceof Error ? error.message : '内容生成失败，可重试或继续看任务概要。'); }
       finally { activeRequest.current=null; setBusy(null); }
     }
@@ -167,9 +296,87 @@ function App() {
 
   const activateBlueprint = () => {
     if (!pendingCampaign) return;
+    if (accountUser) {
+      const next = createSeasonState(pendingCampaign);
+      void apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: next }) })
+        .then(async response => {
+          const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '新赛季创建失败');
+          const season = payload.season as { id: string; revision: number; title: string; state: LearningState };
+          serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
+          setServerSeasons(previous => [season, ...previous]); setState(season.state); setSelectedStage(0); setSelectedTaskId(season.state.campaign.stages[0].tasks[0].id);
+          setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
+          flash({ title: '独立学习赛季已部署', body: `${season.state.campaign.title} 已保存到你的服务器档案。`, tone: 'success' });
+        }).catch(error => setSaveError(`新赛季未同步：${error instanceof Error ? error.message : '请求失败'}。当前赛季未改变。`));
+      return;
+    }
     const next = switchCampaign(state, pendingCampaign);
     update(next); setSelectedStage(0); setSelectedTaskId(pendingCampaign.stages[0].tasks[0].id); setGoalOpen(false); setSettingsOpen(false); setPendingCampaign(null); setStartedAt(null); setSeconds(0); setTab('missions'); setSelectedChainId('');
     flash({ title: '蓝图已确认 · 新赛季部署', body: `${pendingCampaign.stages.length} 个阶段；旧目标和进度已归档保存。`, tone: 'success' });
+  };
+
+  const switchServerSeason = async (id: string) => {
+    if (!accountUser || id === serverArchive.current?.id) return;
+    let controller: AbortController | undefined;
+    try {
+      if (serverArchive.current && !serverArchive.current.conflicted) await putServerArchive(currentState.current);
+      if (serverArchive.current?.conflicted) throw new Error('当前赛季有版本冲突，请先导出草稿或加载服务器版本');
+      archiveRequest.current?.abort(); activeRequest.current?.abort(); controller = new AbortController(); archiveRequest.current = controller;
+      const response = await apiFetch(`/api/seasons/${id}`, { signal: controller.signal });
+      if (!response.ok) throw new Error('无法读取该学习赛季');
+      const season = (await response.json() as { season: { id: string; revision: number; state: LearningState } }).season;
+      if (controller.signal.aborted) return;
+      serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
+      setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0]?.tasks[0]?.id ?? ''); setSelectedStage(0); setTab('missions');
+      setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError('');
+    } catch (error) { if (!controller?.signal.aborted) setSaveError(`赛季切换失败：${error instanceof Error ? error.message : '网络错误'}`); }
+  };
+
+  const recoverServerArchive = async (choice: 'retry' | 'server') => {
+    const archive = serverArchive.current;
+    if (!accountUser || !archive) return;
+    if (choice === 'retry') {
+      try { archive.conflicted = false; await putServerArchive(currentState.current); setSaveError(''); }
+      catch (error) { setSaveError(`重试未成功，草稿仍保留：${error instanceof Error ? error.message : '网络错误'}`); }
+      return;
+    }
+    try {
+      const response = await apiFetch(`/api/seasons/${archive.id}`);
+      if (!response.ok) throw new Error('读取服务器版本失败');
+      const season = (await response.json() as { season: { id: string; revision: number; state: LearningState } }).season;
+      serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id };
+      discardPendingDraft(accountUser.id, season.id);
+      setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0]?.tasks[0]?.id ?? '');
+      setSaveError(''); setSyncStatus('saved');
+    } catch (error) { setSaveError(`服务器版本未载入，草稿仍保留：${error instanceof Error ? error.message : '网络错误'}`); }
+  };
+
+  const importLegacyArchives = async () => {
+    if (!legacyImportPending) return;
+    try {
+      const response = await apiFetch('/api/legacy-import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archives: legacyImportPending }) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error ?? '旧档迁移失败');
+      const list = await apiFetch('/api/seasons'); if (!list.ok) throw new Error('迁移结果无法核对');
+      const payload = await list.json() as { seasons: Array<{ id: string; revision: number; title: string; state: LearningState }> };
+      if (!payload.seasons.length) throw new Error('服务器未返回可核对的赛季');
+      setServerSeasons(payload.seasons); const season = payload.seasons[0];
+      serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser!.id }; serverHydrated.current = true;
+      setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0]?.tasks[0]?.id ?? '');
+      setSelectedStage(0); setLegacyImportPending(null); setSaveError(''); setScopedUserId(accountUser!.id);
+      await refreshServerRewards();
+      flash({ title: result.duplicate ? '旧档案已迁移过' : '旧档案迁移并核对完成', body: `${payload.seasons.length} 个赛季已在服务器恢复；历史成果保留为自行完成，旧币、道具及 AI 标记未被采信。浏览器原档案仍保留。`, tone: 'success' });
+    } catch (error) { setSaveError(`旧档迁移未完成，原档案仍保留：${error instanceof Error ? error.message : '请重试'}`); }
+  };
+
+  const startFreshServerSeason = async () => {
+    if (!accountUser) return;
+    try {
+      const response = await apiFetch('/api/seasons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: createSeasonState(NUMPY_DEMO_CAMPAIGN) }) });
+      const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '创建新赛季失败');
+      const season = payload.season as { id: string; revision: number; title: string; state: LearningState };
+      serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id }; serverHydrated.current = true;
+      setServerSeasons([season]); setState(season.state); setSelectedTaskId(season.state.campaign.stages[0].tasks[0].id); setSelectedStage(0);
+      setLegacyImportPending(null); setSaveError(''); setScopedUserId(accountUser.id); await refreshServerRewards();
+    } catch (error) { setSaveError(`新赛季未创建，旧档案仍保留：${error instanceof Error ? error.message : '请求失败'}`); }
   };
 
   const runGeneration = async () => {
@@ -216,15 +423,26 @@ function App() {
       setState(previous => ({ ...previous, schedules: { ...(previous.schedules ?? {}), [localDate]: { ...schedule, revision: (previous.schedules?.[localDate]?.revision ?? 0) + 1 } }, dailyAdjustments: { ...(previous.dailyAdjustments ?? {}), [localDate]: adjustment } }));
     } catch (error) { setScheduleError(error instanceof Error ? error.message : '今天的节目表调整失败'); }
   };
+  const scheduleVideo = (video: VerifiedVideo, replace = false) => {
+    try {
+      const next = addVideoToSchedule(currentState.current, localDate, task.id, video, replace);
+      if (next === currentState.current) return;
+      setState(next);
+      flash({ title: replace ? '视频已替换本任务讲解' : '视频已加入今日节目表', body: `${Math.ceil(video.durationSeconds / 60)} 分钟计入全天总预算；观看后仍需完成主动回忆或独立练习。`, tone: 'success' });
+    } catch (error) { flash({ title: '没有加入视频', body: error instanceof Error ? error.message : '视频与今日预算不匹配。', tone: 'warning' }); }
+  };
 
   const requestAiSchedule = async () => {
     if (!connection.configured && !apiKey) { setScheduleError('需要 DeepSeek API Key；当前先使用按预算本地编排的节目表。'); return; }
     if (busy) return;
     setBusy('schedule'); setScheduleError(''); const controller = new AbortController(); activeRequest.current = controller;
     try {
-      const response = await apiFetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, progress: state.progress, reviews: state.reviews.filter(item => Date.parse(item.dueAt) <= Date.now()), minutes: campaign.dailyMinutes, date: localDate, adjustment: scheduleAdjustment, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+      const budgetMinutes = getDailyBudgetMinutes(state, localDate);
+      const response = await apiFetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, progress: state.progress, reviews: state.reviews.filter(item => Date.parse(item.dueAt) <= Date.now()), minutes: budgetMinutes, date: localDate, adjustment: state.dailyAdjustments?.[localDate] ?? scheduleAdjustment, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
       const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? 'AI 节目表生成失败');
-      const schedule = payload.schedule; setState(previous => ({ ...previous, schedules: { ...(previous.schedules ?? {}), [localDate]: schedule } }));
+      const schedule = payload.schedule;
+      if (schedule.totalMinutes > budgetMinutes || schedule.items.some((item: { kind: string }) => item.kind === 'video')) throw new Error('AI 节目表超出预算或包含未经检索核验的视频，请保留本地节目表');
+      setState(previous => ({ ...previous, schedules: { ...(previous.schedules ?? {}), [localDate]: schedule } }));
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setScheduleError(error instanceof Error ? error.message : 'AI 编排失败；仍可用本地节目表。'); }
     finally { activeRequest.current = null; setBusy(null); }
   };
@@ -242,19 +460,27 @@ function App() {
     if (!task || !taskProgress || taskProgress.evidence.trim().length < 20) {
       flash({ title: '请先提交可供核验的情报', body: '写下至少 20 个字的答案或作品记录，AI 会依据课程验收标准核对。', tone: 'warning' }); return;
     }
-    setBusy('evaluate'); const originalEvidence = taskProgress.evidence; const supplementalEvidence = taskProgress.supplementalEvidence ?? ''; const evidence = supplementalEvidence.trim() ? `${originalEvidence}\n\n补充证据：\n${supplementalEvidence}` : originalEvidence; const controller = new AbortController(); activeRequest.current = controller;
+    const targetTask = task; const targetId = task.id; const originalEvidence = taskProgress.evidence; const supplementalEvidence = taskProgress.supplementalEvidence ?? ''; const evidence = supplementalEvidence.trim() ? `${originalEvidence}\n\n补充证据：\n${supplementalEvidence}` : originalEvidence; const submitted = structuredClone(currentState.current); const archiveAtStart = serverArchive.current; setBusy('evaluate'); const controller = new AbortController(); activeRequest.current = controller;
     try {
-      const response = await apiFetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task, evidence, verificationSource: 'ai', ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'AI 校准失败');
+      const run = async (archive?: NonNullable<typeof serverArchive.current>) => {
+        if (accountUser && archive) await writeServerArchive(archive, submitted);
+        const response = await apiFetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: targetTask, evidence, verificationSource: 'ai', ...(accountUser && archive ? { seasonId: archive.id, taskId: targetId } : {}), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'AI 校准失败');
+        if (accountUser && archive && serverArchive.current === archive && payload.revision) archive.revision = payload.revision;
+        return payload;
+      };
+      const payload = accountUser ? await queueServerRequest(archive => run(archive)) : await run();
       if (payload.verification !== 'ai') throw new Error('服务端未返回可验证的 AI 验收来源');
       const result = payload.evaluation;
-      setState(previous => {
-        if (previous.progress[task.id]?.evidence !== originalEvidence || (previous.progress[task.id]?.supplementalEvidence ?? '') !== supplementalEvidence) return previous;
-        const evaluated = setEvaluation(previous, task.id, result, 'ai');
-        return recordAttempt(evaluated, task.id, { answer: evidence, hintLevelsUsed: hintLevels[task.id] ?? 0, verification: 'ai', passed: result.passed, score: result.score, errorType: result.passed ? 'none' : result.gaps.length ? 'concept' : 'operation', feedback: result.feedback });
-      });
-      if (currentState.current.progress[task.id]?.evidence !== originalEvidence || (currentState.current.progress[task.id]?.supplementalEvidence ?? '') !== supplementalEvidence) { flash({ title: '答案已在核验期间更改', body: '为避免旧结果覆盖新答案，请重新提交当前内容。', tone: 'warning' }); return; }
+      const current = currentState.current;
+      if (current.campaign.id === submitted.campaign.id && current.progress[targetId]?.evidence === originalEvidence && (current.progress[targetId]?.supplementalEvidence ?? '') === supplementalEvidence) {
+        const evaluated = recordAttempt(setEvaluation(current, targetId, result, 'ai'), targetId, { answer: evidence, hintLevelsUsed: hintLevels[targetId] ?? 0, verification: 'ai', passed: result.passed, score: result.score, errorType: result.passed ? 'none' : result.gaps.length ? 'concept' : 'operation', feedback: result.feedback });
+        setState(evaluated);
+        if (accountUser && serverArchive.current === archiveAtStart && archiveAtStart) savePendingDraft({ userId: archiveAtStart.userId, seasonId: archiveAtStart.id, revision: archiveAtStart.revision, state: evaluated, updatedAt: new Date().toISOString() });
+      }
+      if (serverArchive.current !== archiveAtStart || currentState.current.campaign.id !== submitted.campaign.id) return;
+      if (currentState.current.progress[targetId]?.evidence !== originalEvidence || (currentState.current.progress[targetId]?.supplementalEvidence ?? '') !== supplementalEvidence) { flash({ title: '答案已在核验期间更改', body: '为避免旧结果覆盖新答案，请重新提交当前内容。', tone: 'warning' }); return; }
       flash({ title: result.passed ? 'AI 已确认任务掌握' : '发现几个待补线索', body: result.feedback, tone: result.passed ? 'success' : 'warning' });
       if (!result.passed && (connection.configured || apiKey)) {
         try {
@@ -266,11 +492,38 @@ function App() {
     finally { activeRequest.current = null; setBusy(null); }
   };
 
-  const claimTask = () => {
+  const claimTask = async () => {
+    if (settlementInFlight.current) return;
     if (!task || (!taskProgress?.selfChecked && !(taskProgress?.evaluationSource === 'ai' && taskProgress?.evaluation?.passed))) { flash({ title: '还没有可结算的检查记录', body: '先自行核对目标和证据，或提交给 AI 验收。', tone: 'warning' }); return; }
+    settlementInFlight.current = true;
+    const targetTask = task; const targetId = task.id; const submitted = structuredClone(currentState.current);
+    const archiveAtId = serverArchive.current?.id;
+    setBusy('settle');
     try {
       const verification = taskProgress.evaluationSource === 'ai' && taskProgress.evaluation?.passed ? 'ai' : 'self';
-      const next = completeTask(state, task.id, verification);
+      if (accountUser) {
+        const outcome = await queueServerRequest(async archive => {
+          await writeServerArchive(archive, submitted);
+          const response = await apiFetch(`/api/seasons/${archive.id}/settle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: archive.revision, taskId: targetId, verification }) });
+          const payload = await response.json();
+          if (!response.ok) { if (response.status === 409) { archive.conflicted = true; setSyncStatus('conflict'); } throw new Error(payload.error ?? '服务器未确认任务结算'); }
+          archive.revision = payload.season.revision;
+          const canonical = payload.season.state as LearningState;
+          const settled = reconcileServerState(canonical, submitted, currentState.current);
+          update(settled);
+          savePendingDraft({ userId: archive.userId, seasonId: archive.id, revision: archive.revision, state: settled, updatedAt: new Date().toISOString() });
+          setSyncStatus('saved');
+          return { settled, rewards: payload.rewards as Array<{ reward: { xp: number; coins: number; items: Array<{ name: string }> } }>, alreadyCompleted: payload.alreadyCompleted as boolean };
+        });
+        if (serverArchive.current?.id !== archiveAtId) return;
+        await refreshServerRewards();
+        const xp = outcome.rewards.reduce((sum, entry) => sum + entry.reward.xp, 0);
+        const coins = outcome.rewards.reduce((sum, entry) => sum + entry.reward.coins, 0);
+        const items = outcome.rewards.flatMap(entry => entry.reward.items.map(item => item.name));
+        flash({ title: outcome.alreadyCompleted ? '任务已结算过，奖励不会重复发放' : '成果已由服务器归档', body: `本次新获得 +${xp} XP · +${coins} 学习币${items.length ? ` · ${items.join('、')}` : ''}。自行完成与 AI 验证分开记录。`, tone: 'success' });
+        return;
+      }
+      const next = completeTask(submitted, targetId, verification);
       const newlyCompleted = next.progress[task.id]?.status === 'completed' && taskProgress.status !== 'completed';
       const saved = saveStateSafely(next);
       if (!saved.ok) setSaveError(`任务已在本页更新，但自动保存失败：${saved.error}`);
@@ -280,6 +533,7 @@ function App() {
         flash({ title: '成果已归档 · 奖励入账', body: `+${entry?.reward.xp ?? task.xp} XP · +${entry?.reward.coins ?? 0} 学习币${entry?.reward.items.length ? ` · ${entry.reward.items.map(item => item.name).join('、')}` : ''}。${verification === 'ai' ? 'AI 核验来源已保存。' : '自行完成与 AI 验证分开记录。'}`, tone: 'success' });
       }
     } catch (error) { flash({ title: '行动未能结算', body: error instanceof Error ? error.message : '请重新检查前置任务与证据。', tone: 'warning' }); }
+    finally { settlementInFlight.current = false; setBusy(null); }
   };
 
   const saveNote = (value: string) => {
@@ -320,13 +574,16 @@ function App() {
 
   if (!authLoaded) return <main className="account-gate"><div role="status" className="account-panel">正在恢复账号会话…</div></main>;
   if (connection.accounts && !accountUser) return <AccountGate onAuthenticated={setAccountUser}/>;
-  if (connection.accounts && accountUser && scopedUserId !== accountUser.id) return <main className="account-gate"><div role="status" className="account-panel">正在载入此账号的本机档案…</div></main>;
+  if (connection.accounts && accountUser && scopedUserId !== accountUser.id) return <main className="account-gate"><div role={saveError ? 'alert' : 'status'} className="account-panel">{legacyImportPending ? <><h1>迁移本机旧档案？</h1><p>发现 {legacyImportPending.length} 个学习赛季 · {legacyImportPending.reduce((sum, item) => sum + Object.values(item.progress).filter(progress => progress.status === 'completed').length, 0)} 项历史任务完成记录。</p><ul>{legacyImportPending.map(item => <li key={item.campaign.id}>{item.campaign.title} · {Object.values(item.progress).filter(progress => progress.status === 'completed').length}/{Object.keys(item.progress).length} 项</li>)}</ul><p>服务端会重新校验结构、保留符合条件的学习成果；旧钱包、道具和 AI 验证标记不会迁入可信奖励。成功前不会删除或覆盖浏览器原档。</p><button className="modal-submit" onClick={() => void importLegacyArchives()}>确认迁移并核对</button><button className="text-button" onClick={() => void startFreshServerSeason()}>不迁移，开始 NumPy 新赛季</button></> : <>{saveError || '正在载入此账号的服务器档案…'}{saveError && <button className="modal-submit" onClick={() => window.location.reload()}>重新连接并重试</button>}</>}</div></main>;
 
   const logout = async () => {
     try {
       const response = await apiFetch('/api/auth/logout', { method: 'POST' });
       if (!response.ok) throw new Error('退出登录失败');
-      setAccountUser(null); setAuthLoaded(true); setTab('missions');
+      archiveRequest.current?.abort(); activeRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false;
+      setState(loaded.isNew ? switchCampaign(loaded.state, NUMPY_DEMO_CAMPAIGN) : loaded.state);
+      setServerSeasons([]); setServerWallet(0); setServerInventory([]); setServerLedger([]); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null);
+      setAccountUser(null); setAuthLoaded(true); setScopedUserId(undefined); setTab('missions');
     } catch (error) { flash({ title: '退出登录失败', body: error instanceof Error ? error.message : '请重试。', tone: 'warning' }); }
   };
 
@@ -346,17 +603,19 @@ function App() {
           <button className={`nav-link ${tab === 'workspace' ? 'active' : ''}`} onClick={() => { setTab('workspace'); setMobileNav(false); }}><BookOpen size={15}/>学习工作区</button>
           <button className={`nav-link ${tab === 'archive' ? 'active' : ''}`} onClick={() => { setTab('archive'); setMobileNav(false); }}><Layers2 size={15} />情报档案</button>
           <button className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} onClick={() => { setTab('reviews'); setMobileNav(false); }}><Radio size={15} />复习信号室 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</button>
+          {accountUser && <button className={`nav-link ${tab === 'inventory' ? 'active' : ''}`} onClick={() => { setTab('inventory'); setMobileNav(false); }}><Backpack size={15}/>个人仓库</button>}
         </nav>
         <div className="topbar-actions">
           {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录">{accountUser.email} · 退出</button>}
+          {accountUser && serverSeasons.length > 0 && <select aria-label="切换服务器学习赛季" className="campaign-switch" value={serverArchive.current?.id ?? ''} onChange={event => void switchServerSeason(event.target.value)}>{serverSeasons.map(season => <option key={season.id} value={season.id}>{season.title}</option>)}</select>}
           {state.history?.length ? <select aria-label="切换学习目标" className="campaign-switch" value={campaign.id} onChange={event => switchToCampaign(event.target.value)}><option value={campaign.id}>{campaign.title}</option>{state.history.map(item=><option key={item.campaign.id} value={item.campaign.id}>{item.campaign.title}</option>)}</select> : null}
-          <div className="connection-pill"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`} />{connection.configured || apiKey ? 'AI 已就绪' : '本地训练'}<ChevronDown size={13} /></div>
+          <div className="connection-pill"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`} />{accountUser ? syncStatus === 'saved' ? '服务器已同步' : syncStatus === 'saving' ? '同步中…' : syncStatus === 'conflict' ? '版本冲突' : syncStatus === 'error' ? '尚未同步' : '载入中…' : connection.configured || apiKey ? 'AI 已就绪' : '本地训练'}<ChevronDown size={13} /></div>
           <button className="icon-button settings-trigger" aria-label="连接设置" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button>
           <span className="avatar" aria-label={`${stats.xp} 点经验`}>NG</span>
         </div>
       </header>
 
-      {saveError && <div className="storage-warning" role="alert"><span>{saveError}</span><button onClick={() => { setAllowOverwrite(true); setSaveError(''); }}>我已备份旧存档，允许使用新存档</button></div>}
+      {saveError && <div className="storage-warning" role="alert"><span>{saveError}</span>{accountUser ? <div className="storage-actions">{syncStatus === 'conflict' ? <><button onClick={() => { const blob = new Blob([exportState(currentState.current)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'ninegrid-unsynced-draft.json'; link.click(); URL.revokeObjectURL(link.href); }}>导出本机草稿</button><button onClick={() => void recoverServerArchive('server')}>加载服务器版本（放弃本机草稿）</button></> : <button onClick={() => void recoverServerArchive('retry')}>重试同步</button>}</div> : <button onClick={() => { setAllowOverwrite(true); setSaveError(''); }}>我已备份旧存档，允许使用新存档</button>}</div>}
 
       <div className="page-wrap">
         <section className="season-banner">
@@ -382,9 +641,9 @@ function App() {
           <div className="section-controls"><button className={`subtab ${tab === 'today' ? 'selected' : ''}`} onClick={() => setTab('today')}>今日</button><button className={`subtab ${tab === 'missions' ? 'selected' : ''}`} onClick={() => setTab('missions')}>课程总览</button><button className={`subtab ${tab === 'workspace' ? 'selected' : ''}`} onClick={() => setTab('workspace')}>学习区</button><button className={`subtab ${tab === 'archive' ? 'selected' : ''}`} onClick={() => setTab('archive')}>档案</button><button className="icon-button search-button" aria-label="搜索任务" onClick={() => flash({ title: '行动筛选', body: '从课程目录中选择想追踪的任务。' })}><Search size={16}/></button></div>
         </div>
 
-        {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={campaign.dailyMinutes * (scheduleAdjustment==='half'?0.5:scheduleAdjustment==='more'?1.5:1)} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
+        {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={getDailyBudgetMinutes(state, localDate)} onVideoWatched={index => setState(previous => markVideoWatched(previous, localDate, index))} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
         : tab === 'workspace' && task ? <>
-          <LessonWorkspace task={task} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.evaluation?.feedback} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => setHintLevels(previous => ({ ...previous, [task.id]: level }))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
+          <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.evaluation?.feedback} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => setHintLevels(previous => ({ ...previous, [task.id]: level }))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
             setDiagnosticMode(false);
             try {
               let next = setEvidence(state, task.id, answer);
@@ -395,7 +654,7 @@ function App() {
               else flash({ title: '回答已保存 · 进入补练', body: '完成讲解、示例和独立挑战后再提交通关。', tone: 'warning' });
             } catch (error) { flash({ title: '诊断未能保存', body: error instanceof Error ? error.message : '请检查诊断内容后重试。', tone: 'warning' }); }
           }}/>
-          <YouTubeResources task={task} budgetMinutes={task.minutes} language={campaign.language ?? 'mixed'}/>
+          <YouTubeResources task={task} budgetMinutes={getDailyBudgetMinutes(state, localDate)} schedule={dailyPlan} language={campaign.language ?? 'mixed'} onScheduleVideo={accountUser ? scheduleVideo : undefined}/>
           <div className="lesson-workspace-secondary"><button className="secondary-button" onClick={() => setTab('missions')}>返回课程总览</button>{lessonError&&<button className="secondary-button" onClick={()=>void beginTask(task)}>重试生成本课讲解</button>}{adaptation&&<div className="adaptation-card"><strong>根据这次结果，建议：{adaptation.recommendation}</strong><p>{adaptation.reason}</p><button className="secondary-button" onClick={()=>{const next=allTasks.find(item=>item.id===adaptation.nextTaskId);if(next)void beginTask(next);}}>打开建议任务 · {adaptation.minutes} 分钟</button></div>}<div className="lesson-resources">{task.resources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title}<SquareArrowOutUpRight size={13}/></a>)}</div>{taskProgress?.status==='completed'&&nextMission&&nextMission.id!==task.id&&<button className="modal-submit" onClick={()=>void beginTask(nextMission)}>继续下一主线任务 · {nextMission.title}<ArrowRight size={15}/></button>}</div></>
         : tab === 'missions' && task && currentStage ? <div className="operations-layout">
           <aside className="mission-rail">
@@ -413,7 +672,7 @@ function App() {
                 </button>;
               })}
             </div>
-            <div className="sidebar-lower"><div className="service-row"><span className="service-dot"/>本机存档 <small>{saveError ? '需检查' : '已保存'}</small></div><div className="profile-mini"><span className="avatar profile-avatar">NG</span><span><strong>行动员</strong><small>战绩等级 · Lv. {Math.floor(stats.xp / 1000) + 1}</small></span><span className="profile-xp"><Zap size={13}/>{stats.xp.toLocaleString()}</span></div></div>
+            <div className="sidebar-lower"><div className="service-row"><span className="service-dot"/>{accountUser ? '服务器档案' : '本机存档'} <small>{saveError ? '需检查/未同步' : '已保存'}</small></div><div className="profile-mini"><span className="avatar profile-avatar">NG</span><span><strong>行动员</strong><small>战绩等级 · Lv. {Math.floor(stats.xp / 1000) + 1}</small></span><span className="profile-xp"><Zap size={13}/>{stats.xp.toLocaleString()}</span></div></div>
           </aside>
 
           <section className="mission-board" aria-label="阶段任务列表">
@@ -450,7 +709,7 @@ function App() {
 
             {task.resources.length > 0 && <div className="sources-row"><BookOpen size={14}/><span>原始资料线索</span>{task.resources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title}<SquareArrowOutUpRight size={11}/></a>)}</div>}
 
-            <div className="evidence-box"><div className="evidence-head"><span><FileText size={15}/>行动记录与撤离证据</span><span>{taskProgress?.evidence?.trim().length ?? 0} 字</span></div><textarea aria-label="行动记录与撤离证据" value={taskProgress?.evidence ?? ''} disabled={taskProgress?.status === 'completed'} onChange={event => update(setEvidence(state, task.id, event.target.value))} placeholder={task.kind === 'recall' ? '先不看笔记，把答案用自己的话写下来。也可以贴上你亲手写的代码或作品路径。' : '记录你做了什么、观察到什么、还卡在哪里。也可以贴作品路径或关键代码…'} /><div className="evidence-footer"><span>提交至少 20 字的答案、过程或作品说明</span><span>{taskProgress?.status === 'completed' ? '撤离成功' : '记录仅保存在此设备'}</span></div></div>
+            <div className="evidence-box"><div className="evidence-head"><span><FileText size={15}/>行动记录与撤离证据</span><span>{taskProgress?.evidence?.trim().length ?? 0} 字</span></div><textarea aria-label="行动记录与撤离证据" value={taskProgress?.evidence ?? ''} disabled={taskProgress?.status === 'completed'} onChange={event => update(setEvidence(state, task.id, event.target.value))} placeholder={task.kind === 'recall' ? '先不看笔记，把答案用自己的话写下来。也可以贴上你亲手写的代码或作品路径。' : '记录你做了什么、观察到什么、还卡在哪里。也可以贴作品路径或关键代码…'} /><div className="evidence-footer"><span>提交至少 20 字的答案、过程或作品说明</span><span>{taskProgress?.status === 'completed' ? '撤离成功' : accountUser ? syncStatus === 'saved' ? '已同步到服务器' : syncStatus === 'saving' ? '正在同步…' : '服务器尚未确认保存' : '记录仅保存在此设备'}</span></div></div>
 
             {taskProgress?.evaluation && <div className={`evaluation-card ${taskProgress.evaluation.passed ? 'evaluation-pass' : 'evaluation-retry'}`}><div className="evaluation-header"><span>{taskProgress.verification === 'ai' ? <Sparkles size={15}/> : <ShieldCheck size={15}/>} {taskProgress.verification === 'ai' ? `AI 校准 · ${taskProgress.evaluation.score} 分` : '行动员自评'}{taskProgress.status === 'completed' && <span className="verdict-chip">已撤离</span>}</span><span className="evaluation-score">{taskProgress.evaluation.passed ? <CircleCheck size={15}/> : <RotateCcw size={14}/>}</span></div><p>{taskProgress.evaluation.feedback}</p>{taskProgress.evaluation.gaps.length > 0 && <ul>{taskProgress.evaluation.gaps.map(gap => <li key={gap}>{gap}</li>)}</ul>}<small>下一步：{taskProgress.evaluation.nextStep}</small></div>}
 
@@ -461,7 +720,7 @@ function App() {
 
           <aside className="rewards-panel"><div className="vault-header"><div><span className="micro-label">PERSONAL ARMORY</span><h3>九格能力成果</h3></div><span className="vault-level"><span className="vault-level-dot"/>{stats.slots} / 9 验证</span></div><div className="vault-summary"><span>赛季交付物</span><strong>{campaign.ultimateReward}</strong><div className="vault-summary-track"><i style={{ width: `${stats.slots / 9 * 100}%` }}/></div><small>按能力验收逐格解锁，不按完成任务比例点亮</small></div>
             <div className="vault-grid" aria-label={`九格能力成果，${stats.slots} 格已解锁`}>{(campaign.nineGrid ?? Array.from({length:9},(_,index)=>({id:`empty-${index}`,title:`能力格 ${index+1}`,ability:'课程蓝图尚未配置具体解锁条件',value:'课程蓝图尚未配置',unlockTaskIds:[]}))).map((grid,index)=>{ const verified = Boolean(state.gridOutcomes?.[grid.id]); const eligible = grid.unlockTaskIds.length > 0 && grid.unlockTaskIds.every(id => state.progress[id]?.status === 'completed' && state.progress[id]?.verification === 'ai'); return <div key={grid.id} className={`vault-cell ${verified ? 'vault-open' : ''}`} title={`第 ${index+1} 格：${grid.value}；需通过 AI 核验 ${grid.unlockTaskIds.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')}`}><span className="vault-cell-index">0{index+1}</span><span className="vault-cell-icon">{verified ? <Check size={14}/> : <LockKeyhole size={13}/>}</span><span className="vault-cell-title">{grid.title}</span>{eligible && <div className="grid-outcome-input"><textarea aria-label={`${grid.title}成果`} value={gridDrafts[grid.id]??''} onChange={event=>setGridDrafts(previous=>({...previous,[grid.id]:event.target.value}))} placeholder="提交作品或能力证明"/><button onClick={()=>{try{const next=recordGridOutcome(state,grid.id,gridDrafts[grid.id]??'');update(next);setGridDrafts(previous=>({...previous,[grid.id]:''}));flash({title:`九格解锁：${grid.title}`,body:'能力成果已与任务链和验证记录关联保存。',tone:'success'});}catch(error){flash({title:'成果未解锁',body:error instanceof Error?error.message:'请先提交验证记录。',tone:'warning'});}}}>保存成果</button></div>}</div>;})}</div>
-            <div className="wallet-card"><div className="inventory-heading"><span><strong>个人仓库</strong><small>原创学习收藏 · 不对应任何游戏资产</small></span><b>{Object.values(state.inventory??{}).reduce((sum,entry)=>sum+entry.quantity,0)} 件</b></div><div className="inventory-grid">{Object.values(state.inventory??{}).length ? Object.values(state.inventory??{}).map(entry=><article key={entry.item.itemId} className={`inventory-item rarity-${entry.item.rarity}`} title={entry.item.description}><span className="inventory-icon">{entry.item.icon}</span><strong>{entry.item.name}</strong><small>×{entry.quantity} · {entry.item.rarity==='legendary'?'珍藏':entry.item.rarity==='rare'?'稀有':'常规'}</small><small>来源：{entry.sources.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')||'赛季奖励'}</small></article>) : <div className="inventory-empty"><span>◇</span><strong>收藏仓库待启封</strong><small>完成任务与阶段挑战，收集记录会显示在这里。</small></div>}</div><div className="wallet-balance"><strong>学习币 · {state.wallet?.balance ?? 0}</strong><span>本应用中的虚拟学习奖励</span></div><div className="reward-history"><strong>最近入库记录</strong>{state.rewardLedger?.slice(-5).reverse().map(entry=><small key={entry.id}>{allTasks.find(item=>item.id===entry.taskId)?.title??'能力节点'} → +{entry.reward.coins} 币{entry.reward.items.length ? ` · ${entry.reward.items.map(item=>item.name).join('、')}` : ''}</small>)}</div></div>
+            <div className="wallet-card"><div className="inventory-heading"><span><strong>个人仓库</strong><small>原创学习收藏 · 不对应任何游戏资产</small></span><b>{inventoryEntries.reduce((sum,entry)=>sum+entry.quantity,0)} 件</b></div><div className="inventory-grid">{inventoryEntries.length ? inventoryEntries.map(entry=><article key={entry.item.itemId} className={`inventory-item rarity-${entry.item.rarity}`} title={entry.item.description}><span className="inventory-icon">{entry.item.icon}</span><strong>{entry.item.name}</strong><small>×{entry.quantity} · {entry.item.rarity==='legendary'?'珍藏':entry.item.rarity==='rare'?'稀有':'常规'}</small><small>来源：{entry.sources.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')||'赛季奖励'}</small></article>) : <div className="inventory-empty"><span>◇</span><strong>收藏仓库待启封</strong><small>{saveError ? '仓库暂不可用，连接恢复后可重试。' : '完成任务与阶段挑战，收集记录会显示在这里。'}</small></div>}</div><div className="wallet-balance"><strong>学习币 · {inventoryBalance}</strong><span>本应用中的虚拟学习奖励</span></div><div className="reward-history"><strong>最近入库记录</strong>{rewardHistory.slice(0,5).map(entry=><small key={entry.id}>{allTasks.find(item=>item.id===entry.taskId)?.title??'能力节点'} → +{entry.reward.coins} 币{entry.reward.items.length ? ` · ${entry.reward.items.map(item=>item.name).join('、')}` : ''}</small>)}</div></div>
             <div className="vault-foot"><span>行动奖励将为真实掌握解锁</span><span>{stats.slots}<i>/</i>9</span></div>
 
             <div className="review-panel"><div className="review-panel-title"><span><Radio size={15}/>复习雷达</span><span className="review-badge">{dueReview.length} 待处理</span></div>{nextReview ? <><div className="review-card"><span className="review-wave"><i/><i/><i/><i/><i/><i/><i/></span><small>下一条记忆信号</small><strong>{allTasks.find(item => item.id === nextReview.taskId)?.title ?? '知识点回顾'}</strong><span>{new Date(nextReview.dueAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })} · 主动回忆</span></div><button className="review-cta" onClick={() => setTab('reviews')}>进入信号室 <ArrowRight size={14}/></button></> : <div className="review-empty"><CircleCheck size={17}/><span>雷达目前安静<small>完成新行动后自动安排间隔复习。</small></span></div>}</div>
@@ -469,7 +728,7 @@ function App() {
             <div className="streak-panel"><Flame size={16}/><span>今天的行动记录</span><strong>{startedAt ? '进行中' : stats.completed > 0 ? '档案已保存' : '等待部署'}<small>{startedAt ? timeLabel + ' · 该休息时就休息' : '节奏由你掌握，不靠熬时长'}</small></strong></div>
             <button className="backup-link" onClick={() => { const blob = new Blob([exportState(state)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'ninegrid-learning-backup.json'; link.click(); URL.revokeObjectURL(url); flash({ title: '档案已导出', body: '备份文件不含 API Key。', tone: 'success' }); }}><ArrowDown size={13}/>导出赛季情报档案</button>
           </aside>
-        </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : task ? <LessonWorkspace task={task} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask}/> : null}
+        </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : tab === 'inventory' && accountUser ? <InventoryScreen key={accountUser.id} seasons={serverSeasons}/> : task ? <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask}/> : null}
 
         <footer className="global-footer"><span>九格行动 <i>·</i> 每一格，都由真正掌握解锁。</span><span>SESSION <i>—</i> {timeLabel}</span><span>休息也是行动计划的一部分。</span></footer>
       </div>

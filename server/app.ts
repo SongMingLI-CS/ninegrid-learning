@@ -6,7 +6,7 @@ import connectPgSimple from 'connect-pg-simple';
 import helmet from 'helmet';
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import type { Campaign, DailySchedule, Evaluation, GoalInput, LessonContent, Task } from '../shared/types';
+import type { Campaign, DailySchedule, Evaluation, GoalInput, LearningState, LessonContent, Task } from '../shared/types';
 import {
   campaignSchema,
   evaluationSchema,
@@ -15,6 +15,8 @@ import {
 } from '../shared/schema';
 import { mountAuthRoutes, protectStateChangeWithCsrf, requireAuthenticated } from './auth';
 import { searchTaskVideos } from './youtube';
+import { mountArchiveRoutes, persistEvaluation, taskEvidence } from './archive';
+import { mountAttachmentRoutes } from './attachments';
 
 // Campaign schema already carries these input preferences; augment the current
 // shared interface until the matching source type declaration lands.
@@ -27,7 +29,7 @@ declare module '../shared/types' {
 }
 
 const ENDPOINT = 'https://api.deepseek.com/chat/completions';
-const BODY_LIMIT = '32kb';
+const BODY_LIMIT = '10mb';
 const MAX_UPSTREAM_BYTES = 1_000_000;
 const MAX_EVIDENCE_LENGTH = 20_000;
 const REQUEST_TIMEOUT_MS = 180_000;
@@ -61,7 +63,7 @@ const lessonContentSchema = z.object({
 });
 const scheduleSchema = z.object({
   date: z.iso.date(), theme: z.string().trim().min(1).max(500),
-  items: z.array(z.object({ taskId: z.string().min(1).max(128), kind: z.enum(['review', 'lesson', 'practice', 'reflection']), minutes: z.number().int().min(1).max(1440), required: z.boolean(), deliverable: z.string().trim().min(1).max(500) })).min(1).max(100),
+  items: z.array(z.object({ taskId: z.string().min(1).max(128), kind: z.enum(['review', 'lesson', 'practice', 'reflection', 'video']), minutes: z.number().int().min(1).max(1440), required: z.boolean(), deliverable: z.string().trim().min(1).max(500), resourceId: z.string().min(1).max(128).optional(), resourceTitle: z.string().trim().max(300).optional(), resourceUrl: z.string().url().max(1000).optional(), watched: z.boolean().optional() })).min(1).max(100),
   totalMinutes: z.number().int().min(1).max(1440), outcome: z.string().trim().min(1).max(1000), nextUnlock: z.string().trim().min(1).max(1000),
 });
 const hintSchema = z.object({ hint: z.string().trim().min(1).max(1500), level: z.number().int().min(1).max(3) });
@@ -204,6 +206,7 @@ export function createApp(options: Options = {}) {
   const configuredKey = options.apiKey ?? process.env.DEEPSEEK_API_KEY;
   const configuredModel = options.model ?? process.env.DEEPSEEK_MODEL ?? 'deepseek-flash';
   const limits = new Map<string, { count: number; resetAt: number }>();
+  const resourceLimits = new Map<string, { count: number; resetAt: number }>();
 
   app.disable('x-powered-by');
   app.use(helmet({ contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'data:', 'https://i.ytimg.com'] } } }));
@@ -247,8 +250,15 @@ export function createApp(options: Options = {}) {
     res.json({ configured: Boolean(configuredKey?.trim()), model: configuredModel, accounts: Boolean(options.auth), youtubeConfigured: Boolean((options.youtubeApiKey ?? process.env.YOUTUBE_API_KEY)?.trim()) });
   });
   if (options.auth) app.use('/api', requireAuthenticated);
+  if (options.auth) mountArchiveRoutes(app, { pool: options.auth.pool });
+  if (options.auth) mountAttachmentRoutes(app, { pool: options.auth.pool, apiKey: configuredKey, fetchImpl });
 
   app.post('/api/resources/youtube', async (req, res) => {
+    if (options.auth) {
+      const userId = req.session.userId ?? 'unauthenticated'; const now = Date.now(); const limit = resourceLimits.get(userId);
+      if (limit && now < limit.resetAt && limit.count >= 20) { res.setHeader('Retry-After', Math.ceil((limit.resetAt - now) / 1000)); sendError(res, 429, 'RATE_LIMITED'); return; }
+      resourceLimits.set(userId, !limit || now >= limit.resetAt ? { count: 1, resetAt: now + RATE_WINDOW_MS } : { count: limit.count + 1, resetAt: limit.resetAt });
+    }
     const body = req.body as { task?: unknown; language?: unknown; budgetMinutes?: unknown };
     const parsedTask = taskSchema.safeParse(body.task);
     const language = languageSchema.safeParse(body.language ?? 'mixed');
@@ -268,7 +278,7 @@ export function createApp(options: Options = {}) {
     prompt: string;
   }): Promise<unknown | undefined> => {
     const now = Date.now();
-    const clientId = args.req.ip ?? args.req.socket.remoteAddress ?? 'unknown';
+    const clientId = options.auth ? `user:${args.req.session.userId ?? 'unknown'}` : args.req.ip ?? args.req.socket.remoteAddress ?? 'unknown';
     const current = limits.get(clientId);
     if (current && now < current.resetAt && current.count >= RATE_LIMIT) {
       args.res.setHeader('Retry-After', Math.ceil((current.resetAt - now) / 1000));
@@ -525,14 +535,22 @@ export function createApp(options: Options = {}) {
   });
 
   app.post('/api/evaluate', async (req: Request, res: Response) => {
-    const body = req.body as { task?: unknown; evidence?: unknown; verificationSource?: unknown };
+    const body = req.body as { task?: unknown; evidence?: unknown; verificationSource?: unknown; seasonId?: unknown; taskId?: unknown };
     const parsedTask = taskSchema.safeParse(body?.task);
-    if (!parsedTask.success || typeof body?.evidence !== 'string' || body.evidence.trim().length < 20 ||
-      body.evidence.length > MAX_EVIDENCE_LENGTH || body.verificationSource !== 'ai') {
+    if ((!options.auth && !parsedTask.success) || typeof body?.evidence !== 'string' || body.evidence.trim().length < 20 ||
+      body.evidence.length > MAX_EVIDENCE_LENGTH || body.verificationSource !== 'ai' ||
+      (options.auth && (typeof body.seasonId !== 'string' || typeof body.taskId !== 'string'))) {
       sendError(res, 400, 'INVALID_REQUEST');
       return;
     }
-    const task = parsedTask.data as Task;
+    let task: Task;
+    if (options.auth) {
+      const owned = await options.auth.pool.query<{ state: LearningState }>('SELECT state FROM seasons WHERE id=$1 AND owner_user_id=$2', [body.seasonId, req.session.userId]);
+      const season = owned.rows[0]?.state;
+      task = season?.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === body.taskId)!;
+      if (!season || !task) { res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
+      if (taskEvidence(season, task.id) !== body.evidence) { res.status(409).json({ error: 'EVIDENCE_NOT_SYNCED' }); return; }
+    } else task = parsedTask.data as Task;
     const evidence = body.evidence;
     const output = await askDeepSeek(req, res,
       'You are a rigorous learning assessor. Return one JSON Evaluation object with passed:boolean, score:integer 0..100, feedback:string, gaps:string[], nextStep:string. Judge only the evidence against every objective and acceptance criteria. A pass requires concrete, relevant evidence and score >=70. Do not pass vague claims, copied claims without demonstrated understanding, or empty accomplishments. Score honestly. Output JSON only.',
@@ -544,7 +562,17 @@ export function createApp(options: Options = {}) {
       return;
     }
     const evaluation: Evaluation = validated.data;
-    res.json({ evaluation, verification: 'ai' as const });
+    let revision: number | undefined;
+    if (options.auth) {
+      try { revision = await persistEvaluation(options.auth.pool, req.session.userId!, body.seasonId as string, body.taskId as string, body.evidence, evaluation); }
+      catch (error) {
+        const code = error instanceof Error ? error.message : '';
+        if (code === 'SEASON_NOT_FOUND' || code === 'TASK_COMPLETED') { res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
+        if (code === 'EVIDENCE_STALE' || code === 'REVISION_CONFLICT') { res.status(409).json({ error: code }); return; }
+        throw error;
+      }
+    }
+    res.json({ evaluation, verification: 'ai' as const, ...(revision ? { revision } : {}) });
   });
 
   if (process.env.NODE_ENV === 'production') {

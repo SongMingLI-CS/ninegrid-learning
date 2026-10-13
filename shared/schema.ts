@@ -25,7 +25,35 @@ export const lessonContentSchema = z.object({
   challenge: z.object({ prompt: text(4000), acceptance: text(3000), hints: z.array(text(1000)).min(1).max(5) }),
   language: z.enum(['en', 'zh', 'mixed']), generatedAt: dateSchema, revision: z.number().int().min(1).max(1000),
 });
-const dailyScheduleSchema = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), theme: text(500), items: z.array(z.object({ taskId: idSchema, kind: z.enum(['review','lesson','practice','reflection']), minutes: z.number().int().min(1).max(1440), required: z.boolean(), deliverable: text(500) })).max(100), totalMinutes: z.number().int().min(0).max(1440), outcome: text(1000), nextUnlock: text(1000), revision: z.number().int().min(1).max(1000) });
+export const dailyScheduleSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), theme: text(500),
+  items: z.array(z.object({
+    taskId: idSchema, kind: z.enum(['review','lesson','practice','reflection','video']),
+    minutes: z.number().int().min(1).max(1440), required: z.boolean(), deliverable: text(500),
+    resourceId: idSchema.optional(), resourceTitle: text(300).optional(),
+    resourceUrl: z.string().url().max(1000).refine(value => {
+      try {
+        const url = new URL(value);
+        return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+      } catch { return false; }
+    }, '资源地址必须是无凭据的 HTTP(S) 链接').optional(),
+    watched: z.boolean().optional(),
+  }).superRefine((item, ctx) => {
+    if (item.kind !== 'video') return;
+    if (!item.resourceId || !/^[A-Za-z0-9_-]{11}$/.test(item.resourceId) || !item.resourceTitle || !item.resourceUrl) {
+      ctx.addIssue({ code: 'custom', message: '视频条目必须包含视频 ID、标题与链接' }); return;
+    }
+    try {
+      const url = new URL(item.resourceUrl);
+      if (url.protocol !== 'https:' || url.port || !['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(url.hostname)) {
+        ctx.addIssue({ code: 'custom', message: '视频地址必须是无凭据的 YouTube HTTPS 链接' }); return;
+      }
+      const linkedId = url.hostname === 'youtu.be' ? url.pathname.slice(1) : url.pathname === '/watch' ? url.searchParams.get('v') : undefined;
+      if (linkedId !== item.resourceId) ctx.addIssue({ code: 'custom', message: '视频链接必须与资源 ID 一致' });
+    } catch { ctx.addIssue({ code: 'custom', message: '视频链接无效' }); }
+  })).max(100),
+  totalMinutes: z.number().int().min(0).max(1440), outcome: text(1000), nextUnlock: text(1000), revision: z.number().int().min(1).max(1000),
+});
 
 export const taskSchema = z.object({
   id: idSchema, title: text(300), brief: text(), kind: z.enum(['investigate', 'recall', 'practice', 'boss']),
