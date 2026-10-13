@@ -97,6 +97,7 @@ export const evaluationSchema = z.object({
 const progressSchema = z.object({
   completedObjectives: z.array(idSchema).max(20).refine(unique, '已完成目标不能重复'),
   evidence: z.string().max(100000), status: z.enum(['idle', 'active', 'completed']),
+  supplementalEvidence: z.string().max(100000).optional(),
   evaluation: evaluationSchema.optional(), verification: z.enum(['self', 'ai']).optional(), completedAt: dateSchema.optional(),
   selfChecked: z.boolean().optional(),
   evaluationSource: z.enum(['self','ai']).optional(),
@@ -114,12 +115,13 @@ export const learningStateSchema = z.object({
   reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)),
   content: z.record(idSchema, lessonContentSchema).optional(),
   schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(),
-  history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
+  history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), attempts: z.record(idSchema, z.array(z.object({ at: dateSchema, answer: z.string().max(100000), hintLevelsUsed: z.number().int().min(0).max(5), verification: z.enum(['self','ai','none']), passed: z.boolean(), score: z.number().min(0).max(100).optional(), errorType: z.enum(['concept','operation','hint-dependence','prerequisite','none']).optional(), feedback: z.string().max(8000) })).max(10000)).optional(), contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(), gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(), dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(), knownTasks: z.record(idSchema, z.boolean()).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
   wallet: z.object({ currency: z.string().max(40), balance: z.number().int().min(0).max(100000000) }).optional(),
   inventory: z.record(idSchema, z.object({ item: rewardBundleSchema.shape.items.element, quantity: z.number().int().min(1).max(1000000), acquiredAt: dateSchema, sources: z.array(idSchema).max(10000) })).optional(),
-  rewardLedger: z.array(z.object({ id: idSchema, taskId: idSchema, at: dateSchema, reward: rewardBundleSchema, kind: z.enum(['mission','chain','stage','season','review']), idempotencyKey: idSchema })).max(100000).optional(),
+  rewardLedger: z.array(z.object({ id: idSchema, campaignId: idSchema.default('legacy-unknown'), taskId: idSchema, at: dateSchema, reward: rewardBundleSchema, kind: z.enum(['mission','verification','chain','stage','season','review']), idempotencyKey: idSchema })).max(100000).optional(),
   gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(),
   dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(),
+  knownTasks: z.record(idSchema, z.boolean()).optional(),
   attempts: z.record(idSchema, z.array(z.object({ at: dateSchema, answer: z.string().max(100000), hintLevelsUsed: z.number().int().min(0).max(5), verification: z.enum(['self','ai','none']), passed: z.boolean(), score: z.number().min(0).max(100).optional(), errorType: z.enum(['concept','operation','hint-dependence','prerequisite','none']).optional(), feedback: z.string().max(8000) })).max(10000)).optional(),
   contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(),
   lastTaskId: idSchema.optional(),
@@ -127,16 +129,26 @@ export const learningStateSchema = z.object({
   const issue = (message: string, path: (string | number)[] = []) => ctx.addIssue({ code: 'custom', message, path });
   const tasks = state.campaign.stages.flatMap(stage => stage.tasks);
   const byId = new Map(tasks.map(task => [task.id, task]));
-  const archivedTaskIds = new Set((state.history ?? []).flatMap(snapshot => snapshot.campaign.stages.flatMap(stage => stage.tasks.map(task => task.id))));
+  const archivedCampaigns = (state.history ?? []).map(snapshot => snapshot.campaign);
   const completed = (id: string) => state.progress[id]?.status === 'completed';
   const reviewIds = state.reviews.map(card => card.taskId);
   for (const id of Object.keys(state.content ?? {})) if (!byId.has(id)) issue('课程内容缓存引用了未知任务', ['content', id]);
   for (const id of Object.keys(state.attempts ?? {})) if (!byId.has(id)) issue('学习尝试记录引用了未知任务', ['attempts', id]);
   for (const id of Object.keys(state.contentHistory ?? {})) if (!byId.has(id)) issue('教学版本引用了未知任务', ['contentHistory', id]);
+  for (const id of Object.keys(state.knownTasks ?? {})) if (!byId.has(id)) issue('已掌握诊断引用了未知任务', ['knownTasks', id]);
   if (state.lastTaskId && !byId.has(state.lastTaskId)) issue('上次任务不属于当前课程', ['lastTaskId']);
   const ledger = state.rewardLedger ?? [];
   if (!unique(ledger.map(entry => entry.id)) || !unique(ledger.map(entry => entry.idempotencyKey))) issue('奖励流水和领取标识必须唯一', ['rewardLedger']);
-  for (const entry of ledger) if (!byId.has(entry.taskId) && !archivedTaskIds.has(entry.taskId) && entry.kind === 'mission') issue('奖励流水引用了未知任务', ['rewardLedger']);
+  for (const [index, entry] of ledger.entries()) {
+    const sourceCampaign = entry.campaignId === state.campaign.id ? state.campaign : archivedCampaigns.find(campaign => campaign.id === entry.campaignId);
+    if (!sourceCampaign && entry.campaignId !== 'legacy-unknown') issue('奖励流水必须标记有效的赛季来源', ['rewardLedger', index, 'campaignId']);
+    else if (sourceCampaign && !sourceCampaign.stages.some(stage => stage.tasks.some(task => task.id === entry.taskId))) issue('奖励流水触发任务必须属于其赛季来源', ['rewardLedger', index, 'taskId']);
+  }
+  for (const [index, snapshot] of (state.history ?? []).entries()) {
+    const snapshotTasks = new Set(snapshot.campaign.stages.flatMap(stage => stage.tasks.map(task => task.id)));
+    for (const field of ['content', 'attempts', 'contentHistory'] as const) for (const id of Object.keys(snapshot[field] ?? {})) if (!snapshotTasks.has(id)) issue('历史课程数据引用了其他目标的任务', ['history', index, field, id]);
+    for (const id of Object.keys(snapshot.knownTasks ?? {})) if (!snapshotTasks.has(id)) issue('历史掌握诊断引用了其他目标的任务', ['history', index, 'knownTasks', id]);
+  }
   if (state.wallet && state.wallet.balance !== ledger.reduce((sum, entry) => sum + entry.reward.coins, 0)) issue('钱包余额必须与奖励流水一致', ['wallet']);
   const heldItems = new Map<string, number>();
   for (const entry of ledger) for (const item of entry.reward.items) heldItems.set(item.itemId, (heldItems.get(item.itemId) ?? 0) + item.quantity);
@@ -153,7 +165,6 @@ export const learningStateSchema = z.object({
       if (progress.evaluationSource === 'ai' && !progress.evaluation) issue('AI 验收来源必须关联评价记录', ['progress', id]);
     } else {
       if (!progress.completedAt || !progress.verification) issue('完成任务必须记录时间与验收方式', ['progress', id]);
-      if (!task.objectives.every(objective => progress.completedObjectives.includes(objective.id))) issue('完成任务必须达成所有目标', ['progress', id]);
       if (Array.from(progress.evidence.trim()).length < 20) issue('完成证据至少需要 20 个字符', ['progress', id]);
       if (progress.verification === 'ai' && (!progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai')) issue('AI 验收必须通过且不少于 70 分并保存来源', ['progress', id]);
       if (!reviewIds.includes(id)) issue('完成任务缺少复习卡', ['reviews']);

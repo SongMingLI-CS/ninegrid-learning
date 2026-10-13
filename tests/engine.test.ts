@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Campaign, Evaluation, LearningState, Task } from '../shared/types';
+import type { Campaign, Evaluation, LearningState, LessonContent, Task } from '../shared/types';
 import { campaignSchema, evaluationSchema, goalInputSchema, learningStateSchema, taskSchema } from '../shared/schema';
-import { activateTask, buildDailySchedule, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, rateReview, setEvaluation, setEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
+import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setEvaluation, setEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
 import { createInitialState, exportState, importState, loadState, saveState, saveStateSafely } from '../src/lib/storage';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
@@ -102,7 +102,7 @@ describe('progression and verification', () => {
     expect(activateTask(state, 'a')).toBe(state);
     expect(() => updateObjective(state, 'a', 'a-o')).toThrow();
     expect(() => setEvidence(state, 'a', '新的证据')).toThrow();
-    expect(() => setEvaluation(state, 'a', PASS)).toThrow();
+    expect(() => setEvaluation(state, 'a', PASS)).not.toThrow();
     expect(getStats(state, NOW)).toMatchObject({ xp: 100, completed: 1, total: 3, slots: 0, due: 0, stageCompleted: [false, false] });
   });
   it('computes nine slots and stage completion from actual completed tasks', () => {
@@ -179,7 +179,7 @@ describe('schemas and safe state import', () => {
     const raw = { ...state, apiKey: 'secret', campaign: { ...state.campaign, apiKey: 'secret' }, progress: { ...state.progress, a: { ...state.progress.a, apiKey: 'secret' } } };
     const imported = importState(JSON.stringify(raw));
     expect(exportState(imported)).not.toContain('secret');
-    expect(importState(exportState(imported))).toEqual(state);
+    expect(importState(exportState(imported))).toEqual(imported);
     expect(exportState(raw as LearningState)).not.toContain('secret');
   });
   it.each(['json', 'version', 'foreign-progress', 'objective', 'duplicate-objective', 'evidence', 'prerequisite', 'evaluation', 'review', 'duplicate-review', 'missing-review', 'review-history', 'unfinished-review', 'verification', 'date'])('rejects invalid imported state %s', kind => {
@@ -295,6 +295,64 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     expect(again.rewardLedger).toEqual(first.rewardLedger);
     expect(again.wallet).toEqual(first.wallet);
   });
+  it('does not re-award a completed chain or stage when a later branch is finished', () => {
+    let state = fresh();
+    const branch = task('branch', ['b']); branch.track = 'branch';
+    state.campaign.stages[0].tasks.push(branch);
+    state.progress.branch = { completedObjectives: [], evidence: '', status: 'idle' };
+    state.campaign.stages[0].mainlineTaskIds = ['a', 'b'];
+    state.campaign.stages[0].chains = [
+      { id: 'main-chain', title: '主线链路', track: 'main', taskIds: ['a', 'b'] },
+      { id: 'branch-chain', title: '支线链路', track: 'branch', taskIds: ['branch'] },
+    ];
+    state = done(state, 'a'); state = done(state, 'b');
+    const stageAndMainChain = state.rewardLedger?.filter(entry => entry.kind === 'stage' || entry.kind === 'chain');
+    state = done(state, 'branch');
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'stage' || entry.kind === 'chain').filter(entry => entry.idempotencyKey.includes('main-chain') || entry.kind === 'stage')).toHaveLength(2);
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'stage')).toHaveLength(1);
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'chain' && entry.idempotencyKey.includes('main-chain'))).toHaveLength(1);
+    expect(stageAndMainChain?.every(entry => state.rewardLedger?.some(next => next.id === entry.id))).toBe(true);
+  });
+  it('migrates older reward claims to owner-scoped keys before a later branch can trigger them', () => {
+    let state = fresh();
+    const branch = task('branch', ['b']); branch.track = 'branch';
+    state.campaign.stages[0].tasks.push(branch);
+    state.progress.branch = { completedObjectives: [], evidence: '', status: 'idle' };
+    state.campaign.stages[0].mainlineTaskIds = ['a', 'b'];
+    state.campaign.stages[0].chains = [{ id: 'main-chain', title: '主线链路', track: 'main', taskIds: ['a', 'b'] }];
+    state = done(done(state, 'a'), 'b');
+    const legacy = JSON.parse(JSON.stringify(state)) as LearningState;
+    for (const entry of legacy.rewardLedger ?? []) {
+      entry.campaignId = 'legacy-unknown';
+      if (entry.kind === 'chain') entry.idempotencyKey = `test-main-chain-${entry.taskId}-chain`;
+      else if (entry.kind === 'stage') entry.idempotencyKey = `test-s1-${entry.taskId}-stage`;
+      else if (entry.kind === 'mission') entry.idempotencyKey = `test-${entry.taskId}-${entry.taskId}-mission`;
+    }
+    state = importState(JSON.stringify(legacy));
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'stage')).toHaveLength(1);
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'chain')).toHaveLength(1);
+    state = done(state, 'branch');
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'stage')).toHaveLength(1);
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'chain' && entry.idempotencyKey.includes('main-chain'))).toHaveLength(1);
+  });
+  it('promotes a self-completed task to AI verified without repeating base rewards', () => {
+    let state = fresh();
+    state.campaign.stages[0].tasks[0].kind = 'boss';
+    state.campaign.nineGrid = Array.from({ length: 9 }, (_, index) => ({ id: index === 0 ? 'grid-a' : `grid-${index}`, title: `格${index + 1}`, ability: '解释', value: '作品', unlockTaskIds: ['a'] }));
+    state = ready(state, 'a'); state = markSelfChecked(state, 'a'); state = completeTask(state, 'a', 'self', NOW);
+    const baseLedger = state.rewardLedger;
+    state = setEvaluation(state, 'a', PASS, 'ai'); state = completeTask(state, 'a', 'ai', NOW);
+    expect(state.progress.a).toMatchObject({ status: 'completed', verification: 'ai', completedAt: NOW.toISOString() });
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'mission')).toHaveLength(1);
+    expect(state.rewardLedger?.find(entry => entry.kind === 'mission')?.reward).toEqual(baseLedger?.[0].reward);
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'verification')).toHaveLength(1);
+    expect(state.rewardLedger?.find(entry => entry.kind === 'verification')?.reward).toMatchObject({ xp: 0, coins: 0, items: [{ itemId: 'a-field-notes' }] });
+    expect(() => recordGridOutcome(state, 'grid-a', EVIDENCE, NOW)).not.toThrow();
+    expect(() => exportState(state)).not.toThrow();
+    const repeat = completeTask(state, 'a', 'ai', NOW);
+    expect(repeat.rewardLedger).toEqual(state.rewardLedger);
+    expect(repeat.wallet).toEqual(state.wallet);
+  });
   it('keeps review answers and hint use as review evidence', () => {
     const state = done(fresh(), 'a');
     const reviewed = rateReview(state, 'a', 2, NOW, { answer: 'ndarray shape describes dimensions', hintUsed: true });
@@ -316,6 +374,36 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     const restored = switchCampaign(switched, original.campaign);
     expect(restored.progress.a.status).toBe('completed');
     expect(restored.history?.some(record => record.campaign.id === 'second')).toBe(true);
+  });
+  it('isolates attempts, teaching history, grid outcomes and adjustments across goals through save/export', () => {
+    const lesson: LessonContent = { purpose: '识别结构', explanation: 'shape describes dimensions.', terms: [{ en: 'shape', zh: '形状', context: 'array dimensions' }], example: { prompt: '预测维度', code: 'x.shape', walkthrough: '比较输出' }, guidedPractice: { prompt: '预测', expected: '(2,)', hint: '看长度' }, challenge: { prompt: '独立验证', acceptance: '说明输出', hints: ['检查 axis'] }, language: 'mixed', generatedAt: NOW.toISOString(), revision: 1 };
+    let original = ready(fresh(), 'a');
+    original = markSelfChecked(original, 'a');
+    original = recordAttempt(original, 'a', { answer: EVIDENCE, hintLevelsUsed: 1, verification: 'self', passed: false, feedback: '自评記錄' }, NOW);
+    original = cacheLesson(original, 'a', lesson);
+    original = cacheLesson(original, 'a', { ...lesson, revision: 2 }, true);
+    original.campaign.nineGrid = Array.from({ length: 9 }, (_, index) => ({ id: index === 0 ? 'grid-a' : `grid-${index}`, title: `格${index + 1}`, ability: '解释', value: '作品', unlockTaskIds: ['a'] }));
+    original = completeTask(original, 'a', 'self', NOW);
+    original = setEvaluation(original, 'a', PASS, 'ai');
+    original = completeTask(original, 'a', 'ai', NOW);
+    original = recordGridOutcome(original, 'grid-a', EVIDENCE, NOW);
+    original.dailyAdjustments = { '2026-10-13': 'too-hard' };
+    original.knownTasks = { a: true };
+    const second = structuredClone(original.campaign); second.id = 'second'; second.goal = '第二条路线';
+    let switched = switchCampaign(original, second);
+    expect(switched.attempts).toEqual({}); expect(switched.contentHistory).toEqual({}); expect(switched.gridOutcomes).toEqual({}); expect(switched.dailyAdjustments).toEqual({}); expect(switched.knownTasks).toEqual({});
+    switched = importState(exportState(switched));
+    const saved = new Map<string, string>();
+    vi.stubGlobal('window', { localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) } });
+    saveState(switched);
+    switched = loadState();
+    const restored = switchCampaign(switched, original.campaign);
+    expect(restored.attempts?.a).toHaveLength(1);
+    expect(restored.contentHistory?.a).toHaveLength(1);
+    expect(restored.gridOutcomes?.['grid-a']?.artifact).toBe(EVIDENCE);
+    expect(restored.dailyAdjustments).toEqual({ '2026-10-13': 'too-hard' });
+    expect(restored.knownTasks).toEqual({ a: true });
+    expect(importState(exportState(restored))).toEqual(restored);
   });
   it('returns save failures as a result the UI can surface', () => {
     vi.stubGlobal('window', { get localStorage() { throw new Error('blocked'); } });

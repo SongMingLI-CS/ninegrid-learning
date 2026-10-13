@@ -8,6 +8,14 @@ function stageGateIds(stage: Campaign['stages'][number]): string[] {
   return stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id);
 }
 
+export function getRewardIdempotencyKey(campaignId: string, kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season', ownerId: string): string {
+  const scope = kind === 'mission' || kind === 'verification' ? `task-${ownerId}` : kind === 'chain' ? `chain-${ownerId}` : kind === 'stage' ? `stage-${ownerId}` : 'season';
+  const rawKey = `campaign-${campaignId}-${scope}-${kind}`.replace(/[^\p{L}\p{N}_-]/gu, '-');
+  let hash = 2166136261;
+  for (const char of rawKey) hash = Math.imul(hash ^ char.codePointAt(0)!, 16777619);
+  return `${rawKey.slice(0, 106)}-${(hash >>> 0).toString(36)}`;
+}
+
 export function createProgressForCampaign(campaign: Campaign): LearningState['progress'] {
   return Object.fromEntries(getTasks(campaign).map(task => [task.id, { completedObjectives: [], evidence: '', status: 'idle' as const }]));
 }
@@ -60,10 +68,10 @@ export function getTaskReward(task: Task): RewardBundle {
   return { xp: task.xp, coins: Math.max(1, Math.ceil(task.xp / 10)), items: item };
 }
 
-function applyReward(state: LearningState, task: Task, reward: RewardBundle, kind: 'mission' | 'chain' | 'stage' | 'season', now: Date, sourceId = task.id): LearningState {
-  const idempotencyKey = `${state.campaign.id}-${sourceId}-${task.id}-${kind}`.replace(/[^\p{L}\p{N}_-]/gu, '-').slice(0, 120);
+function applyReward(state: LearningState, task: Task, reward: RewardBundle, kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season', now: Date, ownerId = task.id): LearningState {
+  const idempotencyKey = getRewardIdempotencyKey(state.campaign.id, kind, kind === 'mission' || kind === 'verification' ? task.id : ownerId);
   if ((state.rewardLedger ?? []).some(entry => entry.idempotencyKey === idempotencyKey)) return state;
-  const entry = { id: `reward-${idempotencyKey}`.slice(0, 128), taskId: task.id, at: timestamp(now), reward, kind, idempotencyKey };
+  const entry = { id: `reward-${idempotencyKey}`.slice(0, 128), campaignId: state.campaign.id, taskId: task.id, at: timestamp(now), reward, kind, idempotencyKey };
   const inventory = { ...(state.inventory ?? {}) };
   for (const item of reward.items) {
     const owned = inventory[item.itemId];
@@ -74,12 +82,12 @@ function applyReward(state: LearningState, task: Task, reward: RewardBundle, kin
 }
 
 export function switchCampaign(state: LearningState, campaign: Campaign): LearningState {
-  const snapshot: CampaignSnapshot = { campaign: state.campaign, progress: state.progress, reviews: state.reviews, notes: state.notes, content: state.content, schedules: state.schedules, lastTaskId: state.lastTaskId };
+  const snapshot: CampaignSnapshot = { campaign: state.campaign, progress: state.progress, reviews: state.reviews, notes: state.notes, content: state.content, schedules: state.schedules, attempts: state.attempts, contentHistory: state.contentHistory, gridOutcomes: state.gridOutcomes, dailyAdjustments: state.dailyAdjustments, knownTasks: state.knownTasks, lastTaskId: state.lastTaskId };
   const existing = state.history?.find(item => item.campaign.id === campaign.id);
   const history = [...(state.history ?? []).filter(item => item.campaign.id !== campaign.id && item.campaign.id !== state.campaign.id), snapshot];
-  if (existing) return { ...state, ...existing, version: 2, history };
+  if (existing) return { ...state, ...existing, attempts: existing.attempts ?? {}, contentHistory: existing.contentHistory ?? {}, gridOutcomes: existing.gridOutcomes ?? {}, dailyAdjustments: existing.dailyAdjustments ?? {}, knownTasks: existing.knownTasks ?? {}, version: 2, history };
   const seeded = Object.fromEntries(getTasks(campaign).filter(task => task.teaching).map(task => [task.id, task.teaching!]));
-  return { ...state, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, content: seeded, schedules: {}, version: 2, history };
+  return { ...state, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, content: seeded, contentHistory: {}, attempts: {}, gridOutcomes: {}, dailyAdjustments: {}, knownTasks: {}, schedules: {}, version: 2, history };
 }
 
 export function cacheLesson(state: LearningState, taskId: string, value: LessonContent, regenerate = false): LearningState {
@@ -155,9 +163,19 @@ export function setEvidence(state: LearningState, taskId: string, evidence: stri
   return replaceProgress(state, taskId, { ...clearEvaluation(progress), evidence });
 }
 
+export function setSupplementalEvidence(state: LearningState, taskId: string, evidence: string): LearningState {
+  const [, progress] = taskAndProgress(state, taskId);
+  if (progress.status !== 'completed' || progress.verification !== 'self') throw new Error('只有自行完成且尚未通过 AI 的任务可以补充证据');
+  if (typeof evidence !== 'string' || evidence.length > 100000) throw new Error('补充证据必须是有效文本且不超过 100000 字符');
+  if (progress.supplementalEvidence === evidence) return state;
+  return replaceProgress(state, taskId, { ...progress, supplementalEvidence: evidence });
+}
+
 export function setEvaluation(state: LearningState, taskId: string, evaluation: Evaluation, source: 'self' | 'ai' = 'ai'): LearningState {
   const [, progress] = taskAndProgress(state, taskId);
-  assertEditable(progress);
+  if (progress.status === 'completed' && !(source === 'ai' && progress.verification === 'self')) assertEditable(progress);
+  if (progress.status === 'completed' && source !== 'ai') throw new Error('已自行完成的任务只能追加 AI 核验');
+  if (progress.status === 'completed') return replaceProgress(state, taskId, { ...progress, evaluation: evaluationSchema.parse(evaluation), evaluationSource: source });
   return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation), evaluationSource: source });
 }
 
@@ -171,7 +189,16 @@ export function markSelfChecked(state: LearningState, taskId: string): LearningS
 
 export function completeTask(state: LearningState, taskId: string, verification: 'self' | 'ai', now = new Date()): LearningState {
   const [task, progress] = taskAndProgress(state, taskId);
-  if (progress.status === 'completed') return state;
+  if (progress.status === 'completed') {
+    if (progress.verification !== 'self' || verification !== 'ai' || !progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai') return state;
+    let promoted = replaceProgress(state, taskId, { ...progress, verification: 'ai' });
+    const verificationItems = getTaskReward(task).items;
+    if (verificationItems.length) promoted = applyReward(promoted, task, { xp: 0, coins: 0, items: verificationItems }, 'verification', now);
+    const ids = new Set(getTasks(promoted.campaign).filter(item => promoted.progress[item.id]?.status === 'completed').map(item => item.id));
+    const allMainlineAiVerified = promoted.campaign.stages.every(stage => stageGateIds(stage).every(id => ids.has(id) && promoted.progress[id]?.verification === 'ai'));
+    if (allMainlineAiVerified) promoted = applyReward(promoted, task, { xp: 500, coins: 100, items: [{ itemId: `${promoted.campaign.id}-season-insignia`, name: '赛季能力徽章', description: '通过赛季主线独立 AI 验收后授予。', rarity: 'legendary', icon: '⬡', quantity: 1 }] }, 'season', now, promoted.campaign.id);
+    return promoted;
+  }
   if (verification !== 'self' && verification !== 'ai') throw new Error('验收方式无效');
   if (!isTaskUnlocked(state.campaign, state.progress, taskId)) throw new Error('请先完成前置任务与前一阶段');
   if (Array.from(progress.evidence.trim()).length < 20) throw new Error('请提交至少 20 个字符的行动证据');

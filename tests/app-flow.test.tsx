@@ -2,6 +2,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../src/App';
+import { completeTask, createProgressForCampaign, markSelfChecked, setEvidence, updateObjective } from '../src/lib/engine';
+import { createInitialState, exportState } from '../src/lib/storage';
+import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 
 function stubOfflineApi() {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
@@ -28,6 +31,7 @@ describe('NumPy learning flow in the interface', () => {
     expect(screen.getByText(/shape 是每个维度的长度/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开中文辅助' }));
     expect(screen.getByText('shape')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
     const evidence = '我创建了一个 3×2 ndarray，预测 axis=1 会得到三个值，运行后核对 shape 和结果。';
     fireEvent.change(screen.getByRole('textbox', { name: '学习答案与成果' }), { target: { value: evidence } });
     fireEvent.click(screen.getByRole('button', { name: '我已独立完成 · 自评' }));
@@ -36,6 +40,11 @@ describe('NumPy learning flow in the interface', () => {
     await waitFor(() => expect(screen.getByText(/成果已保存 · 由你自行完成/)).toBeTruthy());
     expect(window.localStorage.getItem('ninegrid.learning.v1')).toContain(evidence);
     await waitFor(() => expect(window.localStorage.getItem('ninegrid.learning.v1')).toContain(evidence));
+    fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今日节目表' }));
+    expect(await screen.findByText(/实时推荐/)).toBeTruthy();
+    expect(screen.getByText('建立测量样本：从 Python 列表创建数组')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '开始推荐任务建立测量样本：从 Python 列表创建数组' }));
+    expect(await screen.findByRole('heading', { name: '建立测量样本：从 Python 列表创建数组' })).toBeTruthy();
 
     view.unmount();
     render(<App/>);
@@ -51,5 +60,89 @@ describe('NumPy learning flow in the interface', () => {
     const restored = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
     expect(restored.campaign.id).toBe('numpy-first-analysis');
     expect(restored.progress['numpy-read-shape'].evidence).toBe(evidence);
+  });
+
+  it('allows a self-completed task to keep its evidence and upgrade to AI verification once', async () => {
+    let evaluationCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash' }), { status: 200 });
+      if (String(input) === '/api/evaluate') {
+        evaluationCalls += 1;
+        const evaluation = evaluationCalls === 1 ? { passed: false, score: 55, feedback: '请补充实际输出。', gaps: ['缺少运行结果'], nextStep: '补充输出后重试' } : { passed: true, score: 92, feedback: '预测和实测一致。', gaps: [], nextStep: '继续' };
+        return new Response(JSON.stringify({ verification: 'ai', evaluation }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: 'API_KEY_MISSING' }), { status: 503 });
+    }));
+    render(<App/>);
+    await screen.findByRole('heading', { name: 'NumPy 数据准备行动' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '课程总览' }));
+    openFirstNumpyTask();
+    const evidence = '我创建了一个 3×2 ndarray，预测 axis=1 会得到三个值，运行后核对 shape 和结果。';
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    fireEvent.change(screen.getByRole('textbox', { name: '学习答案与成果' }), { target: { value: evidence } });
+    fireEvent.click(screen.getByRole('button', { name: '我已独立完成 · 自评' }));
+    fireEvent.click(screen.getByRole('button', { name: '结算任务与奖励' }));
+    await screen.findByText(/成果已保存 · 由你自行完成/);
+    const before = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
+    const beforeCoins = before.wallet.balance;
+    const beforeMissions = before.rewardLedger.filter((entry: { kind: string }) => entry.kind === 'mission').length;
+    fireEvent.click(screen.getByRole('button', { name: '基于原证据请求 AI 核验' }));
+    expect(await screen.findAllByText('请补充实际输出。')).toBeTruthy();
+    const afterFailure = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
+    expect(afterFailure.progress['numpy-read-shape']).toMatchObject({ status: 'completed', verification: 'self', evidence });
+    fireEvent.change(screen.getByRole('textbox', { name: '补充证据' }), { target: { value: '补充实际输出：shape=(3, 2)，axis=1 的结果含 3 个均值；运行日志与预测完全一致。' } });
+    fireEvent.click(screen.getByRole('button', { name: '基于原证据请求 AI 核验' }));
+    expect(await screen.findAllByText('预测和实测一致。')).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: '学习答案与成果' }) as HTMLTextAreaElement).value).toBe(evidence);
+    fireEvent.click(screen.getByRole('button', { name: '升级为 AI 验证' }));
+    await screen.findByText(/成果已保存 · AI 已核验/);
+    expect(screen.queryByText(/自动保存失败/)).toBeNull();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}').progress['numpy-read-shape'].verification).toBe('ai'));
+    const after = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
+    expect(after.progress['numpy-read-shape'].status).toBe('completed');
+    expect(after.progress['numpy-read-shape'].evidence).toBe(evidence);
+    expect(after.progress['numpy-read-shape'].supplementalEvidence).toContain('shape=(3, 2)');
+    expect(after.attempts['numpy-read-shape'].at(-1).answer).toContain('补充证据');
+    expect(after.wallet.balance).toBe(beforeCoins);
+    expect(after.rewardLedger.filter((entry: { kind: string }) => entry.kind === 'mission')).toHaveLength(beforeMissions);
+    fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '课程总览' }));
+    expect(screen.getByRole('textbox', { name: 'shape解释成果' })).toBeTruthy();
+  });
+
+  it('opens the scheduled review question from its Today Schedule entry', async () => {
+    const state = createInitialState();
+    state.campaign = NUMPY_DEMO_CAMPAIGN;
+    state.progress = createProgressForCampaign(NUMPY_DEMO_CAMPAIGN);
+    const target = NUMPY_DEMO_CAMPAIGN.stages[0].tasks[0];
+    const old = new Date(Date.now() - 3 * 86400000);
+    let prepared = updateObjective(state, target.id, target.objectives[0].id);
+    prepared = setEvidence(prepared, target.id, '我预测 shape 会保留行列维度，并实际运行数组检查输出。');
+    prepared = markSelfChecked(prepared, target.id);
+    prepared = completeTask(prepared, target.id, 'self', old);
+    window.localStorage.setItem('ninegrid.learning.v1', exportState(prepared));
+
+    render(<App/>);
+    await screen.findByRole('heading', { name: 'NumPy 数据准备行动' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今日节目表' }));
+    fireEvent.click(await screen.findByRole('button', { name: '开始复习校准仪表：读懂 shape 与 axis' }));
+    expect(await screen.findByRole('heading', { name: '一个 shape=(2, 3) 的数组做 sum(axis=0)，结果有几个数？' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '闭卷回忆答案' })).toBeTruthy();
+  });
+
+  it('runs a short mastery diagnostic instead of silently removing a branch', async () => {
+    render(<App/>);
+    await screen.findByRole('heading', { name: 'NumPy 数据准备行动' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: '主导航' })).getByRole('button', { name: '今日节目表' }));
+    fireEvent.click(screen.getByRole('button', { name: '这部分已经会了' }));
+    expect(await screen.findByText('两分钟掌握诊断')).toBeTruthy();
+    const diagnostic = 'axis=0 输出每列一个结果，所以这个数组会保留 3 个数；我能说明原因。';
+    fireEvent.change(screen.getByRole('textbox', { name: '两分钟诊断回答' }), { target: { value: diagnostic } });
+    fireEvent.click(screen.getByRole('button', { name: '我能解释，返回今日计划' }));
+    expect(await screen.findByRole('heading', { name: '今天先做这一项' })).toBeTruthy();
+    expect(screen.getByText(/诊断已记录为已掌握/)).toBeTruthy();
+    const saved = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
+    expect(saved.progress['numpy-read-shape'].status).toBe('active');
+    expect(saved.progress['numpy-read-shape'].completedAt).toBeUndefined();
+    expect(saved.knownTasks['numpy-read-shape']).toBe(true);
   });
 });

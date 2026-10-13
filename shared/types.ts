@@ -14,9 +14,9 @@ export interface LessonContent {
 }
 export interface ScheduleItem { taskId: string; kind: 'review' | 'lesson' | 'practice' | 'reflection'; minutes: number; required: boolean; deliverable: string }
 export interface DailySchedule { date: string; theme: string; items: ScheduleItem[]; totalMinutes: number; outcome: string; nextUnlock: string; revision: number }
-export interface RewardEntry { id: string; taskId: string; at: string; reward: RewardBundle; kind: 'mission' | 'chain' | 'stage' | 'season' | 'review'; idempotencyKey: string }
+export interface RewardEntry { id: string; campaignId: string; taskId: string; at: string; reward: RewardBundle; kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season' | 'review'; idempotencyKey: string }
 export interface TaskAttempt { at: string; answer: string; hintLevelsUsed: number; verification: 'self' | 'ai' | 'none'; passed: boolean; score?: number; errorType?: 'concept' | 'operation' | 'hint-dependence' | 'prerequisite' | 'none'; feedback: string }
-export interface CampaignSnapshot { campaign: Campaign; progress: Record<string, TaskProgress>; reviews: ReviewCard[]; notes: Record<string, string>; content?: Record<string, LessonContent>; schedules?: Record<string, DailySchedule>; lastTaskId?: string }
+export interface CampaignSnapshot { campaign: Campaign; progress: Record<string, TaskProgress>; reviews: ReviewCard[]; notes: Record<string, string>; content?: Record<string, LessonContent>; schedules?: Record<string, DailySchedule>; attempts?: Record<string, TaskAttempt[]>; contentHistory?: Record<string, LessonContent[]>; gridOutcomes?: Record<string, { artifact: string; verifiedAt: string; taskIds: string[] }>; dailyAdjustments?: Record<string, 'half' | 'more' | 'skip-known' | 'too-hard'>; knownTasks?: Record<string, boolean>; lastTaskId?: string }
 export interface Task {
   id: string; title: string; brief: string; kind: TaskKind; minutes: number; xp: number;
   prerequisites: string[]; objectives: Objective[]; curiosity: string; steps: string[];
@@ -37,6 +37,7 @@ export interface Evaluation {
 }
 export interface TaskProgress {
   completedObjectives: string[]; evidence: string; status: 'idle' | 'active' | 'completed';
+  supplementalEvidence?: string;
   evaluation?: Evaluation; verification?: 'self' | 'ai'; completedAt?: string;
   selfChecked?: boolean;
   evaluationSource?: 'self' | 'ai';
@@ -53,6 +54,7 @@ export interface LearningState {
   inventory?: Record<string, { item: ItemReward; quantity: number; acquiredAt: string; sources: string[] }>;
   rewardLedger?: RewardEntry[]; gridOutcomes?: Record<string, { artifact: string; verifiedAt: string; taskIds: string[] }>;
   dailyAdjustments?: Record<string, 'half' | 'more' | 'skip-known' | 'too-hard'>;
+  knownTasks?: Record<string, boolean>;
   attempts?: Record<string, TaskAttempt[]>; contentHistory?: Record<string, LessonContent[]>;
   lastTaskId?: string;
 }
