@@ -16,7 +16,7 @@ export function createInitialState(): LearningState {
   // Parsing clones the nested demo, so resetting cannot inherit an earlier edit.
   const campaign = structuredClone(DEMO_CAMPAIGN);
   const progress = createProgressForCampaign(campaign);
-  return learningStateSchema.parse({ version: 2, campaign, progress, reviews: [], notes: {}, content: {}, contentHistory: {}, attempts: {}, schedules: {}, history: [], wallet: { currency: '学习币', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {}, dailyAdjustments: {}, knownTasks: {} });
+  return learningStateSchema.parse({ version: 2, campaign, progress, reviews: [], notes: {}, content: {}, contentHistory: {}, attempts: {}, schedules: {}, history: [], wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {}, dailyAdjustments: {}, knownTasks: {} });
 }
 
 export function loadState(): LearningState {
@@ -53,7 +53,7 @@ export function exportState(state: LearningState): string {
 export function importState(raw: string): LearningState {
   if (typeof raw !== 'string' || raw.length > 10000000) throw new Error('备份为空或超过 10 MB');
   const parsed = learningStateSchema.parse(JSON.parse(raw));
-  if (parsed.version === 1) return learningStateSchema.parse({ ...parsed, version: 2, content: {}, contentHistory: {}, attempts: {}, schedules: {}, history: [], wallet: { currency: '学习币', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {}, dailyAdjustments: {}, knownTasks: {} });
+  if (parsed.version === 1) return learningStateSchema.parse({ ...parsed, version: 2, content: {}, contentHistory: {}, attempts: {}, schedules: {}, history: [], wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [], gridOutcomes: {}, dailyAdjustments: {}, knownTasks: {} });
   const history = (parsed.history ?? []).map(snapshot => ({ ...snapshot, attempts: snapshot.attempts ?? {}, contentHistory: snapshot.contentHistory ?? {}, gridOutcomes: snapshot.gridOutcomes ?? {}, dailyAdjustments: snapshot.dailyAdjustments ?? {}, knownTasks: snapshot.knownTasks ?? {} }));
   const campaigns = [parsed.campaign, ...history.map(snapshot => snapshot.campaign)];
   const entries = (parsed.rewardLedger ?? []).map(entry => {

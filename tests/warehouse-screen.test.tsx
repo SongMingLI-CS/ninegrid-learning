@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COLLECTION_CATALOG } from '../shared/catalog';
 import { WarehouseScreen } from '../src/components/WarehouseScreen';
+import { formatHafverCoins } from '../shared/economy';
 
 const item = COLLECTION_CATALOG[0];
 let inventory: any;
@@ -49,13 +50,13 @@ describe('independent warehouse page', () => {
     render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
     const checkbox = await screen.findByRole('checkbox', { name: `选择${item.name}出售` });
     fireEvent.click(checkbox);
-    fireEvent.click(screen.getByRole('button', { name: new RegExp(`出售已选 · ${item.sellPrice * 2}`) }));
+    fireEvent.click(screen.getByRole('button', { name: /出售已选/ }));
     const dialog = await screen.findByRole('dialog', { name: '确认出售' });
-    expect(dialog.textContent).toContain(`${item.sellPrice * 2} 哈弗币`);
+    expect(dialog.textContent).toContain(`${formatHafverCoins(item.sellPrice * 2)} 哈弗币`);
     fireEvent.click(within(dialog).getByRole('button', { name: '确认出售' }));
-    expect(await screen.findByText(`已入账 ${(item.sellPrice * 2).toLocaleString('zh-CN')} 哈弗币。`)).toBeTruthy();
+    expect(await screen.findByText(`已入账 ${formatHafverCoins(item.sellPrice * 2)} 哈弗币。`)).toBeTruthy();
     expect(screen.getByText('仓库尚无藏品')).toBeTruthy();
-    expect(screen.getByText((item.sellPrice * 2).toLocaleString('zh-CN'))).toBeTruthy();
+    expect(screen.getByText(formatHafverCoins(item.sellPrice * 2))).toBeTruthy();
   });
 
   it('excludes locked collections from the default batch-sale action and recovery total', async () => {

@@ -14,7 +14,7 @@ const inventory = { items: [
   ] },
   { item_id: 'badge', definition: { itemId: 'badge', name: '能力徽章', description: '完成行动的印记。', rarity: 'legendary', icon: '⬡' }, quantity: 1, acquired_at: secondDate, sources: [{ seasonId: 's2', taskId: 't2', acquiredAt: secondDate }] },
 ] };
-const wallet = { wallets: [{ currency: '学习币', balance: 120 }, { currency: '探索券', balance: 0 }], ledger: [
+const wallet = { wallets: [{ currency: 'learning-coin', balance: 120 }, { currency: '探索券', balance: 0 }], ledger: [
   { id: 'r1', season_id: 's1', task_id: 't1', kind: 'mission', reward: { xp: 20, coins: 5, items: [{ ...definition, quantity: 2 }] }, created_at: firstDate },
   { id: 'r2', season_id: 's2', task_id: 't2', kind: 'review', reward: { xp: 10, coins: -2, items: [] }, created_at: secondDate },
 ] };
@@ -92,9 +92,9 @@ describe('InventoryScreen', () => {
     const history = await screen.findByRole('region', { name: '奖励记录' });
     const rows = within(history).getAllByRole('listitem');
     expect(rows[0].textContent).toContain('复习');
-    expect(rows[0].textContent).toContain('-2 学习币');
+    expect(rows[0].textContent).toContain('−2（2） 哈弗币');
     expect(rows[1].textContent).toContain('+20 XP');
-    expect(rows[1].textContent).toContain('+5 学习币');
+    expect(rows[1].textContent).toContain('+5（5） 哈弗币');
     expect(rows[1].textContent).toContain('方向罗盘 ×2');
     expect(rows[0].querySelector('time')?.dateTime).toBe(secondDate);
   });
@@ -140,7 +140,7 @@ describe('InventoryScreen', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init: RequestInit) => new Promise<Response>(resolve => pending.push({ signal: init.signal as AbortSignal, resolve, path: String(input) }))));
     const view = render(<InventoryScreen key="old-account" />);
     expect(pending).toHaveLength(2);
-    serve({ items: [] }, { wallets: [{ currency: '学习币', balance: 7 }], ledger: [] });
+    serve({ items: [] }, { wallets: [{ currency: 'learning-coin', balance: 7 }], ledger: [] });
     view.rerender(<InventoryScreen key="new-account" />);
     expect(pending.every(request => request.signal.aborted)).toBe(true);
     await screen.findByText('还没有收藏。完成学习任务后，在这里查看获得的物品。');

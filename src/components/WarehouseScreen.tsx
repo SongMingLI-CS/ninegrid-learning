@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowDownWideNarrow, ArrowUpDown, Check, ChevronLeft, ChevronRight, LockKeyhole, Search, ShieldCheck, Sparkles, Tag, UnlockKeyhole, X } from 'lucide-react';
 import { COLLECTION_CATALOG, CATALOG_RARITY_COUNTS, type CollectionItem, type CollectionRarity } from '../../shared/catalog';
 import { apiFetch } from '../lib/api';
+import { formatHafverCoins } from '../../shared/economy';
 import './WarehouseScreen.css';
 
 type HeldItem = { item_id: string; definition: { itemId: string; name: string; description: string; rarity: string; icon: string }; quantity: number; acquired_at: string; sources: Array<{ seasonId: string; taskId: string; acquiredAt: string }>; is_locked: boolean; is_showcased: boolean };
@@ -9,7 +10,7 @@ type Sale = { operation_id: string; items: Array<{ name: string; quantity: numbe
 type Props = { account: string; onExit: () => void; onLogout: () => void };
 const rarityLabels: Record<CollectionRarity, string> = { 'small-purple': '小紫', 'small-gold': '小金', 'large-gold': '大金', 'small-red': '小红', 'large-red': '大红' };
 const rarityOrder: Record<CollectionRarity, number> = { 'small-purple': 1, 'small-gold': 2, 'large-gold': 3, 'small-red': 4, 'large-red': 5 };
-const money = (value: number) => value.toLocaleString('zh-CN');
+const money = formatHafverCoins;
 const dateText = (value?: string) => value ? new Date(value).toLocaleDateString('zh-CN') : '暂无记录';
 const boxIdFromItem=(id:string):'small-safe'|'large-safe'|undefined=>id.startsWith('box-small-safe-')?'small-safe':id.startsWith('box-large-safe-')?'large-safe':undefined;
 

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { LearningState, RewardBundle } from '../../shared/types';
+import { formatHafverCoins } from '../../shared/economy';
 import { apiFetch } from '../lib/api';
 import './InventoryScreen.css';
 
@@ -20,6 +21,7 @@ interface LedgerEntry {
   task_id: string | null;
   kind: string;
   reward: RewardBundle;
+  economy_version?: string;
   created_at: string;
 }
 interface InventoryData {
@@ -36,6 +38,7 @@ function AcquisitionTime({ value }: { value: string }) {
   return Number.isNaN(date.getTime()) ? <span>日期未知</span> : <time dateTime={value}>{dateFormat.format(date)}</time>;
 }
 function signed(value: number) { return `${value >= 0 ? '+' : ''}${value.toLocaleString('zh-CN')}`; }
+function signedCoins(value: number) { return `${value < 0 ? '−' : '+'}${formatHafverCoins(Math.abs(value))}`; }
 async function getPayload(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   const response = await apiFetch(path, { signal });
   if (!response.ok) throw new Error(response.status === 401 ? '登录已失效，请重新登录后重试。' : `读取个人收藏失败（HTTP ${response.status}），请重试。`);
@@ -117,7 +120,7 @@ export function InventoryScreen({ seasons = [] }: InventoryScreenProps) {
     {load.status === 'error' && <div className="pi-notice pi-error"><p role="alert">{load.message}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>重试</button></div>}
     {data && <>
       <section className="pi-wallet" aria-label="账户余额"><h3>账户余额</h3><p>全账户余额 · 不随收藏筛选变化</p>
-        {data.wallets.length ? <dl>{data.wallets.map(wallet => <div key={wallet.currency}><dt>{wallet.currency}</dt><dd>{wallet.balance.toLocaleString('zh-CN')}</dd></div>)}</dl> : <p>暂无余额记录。</p>}
+        {data.wallets.length ? <dl>{data.wallets.map(wallet => <div key={wallet.currency}><dt>{wallet.currency==='learning-coin'?'哈弗币':wallet.currency}</dt><dd>{wallet.currency==='learning-coin'?formatHafverCoins(wallet.balance):wallet.balance.toLocaleString('zh-CN')}</dd></div>)}</dl> : <p>暂无余额记录。</p>}
       </section>
       <div className="pi-filters"><label>来源赛季<select aria-label="来源赛季" value={seasonFilter} onChange={event => { setSeasonFilter(event.target.value); setSelectedId(null); }}><option value="">全部赛季</option>{Array.from(seasonIds).map(id => <option key={id} value={id}>{seasonName(id)}</option>)}</select></label>
         <label>稀有度<select aria-label="稀有度" value={rarityFilter} onChange={event => { setRarityFilter(event.target.value); setSelectedId(null); }}><option value="">全部稀有度</option>{rarities.map(rarity => <option key={rarity} value={rarity}>{rarityNames[rarity] ?? rarity}</option>)}</select></label>
@@ -137,7 +140,7 @@ export function InventoryScreen({ seasons = [] }: InventoryScreenProps) {
         <h4>获得记录 · 全部来源</h4>{selected.sources.length ? <ul className="pi-provenance">{selected.sources.map((source, index) => <li key={`${source.seasonId}-${source.taskId}-${source.acquiredAt}-${index}`}><strong>{seasonName(source.seasonId)}</strong><span>{taskName(source.seasonId, source.taskId)}</span><AcquisitionTime value={source.acquiredAt} /></li>)}</ul> : <p>来源未记录。</p>}
       </section>}
       <section className="pi-history" aria-label="奖励记录"><div className="pi-section-heading"><h3>奖励记录</h3><span>{ledger.length} 笔</span></div><p>按获得时间倒序 · 跟随来源赛季筛选</p>
-        {ledger.length ? <ol>{ledger.map(entry => <li key={entry.id}><div className="pi-history-heading"><strong>{rewardNames[entry.kind] ?? entry.kind}</strong><AcquisitionTime value={entry.created_at} /></div><p>{seasonName(entry.season_id)} · {taskName(entry.season_id, entry.task_id)}</p><div className="pi-rewards"><span>{signed(entry.reward.xp)} XP</span><span>{signed(entry.reward.coins)} 学习币</span>{entry.reward.items.map((item, index) => <span key={`${item.itemId}-${index}`}>{item.name} ×{item.quantity}</span>)}</div></li>)}</ol> : <p className="pi-notice">{seasonFilter && data.ledger.length ? '此赛季暂无奖励记录。' : '暂无奖励记录。'}</p>}
+        {ledger.length ? <ol>{ledger.map(entry => <li key={entry.id}><div className="pi-history-heading"><strong>{rewardNames[entry.kind] ?? entry.kind}</strong><AcquisitionTime value={entry.created_at} /></div><p>{seasonName(entry.season_id)} · {taskName(entry.season_id, entry.task_id)}{entry.economy_version&&entry.economy_version!=='2026-10-v2'?` · 历史经济版本 ${entry.economy_version}`:''}</p><div className="pi-rewards"><span>{signed(entry.reward.xp)} XP</span><span>{signedCoins(entry.reward.coins)} 哈弗币</span>{entry.reward.items.map((item, index) => <span key={`${item.itemId}-${index}`}>{item.name} ×{item.quantity}</span>)}</div></li>)}</ol> : <p className="pi-notice">{seasonFilter && data.ledger.length ? '此赛季暂无奖励记录。' : '暂无奖励记录。'}</p>}
       </section>
     </>}
   </section>;

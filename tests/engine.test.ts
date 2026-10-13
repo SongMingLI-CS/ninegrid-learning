@@ -335,6 +335,9 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     expect(state.rewardLedger?.filter(entry => entry.kind === 'stage' || entry.kind === 'chain').filter(entry => entry.idempotencyKey.includes('main-chain') || entry.kind === 'stage')).toHaveLength(2);
     expect(state.rewardLedger?.filter(entry => entry.kind === 'stage')).toHaveLength(1);
     expect(state.rewardLedger?.filter(entry => entry.kind === 'chain' && entry.idempotencyKey.includes('main-chain'))).toHaveLength(1);
+    expect(state.rewardLedger?.find(entry => entry.kind === 'stage')?.reward.coins).toBe(200_000);
+    expect(state.rewardLedger?.find(entry => entry.kind === 'chain' && entry.idempotencyKey.includes('main-chain'))?.reward.coins).toBe(60_000);
+    expect(state.rewardLedger?.find(entry => entry.kind === 'chain' && entry.idempotencyKey.includes('branch-chain'))?.reward.coins).toBe(0);
     expect(stageAndMainChain?.every(entry => state.rewardLedger?.some(next => next.id === entry.id))).toBe(true);
   });
   it('does not grant chain or stage items from self-reported diagnosis completion', () => {

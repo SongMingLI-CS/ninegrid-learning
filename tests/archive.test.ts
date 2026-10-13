@@ -27,11 +27,11 @@ async function fixture() {
   await pool.query('CREATE TABLE users (id uuid PRIMARY KEY)');
   await pool.query("INSERT INTO users (id) VALUES ('00000000-0000-4000-8000-000000000001'),('00000000-0000-4000-8000-000000000002')");
   await pool.query('CREATE TABLE seasons (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, campaign_id text NOT NULL, title text NOT NULL, revision integer NOT NULL DEFAULT 1, state jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,campaign_id))');
-  await pool.query('CREATE TABLE reward_ledger (id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, kind text NOT NULL, idempotency_key text NOT NULL, reward jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))');
+  await pool.query('CREATE TABLE reward_ledger (id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, kind text NOT NULL, idempotency_key text NOT NULL, reward jsonb NOT NULL, economy_version text NOT NULL DEFAULT \'2026-10-v1\', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))');
   await pool.query('CREATE TABLE wallets (user_id uuid NOT NULL, currency text NOT NULL, balance bigint NOT NULL DEFAULT 0, PRIMARY KEY(user_id,currency))');
   await pool.query('CREATE TABLE inventory_items (user_id uuid NOT NULL, item_id text NOT NULL, definition jsonb NOT NULL, quantity integer NOT NULL DEFAULT 0, acquired_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,item_id))');
   await pool.query('CREATE TABLE inventory_item_preferences (user_id uuid NOT NULL,item_id text NOT NULL,is_locked boolean NOT NULL DEFAULT false,is_showcased boolean NOT NULL DEFAULT false,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,item_id))');
-  await pool.query('CREATE TABLE inventory_sales (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL,operation_id uuid NOT NULL,items jsonb NOT NULL,coins bigint NOT NULL CHECK(coins>0),request_hash text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(user_id,operation_id))');
+  await pool.query('CREATE TABLE inventory_sales (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL,operation_id uuid NOT NULL,items jsonb NOT NULL,coins bigint NOT NULL CHECK(coins>0),request_hash text,economy_version text NOT NULL DEFAULT \'2026-10-v1\',created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(user_id,operation_id))');
   await pool.query('CREATE TABLE task_evaluations (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, evidence_sha256 text NOT NULL, evaluation jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,season_id,task_id,evidence_sha256))');
   await pool.query("CREATE TABLE legacy_imports (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, source_sha256 text NOT NULL, season_ids uuid[] NOT NULL DEFAULT '{}', imported_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,source_sha256))");
   await pool.query('CREATE TABLE attachments (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, storage_key text UNIQUE NOT NULL, mime_type text NOT NULL, byte_size integer NOT NULL, width integer NOT NULL, height integer NOT NULL, sha256 text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
@@ -60,7 +60,7 @@ describe('server-owned learning archives', () => {
     expect(COLLECTION_CATALOG).toHaveLength(155);
     expect(CATALOG_RARITY_COUNTS).toEqual({ 'small-purple': 45, 'small-gold': 35, 'large-gold': 15, 'small-red': 35, 'large-red': 25 });
     expect(new Set(COLLECTION_CATALOG.map(item => item.id)).size).toBe(155);
-    expect(COLLECTION_CATALOG.every(item => item.displayValue > item.sellPrice && item.imageKey && item.version === 1)).toBe(true);
+    expect(COLLECTION_CATALOG.every(item => item.displayValue > item.sellPrice && item.imageKey && item.version === 2)).toBe(true);
   });
 
   it('settles account warehouse sales atomically, honors lock, and deduplicates operation IDs', async () => {

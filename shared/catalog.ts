@@ -6,12 +6,12 @@ export interface CollectionItem {
   limited: boolean; sellable: boolean; seasonId: string | null; version: number;
 }
 
-const sets: Array<{ rarity: CollectionRarity; names: string[]; display: number; sell: number }> = [
-  { rarity: 'small-purple', display: 980, sell: 320, names: '加固电路板,短波接收器,微型光谱仪,光纤探针,便携式测距仪,夜视目镜,储存芯片,信号放大器,精密罗盘,抗震记录仪,电池校准器,光学滤片,微型焊枪,加密钥匙,热成像模块,振动传感器,陶瓷保险丝,数据转接头,折叠瞄准镜,采样泵,陶瓷止血夹,脉冲计,压力表组件,防水手电,温度记录卡,镍钛扳手,钛合金套筒,微型棘轮,磁吸拾取器,绝缘剪钳,多功能探针,精密轴承,快速接头,纤维束带,校准砝码,滤毒芯,急救剪,止血带盒,应急电源,识别牌,旧电台旋钮,风向测量片,野外工具尺,压纹铭牌,磨砂镜片'.split(',') },
-  { rarity: 'small-gold', display: 4600, sell: 1550, names: '军规卫星电话,高精度惯导组件,稀有钽电容组,全景测绘镜头,耐压氧气阀,战地超声探头,钨钢刀具套装,加密存储阵列,光纤陀螺仪,低温冷却泵,便携式频谱仪,真空封装样本盒,多波段天线,复合陶瓷护板,碳纤维稳定架,军用级电芯,红外校验模块,脉冲电源单元,蓝宝石观察窗,钛合金阀组,无菌手术包,高通量采样管,应急定位信标,石英时间基准,航迹记录模块,激光反射棱镜,微型伺服机,金属分析探头,双频导航芯片,数据中继模块,记忆合金簧片,战地制冷剂,防磁存储匣,镀金接触片,陶瓷光纤端子'.split(',') },
-  { rarity: 'large-gold', display: 18500, sell: 6400, names: '原型相控阵雷达,高纯度单晶锭,深空导航核心,全谱成像阵列,钛铌超导环,量子计时模块,高能密封电池,精密惯性平台,军用卫星中继器,三维地质扫描仪,稀有同位素样本,零点校准台,钨铼合金转子,低温超导电缆,多源情报存储柜'.split(',') },
-  { rarity: 'small-red', display: 8200, sell: 2800, names: '前线行动日志,失联哨站底片,密封行动地图,匿名情报胶卷,战地医师手记,旧式加密本,边境电台录音,封存指挥令,褪色识别章,未寄出的家书,侦察员素描册,行动路线胶片,旧基地钥匙牌,加密坐标卡,最后一班列车票,无人机航迹带,撤离清单原件,潮湿电文副本,手工绘制地形图,封存语音芯片,医疗站值班簿,损坏的摄影机,空白身份卡,实验室门禁片,旧磁带录音,行动纪念章,遗失的罗盘盘面,抄录的频率表,现场粉笔拓片,纸质情报卷宗,封条残片,信号旗样本,深夜巡逻记录,观察哨望远镜盖,手写密码索引'.split(',') },
-  { rarity: 'large-red', display: 32000, sell: 10800, names: '零号档案原卷,远征队黑匣子,失落基地全息盘,首席研究员密札,深层设施总图,未公开试验记录,绝密通信主机,行动组原始胶片,封存样本核心,旧世界导航图,极地站最后日志,未解码卫星碎片,原型机控制晶片,边境撤离母带,完整观测站数据,指挥部手写底稿,未知合金核心,深海信标记录器,远征队纪念怀表,初代侦察徽章,最后一份样本,失踪航班黑匣子,封存实验母盘,地下城入口钥匙,行动档案总汇'.split(',') },
+const sets: Array<{ rarity: CollectionRarity; min: number; max: number; names: string[] }> = [
+  { rarity: 'small-purple', min: 20_000, max: 80_000, names: '加固电路板,短波接收器,微型光谱仪,光纤探针,便携式测距仪,夜视目镜,储存芯片,信号放大器,精密罗盘,抗震记录仪,电池校准器,光学滤片,微型焊枪,加密钥匙,热成像模块,振动传感器,陶瓷保险丝,数据转接头,折叠瞄准镜,采样泵,陶瓷止血夹,脉冲计,压力表组件,防水手电,温度记录卡,镍钛扳手,钛合金套筒,微型棘轮,磁吸拾取器,绝缘剪钳,多功能探针,精密轴承,快速接头,纤维束带,校准砝码,滤毒芯,急救剪,止血带盒,应急电源,识别牌,旧电台旋钮,风向测量片,野外工具尺,压纹铭牌,磨砂镜片'.split(',') },
+  { rarity: 'small-gold', min: 100_000, max: 300_000, names: '军规卫星电话,高精度惯导组件,稀有钽电容组,全景测绘镜头,耐压氧气阀,战地超声探头,钨钢刀具套装,加密存储阵列,光纤陀螺仪,低温冷却泵,便携式频谱仪,真空封装样本盒,多波段天线,复合陶瓷护板,碳纤维稳定架,军用级电芯,红外校验模块,脉冲电源单元,蓝宝石观察窗,钛合金阀组,无菌手术包,高通量采样管,应急定位信标,石英时间基准,航迹记录模块,激光反射棱镜,微型伺服机,金属分析探头,双频导航芯片,数据中继模块,记忆合金簧片,战地制冷剂,防磁存储匣,镀金接触片,陶瓷光纤端子'.split(',') },
+  { rarity: 'large-gold', min: 400_000, max: 900_000, names: '原型相控阵雷达,高纯度单晶锭,深空导航核心,全谱成像阵列,钛铌超导环,量子计时模块,高能密封电池,精密惯性平台,军用卫星中继器,三维地质扫描仪,稀有同位素样本,零点校准台,钨铼合金转子,低温超导电缆,多源情报存储柜'.split(',') },
+  { rarity: 'small-red', min: 600_000, max: 1_000_000, names: '前线行动日志,失联哨站底片,密封行动地图,匿名情报胶卷,战地医师手记,旧式加密本,边境电台录音,封存指挥令,褪色识别章,未寄出的家书,侦察员素描册,行动路线胶片,旧基地钥匙牌,加密坐标卡,最后一班列车票,无人机航迹带,撤离清单原件,潮湿电文副本,手工绘制地形图,封存语音芯片,医疗站值班簿,损坏的摄影机,空白身份卡,实验室门禁片,旧磁带录音,行动纪念章,遗失的罗盘盘面,抄录的频率表,现场粉笔拓片,纸质情报卷宗,封条残片,信号旗样本,深夜巡逻记录,观察哨望远镜盖,手写密码索引'.split(',') },
+  { rarity: 'large-red', min: 1_000_000, max: 2_000_000, names: '零号档案原卷,远征队黑匣子,失落基地全息盘,首席研究员密札,深层设施总图,未公开试验记录,绝密通信主机,行动组原始胶片,封存样本核心,旧世界导航图,极地站最后日志,未解码卫星碎片,原型机控制晶片,边境撤离母带,完整观测站数据,指挥部手写底稿,未知合金核心,深海信标记录器,远征队纪念怀表,初代侦察徽章,最后一份样本,失踪航班黑匣子,封存实验母盘,地下城入口钥匙,行动档案总汇'.split(',') },
 ];
 const categories: CollectionCategory[] = ['电子设备','工具零件','医疗用品','贵重物','情报档案','研究样本','纪念物'];
 function categoryFor(name: string, index: number): CollectionCategory {
@@ -33,11 +33,12 @@ const descriptions: Record<CollectionCategory, string> = {
   '研究样本': '经安全容器封装的研究样本，仅作虚构收藏展示。',
   '纪念物': '带有个人经历痕迹的纪念收藏，记录着行动者曾经到过的地方。',
 };
-export const COLLECTION_CATALOG: CollectionItem[] = sets.flatMap(({ rarity, names, display, sell }) => names.map((name, index) => {
+export const COLLECTION_CATALOG: CollectionItem[] = sets.flatMap(({ rarity, names, min, max }) => names.map((name, index) => {
   const category = categoryFor(name, index + sets.findIndex(set => set.rarity === rarity) * 2);
   const id = `${rarity}-${String(index + 1).padStart(2, '0')}`;
+  const displayValue = min + Math.round(index * (max - min) / (names.length - 1));
   return { id, name, category, rarity, size: ['1×1','1×2','2×2','2×3'][index % 4], imageKey: index === 0 ? rarity : id,
-    description: `${name} 用于野外的${category}检查与回收整理。${descriptions[category]}`, displayValue: display + index * 37, sellPrice: sell + index * 11,
-    limited: false, sellable: true, seasonId: null, version: 1 };
+    description: `${name} 用于野外的${category}检查与回收整理。${descriptions[category]}`, displayValue, sellPrice: Math.floor(displayValue * 0.65),
+    limited: false, sellable: true, seasonId: null, version: 2 };
 }));
 export const CATALOG_RARITY_COUNTS = Object.fromEntries(sets.map(set => [set.rarity, set.names.length])) as Record<CollectionRarity, number>;

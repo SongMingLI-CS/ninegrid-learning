@@ -43,7 +43,8 @@ describe('versioned NumPy curriculum', () => {
     expect(NUMPY_DEMO_CAMPAIGN.id).not.toBe('numpy-first-analysis');
     for (const stage of NUMPY_DEMO_CAMPAIGN.stages) {
       expect(stage.tasks.every(task => task.minutes >= 5 && task.minutes <= 45)).toBe(true);
-      expect(stage.chains?.every(chain => (chain.completionReward?.coins ?? 0) <= 5)).toBe(true);
+      expect(stage.chains?.find(chain => chain.track === 'main')?.completionReward?.coins).toBe(60_000);
+      expect(stage.chains?.filter(chain => chain.track === 'branch').every(chain => (chain.completionReward?.coins ?? 0) === 0)).toBe(true);
     }
   });
 

@@ -1,9 +1,10 @@
 import { useEffect,useState } from 'react';
 import { ArrowLeft,ArrowRight,Backpack,BookOpen,Camera,Medal,PenLine,ShieldCheck,Sparkles,Trophy } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { formatHafverCoins } from '../../shared/economy';
 import './EconomyScreens.css';
 type ProfileData=any;
-const money=(n:number)=>Number(n||0).toLocaleString('zh-CN');
+const money=formatHafverCoins;
 export function ProfileScreen({account,onExit,onLogout,onNavigate}:{account:string;onExit:()=>void;onLogout:()=>void;onNavigate:(path:string)=>void}){
  const [data,setData]=useState<ProfileData|null>(null),[nickname,setNickname]=useState(''),[avatarUrl,setAvatarUrl]=useState(''),[bio,setBio]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  async function refresh(){setError('');try{const r=await apiFetch('/api/profile');if(!r.ok)throw Error('个人成长档案暂时不可用');const body=await r.json();setData(body);setNickname(body.profile.nickname);setAvatarUrl(body.profile.avatar_url);setBio(body.profile.bio)}catch(e){setError(e instanceof Error?e.message:'加载失败')}}

@@ -1,6 +1,7 @@
 import type { Campaign, CampaignSnapshot, DailySchedule, Evaluation, LearningState, LessonContent, RewardBundle, Task, TaskAttempt, TaskProgress } from '../../shared/types';
 import { evaluationSchema, lessonContentSchema } from '../../shared/schema';
 import { COLLECTION_CATALOG } from '../../shared/catalog';
+import { BRANCH_CHAIN_COMPLETION_COINS, chainCompletionCoins, EFFECTIVE_REVIEW_COINS, LEARNING_COIN_RATE_PER_MINUTE, STAGE_COMPLETION_COINS, VERIFIED_SEASON_COMPLETION_COINS } from '../../shared/economy';
 
 export function getTasks(campaign: Campaign): Task[] { return campaign.stages.flatMap(stage => stage.tasks); }
 
@@ -66,7 +67,7 @@ export function buildDailySchedule(campaign: Campaign, progress: LearningState['
 
 export function getTaskReward(task: Task): RewardBundle {
   const item = task.kind === 'boss' ? [{ itemId: `${task.id}-field-notes`, name: '验证记录徽记', description: '完成综合任务后获得的原创学习收藏品。', rarity: 'rare' as const, icon: '✦', quantity: 1 }] : [];
-  return { xp: task.xp, coins: Math.max(1, Math.ceil(task.xp / 30)), items: item };
+  return { xp: task.xp, coins: Math.floor(task.minutes * LEARNING_COIN_RATE_PER_MINUTE), items: task.reward?.items ?? item };
 }
 
 function applyReward(state: LearningState, task: Task, reward: RewardBundle, kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season', now: Date, ownerId = task.id): LearningState {
@@ -78,7 +79,7 @@ function applyReward(state: LearningState, task: Task, reward: RewardBundle, kin
     const owned = inventory[item.itemId];
     inventory[item.itemId] = { item, quantity: (owned?.quantity ?? 0) + item.quantity, acquiredAt: owned?.acquiredAt ?? entry.at, sources: [...(owned?.sources ?? []), entry.id] };
   }
-  return { ...state, wallet: { currency: '学习币', balance: (state.wallet?.balance ?? 0) + reward.coins }, inventory,
+  return { ...state, wallet: { currency: 'learning-coin', balance: (state.wallet?.balance ?? 0) + reward.coins }, inventory,
     rewardLedger: [...(state.rewardLedger ?? []), entry] };
 }
 
@@ -208,7 +209,7 @@ export function completeTask(state: LearningState, taskId: string, verification:
       if(stageGateIds(ownerStage).every(id=>ids.has(id)&&promoted.progress[id]?.verification==='ai')&&ownerStage.reward?.items.length)promoted=applyReward(promoted,task,{xp:0,coins:0,items:ownerStage.reward.items},'verification',now,`stage-${ownerStage.id}`);
     }
     const allMainlineAiVerified = promoted.campaign.stages.every(stage => stageGateIds(stage).every(id => ids.has(id) && promoted.progress[id]?.verification === 'ai'));
-    if (allMainlineAiVerified) { const item=COLLECTION_CATALOG.find(entry=>entry.rarity==='large-red')!; promoted = applyReward(promoted, task, { xp: 500, coins: 100, items: [{ itemId:item.id, name:item.name, description:item.description, rarity:'legendary', icon:'⬡', quantity:1 }] }, 'season', now, promoted.campaign.id); }
+    if (allMainlineAiVerified) { const item=COLLECTION_CATALOG.find(entry=>entry.rarity==='large-red')!; promoted = applyReward(promoted, task, { xp: 500, coins: VERIFIED_SEASON_COMPLETION_COINS, items: [{ itemId:item.id, name:item.name, description:item.description, rarity:'legendary', icon:'⬡', quantity:1 }] }, 'season', now, promoted.campaign.id); }
     return promoted;
   }
   if (verification !== 'self' && verification !== 'ai') throw new Error('验收方式无效');
@@ -230,17 +231,18 @@ export function completeTask(state: LearningState, taskId: string, verification:
   const completedIds = new Set(getTasks(rewarded.campaign).filter(item => rewarded.progress[item.id]?.status === 'completed').map(item => item.id));
   const stage = rewarded.campaign.stages[stageIndex];
   for (const chain of stage.chains ?? []) if (chain.taskIds.every(id => completedIds.has(id))) {
-    const chainReward = chain.completionReward ?? { xp: Math.max(10, chain.taskIds.length * 20), coins: chain.track === 'main' ? 5 : 3, items: [] };
+    const primaryMainChain = stage.chains?.find(item => item.track === 'main')?.id;
+    const chainReward = { ...(chain.completionReward ?? { xp: Math.max(10, chain.taskIds.length * 20), coins: 0, items: [] }), coins: chain.track === 'main' && chain.id === primaryMainChain ? chainCompletionCoins(chain.track) : BRANCH_CHAIN_COMPLETION_COINS };
     const independentlyVerified = chain.taskIds.every(id => rewarded.progress[id]?.verification === 'ai');
     rewarded = applyReward(rewarded, task, { ...chainReward, items: independentlyVerified ? chainReward.items : [] }, 'chain', now, chain.id);
   }
   if (stageGateIds(stage).every(id => completedIds.has(id))) {
-    const stageReward = stage.reward ?? { xp: 100, coins: 8, items: [] };
+    const stageReward = { ...(stage.reward ?? { xp: 100, coins: 0, items: [] }), coins: STAGE_COMPLETION_COINS };
     const independentlyVerified = stageGateIds(stage).every(id => rewarded.progress[id]?.verification === 'ai');
     rewarded = applyReward(rewarded, task, { ...stageReward, items: independentlyVerified ? stageReward.items : [] }, 'stage', now, stage.id);
   }
   const allMainlineAiVerified = rewarded.campaign.stages.every(item => stageGateIds(item).every(id => completedIds.has(id) && rewarded.progress[id]?.verification === 'ai'));
-  if (allMainlineAiVerified) { const item=COLLECTION_CATALOG.find(entry=>entry.rarity==='large-red')!; rewarded = applyReward(rewarded, task, { xp: 500, coins: 100, items: [{ itemId:item.id, name:item.name, description:item.description, rarity:'legendary', icon:'⬡', quantity:1 }] }, 'season', now, rewarded.campaign.id); }
+  if (allMainlineAiVerified) { const item=COLLECTION_CATALOG.find(entry=>entry.rarity==='large-red')!; rewarded = applyReward(rewarded, task, { xp: 500, coins: VERIFIED_SEASON_COMPLETION_COINS, items: [{ itemId:item.id, name:item.name, description:item.description, rarity:'legendary', icon:'⬡', quantity:1 }] }, 'season', now, rewarded.campaign.id); }
   return rewarded;
 }
 

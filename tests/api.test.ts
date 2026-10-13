@@ -174,7 +174,7 @@ describe('curriculum orchestration endpoints', () => {
     expect(stages[0].mainlineTaskIds).toEqual([stages[0].tasks[0].id]);
     expect(stages[0].chains.some((c: any) => c.track === 'branch')).toBe(true);
     expect(stages[0].tasks.find((t: any) => t.track === 'branch').prerequisites).toEqual([stages[0].mainlineTaskIds[0]]);
-    expect(stages[0].tasks[0].reward).toEqual({ xp: 16, coins: 1, items: [] });
+    expect(stages[0].tasks[0].reward).toEqual({ xp: 16, coins: 130000, items: [] });
   });
   it('preserves /api/generate as the blueprint alias', async () => {
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(generated) })).post('/api/generate').send({ input });

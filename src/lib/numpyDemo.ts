@@ -1,4 +1,5 @@
 import type { Campaign, Stage, Task, TaskChain } from '../../shared/types';
+import { BRANCH_CHAIN_COMPLETION_COINS, MAIN_CHAIN_COMPLETION_COINS, STAGE_COMPLETION_COINS } from '../../shared/economy';
 
 type Unit = [title: string, point: string, action: string, artifact: string];
 type TrackName = 'main' | 'branch';
@@ -134,16 +135,16 @@ const stages: Stage[] = units.map((mainUnits, stageIndex) => {
   if (stageIndex === 0) mainUnits[0] = ['校准仪表：读懂 shape 与 axis','ndarray / shape / dtype','不看笔记预测给定数组的维度、shape 和 dtype，再运行核对。','预测表与一段核验代码'];
   if (stageIndex === 0) mainUnits[1] = ['建立测量样本：从 Python 列表创建数组','np.array 与二维规则输入','从成绩列表创建规则二维 ndarray，检查行数、列数和 dtype。','构造代码与 shape 实际结果'];
   const tasks = mainUnits.map((unit, i) => ({ ...task(mainIds[i], unit, mainChainId, 'main', i === 14 ? 35 : 12, i ? [mainIds[i-1]] : stageIndex ? [stageIds[stageIndex-1]+'-m15'] : [], i), ...(stageIndex === 0 && i === 0 ? { teaching: starterLesson, recallQuestion: '一个 shape=(2, 3) 的数组做 sum(axis=0)，结果有几个数？' } : {}) }));
-  const chains: TaskChain[] = [{ id: mainChainId, title: `主线 · ${stageNames[stageIndex]}`, track: 'main', taskIds: mainIds, completionReward: { xp: 90, coins: 4, items: [] } }];
+  const chains: TaskChain[] = [{ id: mainChainId, title: `主线 · ${stageNames[stageIndex]}`, track: 'main', taskIds: mainIds, completionReward: { xp: 90, coins: MAIN_CHAIN_COMPLETION_COINS, items: [] } }];
   const branchNames = ['应用探索','错误诊断','内存与随机数据探索'];
   branchUnits[stageIndex].forEach((branch, branchIndex) => {
     const chainId = `${stageId}-branch-${branchIndex+1}`;
     const ids = branch.map((_, i) => `${chainId}-t${i+1}`);
     const anchor = mainIds[[3,7,11][branchIndex]];
-    chains.push({ id: chainId, title: `支线 · ${branchNames[branchIndex]}`, track: 'branch', taskIds: ids, completionReward: { xp: 25, coins: 2, items: [] } });
+    chains.push({ id: chainId, title: `支线 · ${branchNames[branchIndex]}`, track: 'branch', taskIds: ids, completionReward: { xp: 25, coins: BRANCH_CHAIN_COMPLETION_COINS, items: [] } });
     branch.forEach((unit, i) => tasks.push(task(ids[i], unit, chainId, 'branch', [12,15,18][i], [i ? ids[i-1] : anchor], i)));
   });
-  return { id: stageId, title: stageNames[stageIndex], description: `${stageNames[stageIndex]}：主线 15 项推动阶段能力验收；应用、纠错、探索三条支线各 3 项，可选且不阻塞后续阶段。主线约 ${tasks.filter(t=>t.track==='main').reduce((s,t)=>s+t.minutes,0)} 分钟；支线另计。`, tasks, chains, mainlineTaskIds: mainIds, gateTaskIds: [mainIds[14]], reward: { xp: 100, coins: 8, items: [] } };
+  return { id: stageId, title: stageNames[stageIndex], description: `${stageNames[stageIndex]}：主线 15 项推动阶段能力验收；应用、纠错、探索三条支线各 3 项，可选且不阻塞后续阶段。主线约 ${tasks.filter(t=>t.track==='main').reduce((s,t)=>s+t.minutes,0)} 分钟；支线另计。`, tasks, chains, mainlineTaskIds: mainIds, gateTaskIds: [mainIds[14]], reward: { xp: 100, coins: STAGE_COMPLETION_COINS, items: [] } };
 });
 
 const gridLabels: [string,string,string][] = [

@@ -20,8 +20,9 @@ import { mountArchiveRoutes, persistEvaluation, taskEvidence } from './archive';
 import { mountAttachmentRoutes } from './attachments';
 import { selectSourceMaterialExcerpt } from './material';
 import { mountGenerationDraftRoutes } from './generationDrafts';
-import { CHALLENGES, ECONOMY_VERSION, type ChallengeTier } from '../shared/economy';
+import { CHALLENGES, ECONOMY_VERSION, isStandardPoolEligible, type ChallengeTier } from '../shared/economy';
 import { COLLECTION_CATALOG } from '../shared/catalog';
+import { BRANCH_CHAIN_COMPLETION_COINS, LEARNING_COIN_RATE_PER_MINUTE, MAIN_CHAIN_COMPLETION_COINS, STAGE_COMPLETION_COINS } from '../shared/economy';
 
 // Campaign schema already carries these input preferences; augment the current
 // shared interface until the matching source type declaration lands.
@@ -215,16 +216,17 @@ function grantDeterministicRewards(campaign: Campaign): Campaign {
     const tasks = stage.tasks.map((task) => {
       const main = mainlineIds.has(task.id);
       const xp = Math.min(200, Math.max(10, Math.ceil(task.minutes / 5) * (task.kind === 'boss' ? 8 : task.kind === 'practice' ? 6 : 4)));
-      const coins = Math.max(1, Math.ceil(xp / 30));
+      const coins = Math.floor(task.minutes * LEARNING_COIN_RATE_PER_MINUTE);
       const isStageGate = (stage.gateTaskIds ?? []).includes(task.id);
       const items = task.kind === 'boss' && isStageGate ? [{ itemId: `${task.id}-field-notes`, name: '验证记录徽记', description: '完成综合任务后获得的原创学习收藏品。', rarity: 'rare' as const, icon: '✦', quantity: 1 }] : [];
       return { ...task, xp, reward: { xp, coins, items } };
     });
+    const primaryMainChainId=stage.chains?.find(chain=>chain.track==='main')?.id;
     const chains = stage.chains?.map((chain) => ({
       ...chain,
-      completionReward: { xp: Math.min(120, Math.floor(chain.taskIds.reduce((sum, id) => sum + (stage.tasks.find(task => task.id === id)?.minutes ?? 0), 0) * 0.4)), coins: chain.track === 'main' ? 3 : 1, items: [] },
+      completionReward: { xp: Math.min(120, Math.floor(chain.taskIds.reduce((sum, id) => sum + (stage.tasks.find(task => task.id === id)?.minutes ?? 0), 0) * 0.4)), coins: chain.track === 'main' && chain.id === primaryMainChainId ? MAIN_CHAIN_COMPLETION_COINS : BRANCH_CHAIN_COMPLETION_COINS, items: [] },
     }));
-    return { ...stage, tasks, chains, reward: { xp: 100, coins: 8, items: [] } };
+    return { ...stage, tasks, chains, reward: { xp: 100, coins: STAGE_COMPLETION_COINS, items: [] } };
   });
   return { ...campaign, stages };
 }
@@ -773,7 +775,7 @@ export function createApp(options: Options = {}) {
       let item:any=null,drawAudit:any=null;
       if(passed) {
         const poolConfig=CHALLENGES[submission.tier].pool; const ticketRaw=randomInt(1_000_000_000); const ticket=ticketRaw/1_000_000_000; let acc=0; const selected=poolConfig.find(entry=>{acc+=entry.probability;return ticket<acc;})??poolConfig.at(-1)!;
-        const candidates=COLLECTION_CATALOG.filter(entry=>entry.rarity===selected.rarity); const def=candidates[randomInt(candidates.length)];
+        const candidates=COLLECTION_CATALOG.filter(entry=>entry.rarity===selected.rarity&&isStandardPoolEligible(entry)); const def=candidates[randomInt(candidates.length)];
         item={itemId:def.id,name:def.name,description:def.description,rarity:def.rarity,icon:'✦',quantity:selected.quantity,poolVersion:ECONOMY_VERSION};
         drawAudit={version:ECONOMY_VERSION,ticket:ticketRaw,ticketScale:1_000_000_000,rarity:selected.rarity,probability:selected.probability,itemId:def.id,quantity:selected.quantity};
         await settlement.query(`INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,$4) ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=inventory_items.quantity+EXCLUDED.quantity`,[userId,def.id,JSON.stringify(item),item.quantity]);

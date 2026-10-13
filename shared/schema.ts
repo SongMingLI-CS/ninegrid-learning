@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_HAFVER_COINS } from './economy';
 
 const reserved = /^(?:__proto__|prototype|constructor|api[-_]?key|access[-_]?token|authorization|password|secret)$/i;
 const idSchema = z.string().min(1).max(128).regex(/^[\p{L}\p{N}_-]+$/u).refine(id => !reserved.test(id), '标识符不安全');
@@ -15,7 +16,7 @@ const resourceSchema = z.object({
   }, '资料地址必须是无凭据的 HTTP(S) 链接'),
 });
 export const rewardBundleSchema = z.object({
-  xp: z.number().int().min(0).max(10000), coins: z.number().int().min(0).max(1000),
+  xp: z.number().int().min(0).max(10000), coins: z.number().int().min(0).max(MAX_HAFVER_COINS),
   items: z.array(z.object({ itemId: idSchema, name: text(120), description: text(500), rarity: z.enum(['common', 'rare', 'legendary']), icon: text(40), quantity: z.number().int().min(1).max(99) })).max(10),
 });
 export const lessonContentSchema = z.object({
@@ -184,7 +185,7 @@ export const learningStateSchema = z.object({
   content: z.record(idSchema, lessonContentSchema).optional(),
   schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(),
   history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), attempts: z.record(idSchema, z.array(z.object({ at: dateSchema, answer: z.string().max(100000), hintLevelsUsed: z.number().int().min(0).max(5), verification: z.enum(['self','ai','none']), passed: z.boolean(), score: z.number().min(0).max(100).optional(), errorType: z.enum(['concept','operation','hint-dependence','prerequisite','none']).optional(), feedback: z.string().max(8000) })).max(10000)).optional(), contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(), gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(), dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(), knownTasks: z.record(idSchema, z.boolean()).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
-  wallet: z.object({ currency: z.string().max(40), balance: z.number().int().min(0).max(100000000) }).optional(),
+  wallet: z.object({ currency: z.string().max(40), balance: z.number().int().min(0).max(MAX_HAFVER_COINS) }).optional(),
   inventory: z.record(idSchema, z.object({ item: rewardBundleSchema.shape.items.element, quantity: z.number().int().min(1).max(1000000), acquiredAt: dateSchema, sources: z.array(idSchema).max(10000) })).optional(),
   rewardLedger: z.array(z.object({ id: idSchema, campaignId: idSchema.default('legacy-unknown'), taskId: idSchema, at: dateSchema, reward: rewardBundleSchema, kind: z.enum(['mission','verification','chain','stage','season','review']), idempotencyKey: idSchema })).max(100000).optional(),
   gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(),
