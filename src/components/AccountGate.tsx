@@ -39,6 +39,7 @@ export function AccountGate({ onAuthenticated }: { onAuthenticated(user: Account
     <header className="account-header"><a className="account-logo" href="/" aria-label="九格行动首页"><span className="account-logo-grid" aria-hidden="true">{Array.from({length:9},(_,i)=><i key={i}/>)}</span><span><strong>NINEGRID</strong><small>九格行动</small></span></a><span className="account-header-label">LEARNING, IN ACTION.</span></header>
     <div className="account-layout">
       <section className="account-story" aria-labelledby="account-story-title">
+        <div className="account-field-map" aria-hidden="true"><span>FIELD / 07</span><span>35°41′N&nbsp; 139°41′E</span><svg viewBox="0 0 520 220" preserveAspectRatio="none"><path d="M-10 180 93 143 168 165 254 102 322 126 400 57 535 78"/><path d="M-10 203 95 165 172 187 255 124 325 148 402 79 535 100"/><circle cx="254" cy="102" r="24"/><circle cx="254" cy="102" r="43"/><circle cx="400" cy="57" r="7"/></svg></div>
         <span className="account-eyebrow"><span/>YOUR NEXT OPERATION</span>
         <h1 id="account-story-title">把想学的，<br/>变成<span>真正会的。</span></h1>
         <p className="account-story-copy">从一个明确目标出发。沿着主线深入，在支线中探索，<br className="account-desktop-break"/>用独立完成的作品，留下属于你的能力成果。</p>
@@ -50,7 +51,7 @@ export function AccountGate({ onAuthenticated }: { onAuthenticated(user: Account
         <div className="account-story-foot"><span>清晰任务</span><i/><span>主动练习</span><i/><span>长期成果</span></div>
       </section>
       <section className="account-card" aria-labelledby="account-form-title">
-        <div className="account-switch" aria-label="账号入口"><button type="button" aria-pressed={mode==='login'} className={mode==='login'?'selected':''} disabled={busy} onClick={()=>changeMode('login')}>登录</button><button type="button" aria-pressed={mode==='register'} className={mode==='register'?'selected':''} disabled={busy} onClick={()=>changeMode('register')}>创建账号</button></div>
+        <div className="account-card-status"><span><i/>个人档案入口</span><small>SECURE ACCESS</small></div><div className="account-switch" aria-label="账号入口"><button type="button" aria-pressed={mode==='login'} className={mode==='login'?'selected':''} disabled={busy} onClick={()=>changeMode('login')}>登录</button><button type="button" aria-pressed={mode==='register'} className={mode==='register'?'selected':''} disabled={busy} onClick={()=>changeMode('register')}>创建账号</button></div>
         <div className="account-card-heading"><span className="account-fingerprint"><Fingerprint size={24}/></span><h2 id="account-form-title">{mode==='login'?'欢迎回来':'开启你的学习行动'}</h2><p>{mode==='login'?'登录后，继续上次任务与学习赛季。':'创建个人档案，让每一次进步都有记录。'}</p></div>
         <form className="account-form" onSubmit={event=>void submit(event)} aria-busy={busy}>
           <label htmlFor="account-email">邮箱地址</label><div className="account-input-wrap"><Mail size={17}/><input id="account-email" type="email" autoComplete="email" inputMode="email" placeholder="you@example.com" required maxLength={254} disabled={busy} value={email} onChange={event=>setEmail(event.target.value)} aria-describedby={error?'account-form-error':undefined}/></div>

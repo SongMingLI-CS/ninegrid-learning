@@ -35,8 +35,9 @@ describe('independent warehouse page', () => {
   it('separates owned inventory from the 155-item catalog and reports collection by kinds', async () => {
     inventory = { items: [{ item_id: item.id, definition: item, quantity: 2, acquired_at: '2026-10-10T08:00:00Z', sources: [{ seasonId: 'season-a', taskId: 'numpy-lesson' }], is_locked: false, is_showcased: false }], sales: [] };
     wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
-    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
+    const { container } = render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
     expect(await screen.findByText('行动仓库')).toBeTruthy();
+    expect(container.querySelector('.wh-art img')?.getAttribute('src')).toBe('/assets/catalog/items/small-purple-01.webp');
     expect(screen.getByLabelText('仓库统计').textContent).toContain('1 / 155');
     expect(screen.getByText('1 种不同物品')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /完整图鉴/ }));

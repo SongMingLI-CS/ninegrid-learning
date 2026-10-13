@@ -6,13 +6,8 @@ export interface CollectionItem {
   limited: boolean; sellable: boolean; seasonId: string | null; version: number;
 }
 
-export const GENERATED_CATALOG_IMAGE_IDS = new Set([
-  'small-purple-01','small-purple-02','small-purple-03','small-purple-04','small-purple-05','small-purple-06',
-  'small-gold-01','small-gold-02','small-gold-03','small-gold-04','small-gold-05','small-gold-06',
-  'large-gold-01','large-gold-02','large-gold-03','large-gold-04','large-gold-05','large-gold-06',
-  'small-red-01','small-red-02','small-red-03','small-red-04','small-red-05','small-red-06',
-  'large-red-01','large-red-02','large-red-03','large-red-04','large-red-05','large-red-06',
-]);
+const generatedRanges: Array<[string, number]> = [['small-purple',45],['small-gold',7],['large-gold',15],['small-red',15],['large-red',6]];
+export const GENERATED_CATALOG_IMAGE_IDS = new Set(generatedRanges.flatMap(([rarity, count]) => Array.from({ length: count }, (_, index) => `${rarity}-${String(index + 1).padStart(2, '0')}`)));
 
 const sets: Array<{ rarity: CollectionRarity; min: number; max: number; names: string[] }> = [
   { rarity: 'small-purple', min: 20_000, max: 80_000, names: '加固电路板,短波接收器,微型光谱仪,光纤探针,便携式测距仪,夜视目镜,储存芯片,信号放大器,精密罗盘,抗震记录仪,电池校准器,光学滤片,微型焊枪,加密钥匙,热成像模块,振动传感器,陶瓷保险丝,数据转接头,折叠瞄准镜,采样泵,陶瓷止血夹,脉冲计,压力表组件,防水手电,温度记录卡,镍钛扳手,钛合金套筒,微型棘轮,磁吸拾取器,绝缘剪钳,多功能探针,精密轴承,快速接头,纤维束带,校准砝码,滤毒芯,急救剪,止血带盒,应急电源,识别牌,旧电台旋钮,风向测量片,野外工具尺,压纹铭牌,磨砂镜片'.split(',') },
