@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ninegrid}
+      POSTGRES_USER: ${POSTGRES_USER:-ninegrid}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ninegrid-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ninegrid}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ninegrid}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN to the public HTTPS origin}
+      TRUST_PROXY: "1"
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      UPLOAD_DIR: /var/lib/ninegrid/uploads
+    ports:
+      - "127.0.0.1:${APP_PORT:-8787}:8787"
+    volumes:
+      - ninegrid-uploads:/var/lib/ninegrid/uploads
+
+volumes:
+  ninegrid-postgres:
+  ninegrid-uploads:

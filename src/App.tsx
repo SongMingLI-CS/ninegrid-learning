@@ -11,12 +11,16 @@ import { completeTask, buildDailySchedule, getStats, getTaskReward, isTaskUnlock
 import { loadStateSafely, saveStateSafely, exportState, importState } from './lib/storage';
 import { LessonWorkspace } from './components/LessonWorkspace';
 import { TodaySchedule } from './components/TodaySchedule';
+import { YouTubeResources } from './components/YouTubeResources';
+import { AccountGate, type AccountUser } from './components/AccountGate';
+import { apiFetch } from './lib/api';
+import { setStorageScope } from './lib/storage';
 import { NUMPY_DEMO_CAMPAIGN } from './lib/numpyDemo';
 import { extractGoalPreferences, type ExtractedGoalPreferences } from './lib/goalParser';
 
 type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'reviews';
 type Notification = { title: string; body?: string; tone?: 'success' | 'warning' } | null;
-type Connection = { configured: boolean; model: string };
+type Connection = { configured: boolean; model: string; accounts?: boolean };
 
 const defaultGoal = NUMPY_DEMO_CAMPAIGN.goal;
 
@@ -31,6 +35,9 @@ function App() {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('deepseek-flash');
   const [connection, setConnection] = useState<Connection>({ configured: false, model: 'deepseek-flash' });
+  const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+  const [authLoaded, setAuthLoaded] = useState(false);
+  const [scopedUserId, setScopedUserId] = useState<string>();
   const [goal, setGoal] = useState(defaultGoal);
   const [level, setLevel] = useState('零基础');
   const [days, setDays] = useState(28);
@@ -87,18 +94,34 @@ function App() {
   const flash = useCallback((value: Notification) => setNotification(value), []);
 
   useEffect(() => {
-    if (loaded.warning && !allowOverwrite) return;
+    if (!authLoaded || (connection.accounts && (!accountUser || scopedUserId !== accountUser.id))) return;
+    if (loaded.warning && !allowOverwrite && !accountUser) return;
     const result = saveStateSafely(state);
     if (!result.ok) setSaveError(`自动保存失败：${result.error}`);
     else if (!loaded.warning) setSaveError('');
-  }, [state, allowOverwrite, loaded.warning]);
+  }, [state, allowOverwrite, loaded.warning, authLoaded, connection.accounts, accountUser, scopedUserId]);
   useEffect(() => {
     let cancelled = false;
     void fetch('/api/status').then(response => response.ok ? response.json() : null).then(data => {
-      if (!cancelled && data) setConnection(data as Connection);
-    }).catch(() => { if (!cancelled) setConnection({ configured: false, model: 'deepseek-flash' }); });
+      if (cancelled) return;
+      const status = (data ?? { configured: false, model: 'deepseek-flash' }) as Connection;
+      setConnection(status);
+      if (!status.accounts) { setAuthLoaded(true); return; }
+      return fetch('/api/auth/me', { credentials: 'same-origin' }).then(response => response.ok ? response.json() : Promise.reject(new Error('账号状态检查失败'))).then(payload => {
+        if (!cancelled) { setAccountUser(payload.user ?? null); setAuthLoaded(true); }
+      });
+    }).catch(() => { if (!cancelled) { setConnection({ configured: false, model: 'deepseek-flash' }); setAuthLoaded(true); } });
     return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    if (!accountUser) { setScopedUserId(undefined); setStorageScope(); return; }
+    setStorageScope(accountUser.id);
+    const accountArchive = loadStateSafely();
+    setState(accountArchive.isNew ? switchCampaign(accountArchive.state, NUMPY_DEMO_CAMPAIGN) : accountArchive.state);
+    setSelectedTaskId(accountArchive.state.lastTaskId ?? accountArchive.state.campaign.stages[0]?.tasks[0]?.id ?? '');
+    setSelectedStage(0); setTab('missions'); setScopedUserId(accountUser.id);
+    if (accountArchive.warning) setSaveError(accountArchive.warning);
+  }, [accountUser?.id]);
   useEffect(() => {
     if (!notification) return;
     const handle = window.setTimeout(() => setNotification(null), 4200);
@@ -110,6 +133,7 @@ function App() {
     return () => window.clearInterval(handle);
   }, [startedAt]);
   useEffect(() => { setNote(state.notes?.[task?.id ?? ''] ?? ''); }, [task?.id, state.notes]);
+  useEffect(() => { setReviewRating(3); setReviewAnswer(''); setReviewHintUsed(false); setReviewRevealed(false); }, [campaign.id, selectedReviewTaskId]);
   useEffect(() => { const index = campaign.stages.findIndex(stage => stage.tasks.some(item => item.id === selectedTaskId)); if (index >= 0) setSelectedStage(index); }, [campaign.id, selectedTaskId]);
   useEffect(() => {
     if (state.schedules?.[localDate]) return;
@@ -117,8 +141,9 @@ function App() {
     setState(previous => previous.schedules?.[localDate] ? previous : { ...previous, schedules: { ...(previous.schedules ?? {}), [localDate]: schedule } });
   }, [campaign.id, localDate]);
 
-  const beginTask = async (nextTask: Task) => {
+  const beginTask = async (nextTask: Task, options: { diagnostic?: boolean } = {}) => {
     const unlocked = isTaskUnlocked(campaign, state.progress, nextTask.id);
+    if (!options.diagnostic) setDiagnosticMode(false);
     setSelectedTaskId(nextTask.id);
     setAdaptation(null);
     setState(previous => {
@@ -132,7 +157,7 @@ function App() {
     if (!cached && (connection.configured || apiKey) && !busy) {
       setBusy('lesson'); setLessonError(''); const controller = new AbortController(); activeRequest.current = controller;
       try {
-        const response = await fetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+        const response = await apiFetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
         const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '课程内容生成失败');
         setState(previous => cacheLesson(previous, nextTask.id, payload.lesson, false));
       } catch (error) { if(!(error instanceof DOMException&&error.name==='AbortError'))setLessonError(error instanceof Error ? error.message : '内容生成失败，可重试或继续看任务概要。'); }
@@ -153,7 +178,7 @@ function App() {
     try {
       const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: reward.trim() || '完成一项真实可用的成果', desiredArtifact: reward.trim() || undefined, language: languagePreference, sourceMaterial: sourceMaterial.slice(0, 20000) || undefined };
       const controller = new AbortController(); activeRequest.current = controller;
-      const response = await fetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+      const response = await apiFetch('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
       const payload = await response.json();
       if (!response.ok) throw Object.assign(new Error(payload.error || '行动线生成失败'), { code: payload.code });
       const newCampaign = (payload as { campaign: Campaign }).campaign;
@@ -180,7 +205,7 @@ function App() {
     if (adjustment === 'skip-known') {
       flash({ title: '先做一个简短诊断', body: '写下当前任务的闭卷预测，再对照验收线索判断是否掌握。诊断不会绕过课程前置或自动发放奖励。', tone: 'warning' });
       const focus = readyTasks.find(item => (item.track ?? 'main') === 'main') ?? readyTasks[0];
-      if (focus) { setDiagnosticMode(true); void beginTask(focus); }
+      if (focus) { setDiagnosticMode(true); void beginTask(focus, { diagnostic: true }); }
     } else setDiagnosticMode(false);
     if (adjustment === 'too-hard') {
       const focus = readyTasks.find(item => (item.track ?? 'main') === 'main');
@@ -197,7 +222,7 @@ function App() {
     if (busy) return;
     setBusy('schedule'); setScheduleError(''); const controller = new AbortController(); activeRequest.current = controller;
     try {
-      const response = await fetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, progress: state.progress, reviews: state.reviews.filter(item => Date.parse(item.dueAt) <= Date.now()), minutes: campaign.dailyMinutes, date: localDate, adjustment: scheduleAdjustment, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+      const response = await apiFetch('/api/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, progress: state.progress, reviews: state.reviews.filter(item => Date.parse(item.dueAt) <= Date.now()), minutes: campaign.dailyMinutes, date: localDate, adjustment: scheduleAdjustment, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
       const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? 'AI 节目表生成失败');
       const schedule = payload.schedule; setState(previous => ({ ...previous, schedules: { ...(previous.schedules ?? {}), [localDate]: schedule } }));
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setScheduleError(error instanceof Error ? error.message : 'AI 编排失败；仍可用本地节目表。'); }
@@ -219,7 +244,7 @@ function App() {
     }
     setBusy('evaluate'); const originalEvidence = taskProgress.evidence; const supplementalEvidence = taskProgress.supplementalEvidence ?? ''; const evidence = supplementalEvidence.trim() ? `${originalEvidence}\n\n补充证据：\n${supplementalEvidence}` : originalEvidence; const controller = new AbortController(); activeRequest.current = controller;
     try {
-      const response = await fetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task, evidence, verificationSource: 'ai', ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+      const response = await apiFetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task, evidence, verificationSource: 'ai', ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'AI 校准失败');
       if (payload.verification !== 'ai') throw new Error('服务端未返回可验证的 AI 验收来源');
@@ -233,7 +258,7 @@ function App() {
       flash({ title: result.passed ? 'AI 已确认任务掌握' : '发现几个待补线索', body: result.feedback, tone: result.passed ? 'success' : 'warning' });
       if (!result.passed && (connection.configured || apiKey)) {
         try {
-          const response = await fetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, currentTaskId: task.id, evidence, history: currentState.current.attempts?.[task.id] ?? [], remainingMinutes: Math.max(1, campaign.dailyMinutes - dailyPlan.totalMinutes), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+          const response = await apiFetch('/api/adapt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaign, currentTaskId: task.id, evidence, history: currentState.current.attempts?.[task.id] ?? [], remainingMinutes: Math.max(1, campaign.dailyMinutes - dailyPlan.totalMinutes), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
           const payload = await response.json(); if (response.ok && payload.recommendation) setAdaptation(payload.recommendation);
         } catch { /* Keep the evaluation feedback usable if adaptation is temporarily unavailable. */ }
       }
@@ -273,9 +298,10 @@ function App() {
   };
 
   const completeReview = (answer = reviewAnswer, hintUsed = reviewHintUsed) => {
-    if (!nextReview) return;
+    const reviewTaskId = selectedReviewTaskId ?? nextReview?.taskId;
+    if (!reviewTaskId) return;
     if (answer.trim().length < 8) { flash({ title: '先写下自己的回忆', body: '至少写几个关键点，再核对和安排下一次复习。', tone: 'warning' }); return; }
-    update(rateReview(state, nextReview.taskId, reviewRating, new Date(), { answer, hintUsed }));
+    update(rateReview(state, reviewTaskId, reviewRating, new Date(), { answer, hintUsed }));
     setSelectedReviewTaskId(undefined);
     setReviewRating(3); setReviewAnswer(''); setReviewHintUsed(false); setReviewRevealed(false);
     flash({ title: '记忆维护完成', body: '下一次复习已按你的回忆情况重新排期。', tone: 'success' });
@@ -291,6 +317,18 @@ function App() {
 
   const timeLabel = `${String(Math.floor(seconds / 3600)).padStart(2, '0')}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
   const stageProgress = currentStage ? (currentStage.gateTaskIds ?? currentStage.mainlineTaskIds ?? currentStage.tasks.filter(item => (item.track ?? 'main') === 'main').map(item => item.id)).filter(id => state.progress[id]?.status === 'completed').length : 0;
+
+  if (!authLoaded) return <main className="account-gate"><div role="status" className="account-panel">正在恢复账号会话…</div></main>;
+  if (connection.accounts && !accountUser) return <AccountGate onAuthenticated={setAccountUser}/>;
+  if (connection.accounts && accountUser && scopedUserId !== accountUser.id) return <main className="account-gate"><div role="status" className="account-panel">正在载入此账号的本机档案…</div></main>;
+
+  const logout = async () => {
+    try {
+      const response = await apiFetch('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) throw new Error('退出登录失败');
+      setAccountUser(null); setAuthLoaded(true); setTab('missions');
+    } catch (error) { flash({ title: '退出登录失败', body: error instanceof Error ? error.message : '请重试。', tone: 'warning' }); }
+  };
 
   return (
     <main className="app-shell">
@@ -310,6 +348,7 @@ function App() {
           <button className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} onClick={() => { setTab('reviews'); setMobileNav(false); }}><Radio size={15} />复习信号室 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</button>
         </nav>
         <div className="topbar-actions">
+          {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录">{accountUser.email} · 退出</button>}
           {state.history?.length ? <select aria-label="切换学习目标" className="campaign-switch" value={campaign.id} onChange={event => switchToCampaign(event.target.value)}><option value={campaign.id}>{campaign.title}</option>{state.history.map(item=><option key={item.campaign.id} value={item.campaign.id}>{item.campaign.title}</option>)}</select> : null}
           <div className="connection-pill"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`} />{connection.configured || apiKey ? 'AI 已就绪' : '本地训练'}<ChevronDown size={13} /></div>
           <button className="icon-button settings-trigger" aria-label="连接设置" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button>
@@ -343,8 +382,21 @@ function App() {
           <div className="section-controls"><button className={`subtab ${tab === 'today' ? 'selected' : ''}`} onClick={() => setTab('today')}>今日</button><button className={`subtab ${tab === 'missions' ? 'selected' : ''}`} onClick={() => setTab('missions')}>课程总览</button><button className={`subtab ${tab === 'workspace' ? 'selected' : ''}`} onClick={() => setTab('workspace')}>学习区</button><button className={`subtab ${tab === 'archive' ? 'selected' : ''}`} onClick={() => setTab('archive')}>档案</button><button className="icon-button search-button" aria-label="搜索任务" onClick={() => flash({ title: '行动筛选', body: '从课程目录中选择想追踪的任务。' })}><Search size={16}/></button></div>
         </div>
 
-        {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={campaign.dailyMinutes * (scheduleAdjustment==='half'?0.5:scheduleAdjustment==='more'?1.5:1)} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRevealed(false); setReviewAnswer(''); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
-        : tab === 'workspace' && task ? <><LessonWorkspace task={task} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.evaluation?.feedback} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => setHintLevels(previous => ({ ...previous, [task.id]: level }))} diagnosticMode={diagnosticMode} onDiagnosticFinish={confidence => { setDiagnosticMode(false); if (confidence === 'known') { setState(previous => ({ ...previous, knownTasks: { ...(previous.knownTasks ?? {}), [task.id]: true } })); setTab('today'); flash({ title: '诊断已完成', body: '已掌握任务从今日推荐中隐藏；课程解锁条件仍按原规则计算。', tone: 'success' }); } else flash({ title: '进入补练', body: '继续使用讲解、示例和练习完善证据。', tone: 'success' }); }}/><div className="lesson-workspace-secondary"><button className="secondary-button" onClick={() => setTab('missions')}>返回课程总览</button>{lessonError&&<button className="secondary-button" onClick={()=>void beginTask(task)}>重试生成本课讲解</button>}{adaptation&&<div className="adaptation-card"><strong>根据这次结果，建议：{adaptation.recommendation}</strong><p>{adaptation.reason}</p><button className="secondary-button" onClick={()=>{const next=allTasks.find(item=>item.id===adaptation.nextTaskId);if(next)void beginTask(next);}}>打开建议任务 · {adaptation.minutes} 分钟</button></div>}<div className="lesson-resources">{task.resources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title}<SquareArrowOutUpRight size={13}/></a>)}</div>{taskProgress?.status==='completed'&&nextMission&&nextMission.id!==task.id&&<button className="modal-submit" onClick={()=>void beginTask(nextMission)}>继续下一主线任务 · {nextMission.title}<ArrowRight size={15}/></button>}</div></>
+        {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={campaign.dailyMinutes * (scheduleAdjustment==='half'?0.5:scheduleAdjustment==='more'?1.5:1)} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
+        : tab === 'workspace' && task ? <>
+          <LessonWorkspace task={task} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.evaluation?.feedback} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => setHintLevels(previous => ({ ...previous, [task.id]: level }))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
+            setDiagnosticMode(false);
+            try {
+              let next = setEvidence(state, task.id, answer);
+              if (confidence === 'known') next = completeTask(next, task.id, 'self');
+              next = recordAttempt(next, task.id, { answer, hintLevelsUsed: 0, verification: 'none', passed: confidence === 'known', feedback: confidence === 'known' ? `自行诊断达到标准：${task.acceptance}` : `诊断未通过，返回练习：${task.acceptance}` });
+              update(next);
+              if (confidence === 'known') { setTab('today'); flash({ title: '诊断通过 · 主线已通关', body: '回答和诊断记录已保存；本次计为自行完成，不授予 AI 验证或高价值道具。', tone: 'success' }); }
+              else flash({ title: '回答已保存 · 进入补练', body: '完成讲解、示例和独立挑战后再提交通关。', tone: 'warning' });
+            } catch (error) { flash({ title: '诊断未能保存', body: error instanceof Error ? error.message : '请检查诊断内容后重试。', tone: 'warning' }); }
+          }}/>
+          <YouTubeResources task={task} budgetMinutes={task.minutes} language={campaign.language ?? 'mixed'}/>
+          <div className="lesson-workspace-secondary"><button className="secondary-button" onClick={() => setTab('missions')}>返回课程总览</button>{lessonError&&<button className="secondary-button" onClick={()=>void beginTask(task)}>重试生成本课讲解</button>}{adaptation&&<div className="adaptation-card"><strong>根据这次结果，建议：{adaptation.recommendation}</strong><p>{adaptation.reason}</p><button className="secondary-button" onClick={()=>{const next=allTasks.find(item=>item.id===adaptation.nextTaskId);if(next)void beginTask(next);}}>打开建议任务 · {adaptation.minutes} 分钟</button></div>}<div className="lesson-resources">{task.resources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title}<SquareArrowOutUpRight size={13}/></a>)}</div>{taskProgress?.status==='completed'&&nextMission&&nextMission.id!==task.id&&<button className="modal-submit" onClick={()=>void beginTask(nextMission)}>继续下一主线任务 · {nextMission.title}<ArrowRight size={15}/></button>}</div></>
         : tab === 'missions' && task && currentStage ? <div className="operations-layout">
           <aside className="mission-rail">
             <div className="rail-head"><div><span className="micro-label">OPERATIONS</span><h2>行动目录 <span>{String(stageCount).padStart(2, '0')}</span></h2></div><button className="icon-button compact" onClick={openGoal} aria-label="新建行动线"><Plus size={16}/></button></div>
@@ -409,7 +461,7 @@ function App() {
 
           <aside className="rewards-panel"><div className="vault-header"><div><span className="micro-label">PERSONAL ARMORY</span><h3>九格能力成果</h3></div><span className="vault-level"><span className="vault-level-dot"/>{stats.slots} / 9 验证</span></div><div className="vault-summary"><span>赛季交付物</span><strong>{campaign.ultimateReward}</strong><div className="vault-summary-track"><i style={{ width: `${stats.slots / 9 * 100}%` }}/></div><small>按能力验收逐格解锁，不按完成任务比例点亮</small></div>
             <div className="vault-grid" aria-label={`九格能力成果，${stats.slots} 格已解锁`}>{(campaign.nineGrid ?? Array.from({length:9},(_,index)=>({id:`empty-${index}`,title:`能力格 ${index+1}`,ability:'课程蓝图尚未配置具体解锁条件',value:'课程蓝图尚未配置',unlockTaskIds:[]}))).map((grid,index)=>{ const verified = Boolean(state.gridOutcomes?.[grid.id]); const eligible = grid.unlockTaskIds.length > 0 && grid.unlockTaskIds.every(id => state.progress[id]?.status === 'completed' && state.progress[id]?.verification === 'ai'); return <div key={grid.id} className={`vault-cell ${verified ? 'vault-open' : ''}`} title={`第 ${index+1} 格：${grid.value}；需通过 AI 核验 ${grid.unlockTaskIds.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')}`}><span className="vault-cell-index">0{index+1}</span><span className="vault-cell-icon">{verified ? <Check size={14}/> : <LockKeyhole size={13}/>}</span><span className="vault-cell-title">{grid.title}</span>{eligible && <div className="grid-outcome-input"><textarea aria-label={`${grid.title}成果`} value={gridDrafts[grid.id]??''} onChange={event=>setGridDrafts(previous=>({...previous,[grid.id]:event.target.value}))} placeholder="提交作品或能力证明"/><button onClick={()=>{try{const next=recordGridOutcome(state,grid.id,gridDrafts[grid.id]??'');update(next);setGridDrafts(previous=>({...previous,[grid.id]:''}));flash({title:`九格解锁：${grid.title}`,body:'能力成果已与任务链和验证记录关联保存。',tone:'success'});}catch(error){flash({title:'成果未解锁',body:error instanceof Error?error.message:'请先提交验证记录。',tone:'warning'});}}}>保存成果</button></div>}</div>;})}</div>
-            <div className="wallet-card"><strong>学习币 · {state.wallet?.balance ?? 0}</strong><span>虚拟学习奖励，不是游戏资产或账号余额</span><p>{Object.values(state.inventory??{}).map(entry=>`${entry.item.icon} ${entry.item.name} ×${entry.quantity}`).join(' · ')||'仓库尚无道具'} </p>{state.rewardLedger?.slice(-3).reverse().map(entry=><small key={entry.id}>{allTasks.find(item=>item.id===entry.taskId)?.title??'能力节点'} → +{entry.reward.coins} 币 · {entry.reward.items.map(item=>item.name).join('、')||'经验与学习币'}</small>)}</div>
+            <div className="wallet-card"><div className="inventory-heading"><span><strong>个人仓库</strong><small>原创学习收藏 · 不对应任何游戏资产</small></span><b>{Object.values(state.inventory??{}).reduce((sum,entry)=>sum+entry.quantity,0)} 件</b></div><div className="inventory-grid">{Object.values(state.inventory??{}).length ? Object.values(state.inventory??{}).map(entry=><article key={entry.item.itemId} className={`inventory-item rarity-${entry.item.rarity}`} title={entry.item.description}><span className="inventory-icon">{entry.item.icon}</span><strong>{entry.item.name}</strong><small>×{entry.quantity} · {entry.item.rarity==='legendary'?'珍藏':entry.item.rarity==='rare'?'稀有':'常规'}</small><small>来源：{entry.sources.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')||'赛季奖励'}</small></article>) : <div className="inventory-empty"><span>◇</span><strong>收藏仓库待启封</strong><small>完成任务与阶段挑战，收集记录会显示在这里。</small></div>}</div><div className="wallet-balance"><strong>学习币 · {state.wallet?.balance ?? 0}</strong><span>本应用中的虚拟学习奖励</span></div><div className="reward-history"><strong>最近入库记录</strong>{state.rewardLedger?.slice(-5).reverse().map(entry=><small key={entry.id}>{allTasks.find(item=>item.id===entry.taskId)?.title??'能力节点'} → +{entry.reward.coins} 币{entry.reward.items.length ? ` · ${entry.reward.items.map(item=>item.name).join('、')}` : ''}</small>)}</div></div>
             <div className="vault-foot"><span>行动奖励将为真实掌握解锁</span><span>{stats.slots}<i>/</i>9</span></div>
 
             <div className="review-panel"><div className="review-panel-title"><span><Radio size={15}/>复习雷达</span><span className="review-badge">{dueReview.length} 待处理</span></div>{nextReview ? <><div className="review-card"><span className="review-wave"><i/><i/><i/><i/><i/><i/><i/></span><small>下一条记忆信号</small><strong>{allTasks.find(item => item.id === nextReview.taskId)?.title ?? '知识点回顾'}</strong><span>{new Date(nextReview.dueAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })} · 主动回忆</span></div><button className="review-cta" onClick={() => setTab('reviews')}>进入信号室 <ArrowRight size={14}/></button></> : <div className="review-empty"><CircleCheck size={17}/><span>雷达目前安静<small>完成新行动后自动安排间隔复习。</small></span></div>}</div>
@@ -457,7 +509,7 @@ function ArchiveScreen({ state, allTasks, onRestore }: { state: LearningState; a
 
 function ReviewScreen({ state, selectedTaskId, rating, onRating, answer, onAnswer, revealed, onReveal, hintUsed, onHintUsed, onComplete }: { state: LearningState; selectedTaskId?: string; rating:number; onRating:(n:number)=>void; answer:string; onAnswer:(value:string)=>void; revealed:boolean; onReveal:()=>void; hintUsed:boolean; onHintUsed:()=>void; onComplete:(answer:string,hintUsed:boolean)=>void }) {
   const cards = state.reviews.slice().sort((a,b)=>new Date(a.dueAt).getTime()-new Date(b.dueAt).getTime());
-  const card = cards.find(item=>item.taskId===selectedTaskId && new Date(item.dueAt).getTime()<=Date.now()) ?? cards.find(item=>new Date(item.dueAt).getTime()<=Date.now());
+  const card = selectedTaskId ? cards.find(item=>item.taskId===selectedTaskId && new Date(item.dueAt).getTime()<=Date.now()) : cards.find(item=>new Date(item.dueAt).getTime()<=Date.now());
   const task = card && state.campaign.stages.flatMap(stage=>stage.tasks).find(item=>item.id===card.taskId);
   return <section className="utility-screen review-screen"><div className="utility-hero"><span className="micro-label">MEMORY MAINTENANCE · ACTIVE RETRIEVAL</span><h2>先回答，再核对，再排期。</h2><p>先闭卷写答案，确认后再展开线索；复习记录会保存你的回答、提示使用和自评。</p></div><div className="review-workspace">{task&&card?<><div className="review-focus-card"><span className="detail-tag"><Radio size={13}/> 今日记忆信号 · 第 {card.repetitions+1} 次回访</span><h3>{task.recallQuestion}</h3><p>{task.curiosity}</p><label className="review-answer-label">闭卷回忆答案<textarea aria-label="闭卷回忆答案" value={answer} onChange={event=>onAnswer(event.target.value)} placeholder="不用写得完美；先写你真正记得的概念、步骤或判断……"/></label>{!revealed?<button className="review-cta review-submit" onClick={onReveal} disabled={answer.trim().length<8}><Check size={15}/>锁定答案并核对</button>:<div className="review-reveal"><strong>核对线索</strong><p>通过标准：{task.acceptance}</p><p>上次提交的成果：{state.progress[task.id]?.evidence||'暂无旧成果'}</p><details className="recall-hint" onToggle={event=>{if((event.currentTarget as HTMLDetailsElement).open)onHintUsed();}}><summary>查看温和提示{hintUsed?' · 已使用':''}</summary><p>{task.hint}</p></details></div>}<div className="rating-heading">对照后，这次回忆质量如何？<small>这是复习间隔的输入，不是掌握度分数。</small></div><div className="rating-options">{[{value:1,label:'完全没想起',symbol:'1'},{value:2,label:'有点模糊',symbol:'2'},{value:3,label:'想起主要思路',symbol:'3'},{value:4,label:'完整讲清楚',symbol:'4'}].map(option=><button key={option.value} className={`rating-option ${rating===option.value?'rating-selected':''}`} onClick={()=>onRating(option.value)}><span>{option.symbol}</span>{option.label}</button>)}</div><button className="review-cta review-submit" onClick={()=>onComplete(answer,hintUsed)} disabled={!revealed||answer.trim().length<8}><Check size={15}/>保存回答并安排下次复习</button></div><aside className="review-queue"><span className="micro-label">MEMORY SIGNAL QUEUE</span><h3>{cards.length} 条复习信号</h3>{cards.map((item,index)=><div className={`queue-item ${item.taskId===card.taskId?'queue-current':''}`} key={item.taskId}><span>{String(index+1).padStart(2,'0')}</span><span><strong>{state.campaign.stages.flatMap(stage=>stage.tasks).find(value=>value.id===item.taskId)?.title}</strong><small>预计 {new Date(item.dueAt).toLocaleDateString('zh-CN',{month:'short',day:'numeric'})} 回访 · {item.history.length} 次记录</small></span></div>)}</aside></>:<div className="review-clear"><span className="review-clear-icon"><ShieldCheck size={24}/></span><h3>此刻没有待复习的信号。</h3><p>完成任意行动后会安排间隔回访；空档期可以休息，不必为了维持连续记录而硬学。</p><div className="rest-banner"><Headphones size={16}/>留白是复习节奏的一部分。回来时，档案还在。</div></div>}</div></section>;
 }

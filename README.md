@@ -57,13 +57,22 @@
 
 测试覆盖 API Schema 与提示、任务进度/奖励/复习/多目标切换、自然语言字段提取，以及 NumPy 界面流程。若未配置 DeepSeek Key，API 端到端生成和 AI 验收不会发生；本地 NumPy 预置课程也不会伪装成真实 AI 输出。
 
-界面截图：[课程总览](output/playwright/course-overview.png) · [NumPy 学习工作区](output/playwright/numpy-learning-workspace.png)
+界面截图：[1366×768 课程总览](output/playwright/ninegrid-overview.png) · [1920×1080 学习工作区](output/playwright/ninegrid-workspace.png)
 
 ## 构建
 
     npm run build
 
-本版本的学习档案仅存于当前浏览器，没有账号、云同步或数据库。清理浏览器数据前请先导出。
+## Ubuntu 部署预备
+
+当前分支包含 Ubuntu/Docker Compose 部署骨架、PostgreSQL 初始迁移、Argon2id 账号会话和数据库备份/恢复脚本。配置文件可静态解析；尚未在这台开发机实启 Docker/PostgreSQL，也没有连接实际 DeepSeek/YouTube API 密钥做线上请求验证。
+
+1. Ubuntu 安装 Docker Engine 与 Compose 插件；将仓库克隆到服务器，复制 `.env.example` 为 `.env`。
+2. 设置 `POSTGRES_PASSWORD`、`SESSION_SECRET`、`APP_ORIGIN`。密码与会话密钥必须换成随机值，可用 `openssl rand -hex 32` 生成；`APP_ORIGIN` 填实际 HTTPS 域名。按需配置 `DEEPSEEK_API_KEY`、`YOUTUBE_API_KEY`。
+3. 执行 `docker compose config --quiet` 检查配置，再执行 `docker compose up -d --build`。应用启动时自动迁移数据库；Nginx/Caddy 等 TLS 反向代理应转发到本机 `127.0.0.1:8787`。
+4. 备份：`sh scripts/backup-db.sh ./backups`。恢复：`sh scripts/restore-db.sh ./backups/文件.dump`；恢复会清理数据库对象，先另做备份，并单独备份 `ninegrid-uploads` 卷。
+
+本轮登录后的档案按账号隔离在当前浏览器 localStorage 中；账号认证已接入，但服务端赛季读写、跨设备同步、旧浏览器档案确认迁移和服务端权威奖励流水尚未完成。因此不得把登录视为云端备份；本机档案在迁移入口实现前保持原样。图片附件/视觉分析接口、YouTube 候选的视频内容匹配审阅、完整道具仓库筛选详情也尚未实现。
 
 ## 方法出处
 

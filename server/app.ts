@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import express, { type Request, type Response } from 'express';
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
+import helmet from 'helmet';
+import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { Campaign, DailySchedule, Evaluation, GoalInput, LessonContent, Task } from '../shared/types';
 import {
@@ -8,6 +13,8 @@ import {
   goalInputSchema,
   taskSchema,
 } from '../shared/schema';
+import { mountAuthRoutes, protectStateChangeWithCsrf, requireAuthenticated } from './auth';
+import { searchTaskVideos } from './youtube';
 
 // Campaign schema already carries these input preferences; augment the current
 // shared interface until the matching source type declaration lands.
@@ -29,7 +36,7 @@ const MAX_CONTEXT_LENGTH = 100_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 20;
 
-type Options = { apiKey?: string; model?: string; fetchImpl?: typeof fetch };
+type Options = { apiKey?: string; model?: string; fetchImpl?: typeof fetch; youtubeApiKey?: string; youtubeFetchImpl?: typeof fetch; auth?: { pool: Pool; sessionSecret: string; secureCookie: boolean; appOrigin?: string } };
 type ErrorCode =
   | 'API_KEY_MISSING'
   | 'INVALID_REQUEST'
@@ -68,7 +75,8 @@ function sendError(res: Response, status: number, code: ErrorCode): void {
   res.status(status).json({ error: code.replaceAll('_', ' ').toLowerCase(), code });
 }
 
-function allowedOrigin(origin: string): boolean {
+function allowedOrigin(origin: string, trustedOrigin?: string): boolean {
+  if (trustedOrigin) return origin === trustedOrigin;
   if (origin === 'null') return false;
   try {
     const parsed = new URL(origin);
@@ -198,9 +206,10 @@ export function createApp(options: Options = {}) {
   const limits = new Map<string, { count: number; resetAt: number }>();
 
   app.disable('x-powered-by');
+  app.use(helmet({ contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'data:', 'https://i.ytimg.com'] } } }));
   app.use((req, res, next) => {
     const origin = req.get('origin');
-    if (origin && !allowedOrigin(origin)) {
+    if (origin && !allowedOrigin(origin, options.auth?.appOrigin ?? process.env.APP_ORIGIN)) {
       sendError(res, 403, 'ORIGIN_FORBIDDEN');
       return;
     }
@@ -220,8 +229,34 @@ export function createApp(options: Options = {}) {
     next(err);
   });
 
+  if (options.auth) {
+    const PgSession = connectPgSimple(session);
+    app.use(session({
+      name: 'ninegrid.sid', secret: options.auth.sessionSecret, resave: false, saveUninitialized: false,
+      store: new PgSession({ pool: options.auth.pool, tableName: 'user_sessions', createTableIfMissing: false }),
+      cookie: { httpOnly: true, sameSite: 'lax', secure: options.auth.secureCookie, maxAge: 1000 * 60 * 60 * 24 * 14 },
+    }));
+    mountAuthRoutes(app, { pool: options.auth.pool });
+    app.use('/api', (req, res, next) => {
+      if (req.path.startsWith('/auth/')) { next(); return; }
+      protectStateChangeWithCsrf(req, res, next);
+    });
+  }
+
   app.get('/api/status', (_req, res) => {
-    res.json({ configured: Boolean(configuredKey?.trim()), model: configuredModel });
+    res.json({ configured: Boolean(configuredKey?.trim()), model: configuredModel, accounts: Boolean(options.auth), youtubeConfigured: Boolean((options.youtubeApiKey ?? process.env.YOUTUBE_API_KEY)?.trim()) });
+  });
+  if (options.auth) app.use('/api', requireAuthenticated);
+
+  app.post('/api/resources/youtube', async (req, res) => {
+    const body = req.body as { task?: unknown; language?: unknown; budgetMinutes?: unknown };
+    const parsedTask = taskSchema.safeParse(body.task);
+    const language = languageSchema.safeParse(body.language ?? 'mixed');
+    if (!parsedTask.success || !language.success || !Number.isInteger(body.budgetMinutes) || (body.budgetMinutes as number) < 1 || (body.budgetMinutes as number) > 1440) {
+      sendError(res, 400, 'INVALID_REQUEST'); return;
+    }
+    const result = await searchTaskVideos(parsedTask.data as Task, { apiKey: options.youtubeApiKey ?? process.env.YOUTUBE_API_KEY, budgetMinutes: body.budgetMinutes as number, language: language.data, fetchImpl: options.youtubeFetchImpl ?? options.fetchImpl });
+    res.json(result);
   });
 
   const providerRequest = async (args: {
@@ -336,7 +371,9 @@ export function createApp(options: Options = {}) {
       sendError(res, 400, 'INVALID_REQUEST');
       return undefined;
     }
-    const key = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : configuredKey?.trim();
+    const key = options.auth
+      ? configuredKey?.trim()
+      : typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : configuredKey?.trim();
     if (!key) {
       sendError(res, 503, 'API_KEY_MISSING');
       return undefined;
@@ -510,6 +547,10 @@ export function createApp(options: Options = {}) {
     res.json({ evaluation, verification: 'ai' as const });
   });
 
+  if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(resolve(process.cwd(), 'dist'), { index: false, fallthrough: true }));
+    app.get(/^\/(?!api(?:\/|$)).*/, (_req, res, next) => res.sendFile(resolve(process.cwd(), 'dist', 'index.html'), error => { if (error) next(error); }));
+  }
   app.use((_req, res) => sendError(res, 404, 'INVALID_REQUEST'));
   return app;
 }

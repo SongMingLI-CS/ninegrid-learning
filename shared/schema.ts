@@ -100,7 +100,7 @@ const progressSchema = z.object({
   supplementalEvidence: z.string().max(100000).optional(),
   evaluation: evaluationSchema.optional(), verification: z.enum(['self', 'ai']).optional(), completedAt: dateSchema.optional(),
   selfChecked: z.boolean().optional(),
-  evaluationSource: z.enum(['self','ai']).optional(),
+  evaluationSource: z.enum(['self','ai']).optional(), evaluationEvidence: z.string().max(200000).optional(),
 });
 const reviewSchema = z.object({
   taskId: idSchema, dueAt: dateSchema, interval: z.number().int().min(1).max(36500),

@@ -1,14 +1,38 @@
 import 'dotenv/config';
 import { createServer } from 'node:http';
 import { createApp } from './app';
+import { createPool, runMigrations } from './db';
 
 const port = Number(process.env.PORT ?? 8787);
-const host = process.env.HOST ?? '127.0.0.1';
+const production = process.env.NODE_ENV === 'production';
+const host = process.env.HOST ?? (production ? '0.0.0.0' : '127.0.0.1');
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('PORT must be a valid TCP port');
 }
 
-createServer(createApp()).listen(port, host, () => {
-  console.log(`NineGrid API listening on http://${host}:${port}`);
+async function start() {
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (production && !databaseUrl) throw new Error('DATABASE_URL is required in production; refusing to start without persistent account storage');
+  const sessionSecret = process.env.SESSION_SECRET?.trim();
+  if (production && (!sessionSecret || sessionSecret.length < 32)) throw new Error('SESSION_SECRET must be at least 32 characters in production');
+  const pool = databaseUrl ? createPool(databaseUrl) : undefined;
+  if (pool) await runMigrations(pool);
+  const app = createApp({
+    ...(process.env.DEEPSEEK_API_KEY ? { apiKey: process.env.DEEPSEEK_API_KEY } : {}),
+    ...(process.env.YOUTUBE_API_KEY ? { youtubeApiKey: process.env.YOUTUBE_API_KEY } : {}),
+    ...(pool && sessionSecret ? { auth: { pool, sessionSecret, secureCookie: production, appOrigin: process.env.APP_ORIGIN } } : {}),
+  });
+  const trustProxy = process.env.TRUST_PROXY?.trim();
+  if (trustProxy === '1') app.set('trust proxy', 1);
+  else if (trustProxy && trustProxy !== '0') throw new Error('TRUST_PROXY accepts only 0 or 1; configure the exact proxy hop count');
+  const server = createServer(app).listen(port, host, () => console.log(`NineGrid API listening on ${host}:${port}`));
+  const close = () => server.close(() => { void pool?.end(); });
+  process.once('SIGTERM', close);
+  process.once('SIGINT', close);
+}
+
+void start().catch(error => {
+  console.error(error instanceof Error ? error.message : 'Server startup failed');
+  process.exitCode = 1;
 });

@@ -89,6 +89,30 @@ describe('DeepSeek boundary', () => {
   });
 });
 
+describe('YouTube metadata search boundary', () => {
+  it('returns only metadata rechecked by videos.list and never calls DeepSeek for an absent candidate', async () => {
+    let calls = 0;
+    const youtubeFetchImpl: typeof fetch = async () => {
+      calls += 1;
+      if (calls === 1) return new Response(JSON.stringify({ items: [{ id: { videoId: 'abcdefghijk' }, snippet: { title: 'NumPy Axis Tutorial', channelTitle: 'Data Course', thumbnails: { medium: { url: 'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg' } } } }] }), { status: 200 });
+      return new Response(JSON.stringify({ items: [{ id: 'abcdefghijk', snippet: { title: 'NumPy Axis Tutorial', channelTitle: 'Data Course', defaultAudioLanguage: 'en' }, contentDetails: { duration: 'PT9M' }, status: { privacyStatus: 'public', embeddable: true } }] }), { status: 200 });
+    };
+    const response = await request(createApp({ youtubeApiKey: 'test-youtube-key', youtubeFetchImpl })).post('/api/resources/youtube').send({ task: missionBase('task-one'), language: 'en', budgetMinutes: 20 }).expect(200);
+    expect(response.body.status).toBe('metadata-verified');
+    expect(response.body.videos[0]).toMatchObject({ videoId: 'abcdefghijk', metadataOnly: true, source: 'youtube-data-api-v3' });
+    expect(response.body.videos[0].watchUrl).toBe('https://www.youtube.com/watch?v=abcdefghijk');
+    expect(response.body.videos[0].matchReason).toMatch(/不代表已逐段审看/);
+    expect(calls).toBe(2);
+  });
+
+  it('provides honest YouTube search fallback when no server resource key is set', async () => {
+    const response = await request(createApp()).post('/api/resources/youtube').send({ task: missionBase('task-two'), budgetMinutes: 15 }).expect(200);
+    expect(response.body).toMatchObject({ status: 'search-fallback', videos: [] });
+    expect(response.body.searchUrl).toContain('youtube.com/results?search_query=');
+    expect(response.body.notice).toMatch(/没有可用/);
+  });
+});
+
 describe('curriculum orchestration endpoints', () => {
   const lesson = {
     purpose: 'Use ndarray shape to predict a result before running code.', explanation: 'An ndarray stores values in dimensions. shape reports each dimension size.',

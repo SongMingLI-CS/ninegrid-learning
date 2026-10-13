@@ -126,8 +126,12 @@ function assertEditable(progress: TaskProgress): void {
   if (progress.status === 'completed') throw new Error('已完成任务的证据与目标已归档，不能修改');
 }
 function clearEvaluation(progress: TaskProgress): TaskProgress {
-  const { evaluation: _evaluation, verification: _verification, completedAt: _completedAt, selfChecked: _selfChecked, evaluationSource: _evaluationSource, ...rest } = progress;
+  const { evaluation: _evaluation, verification: _verification, completedAt: _completedAt, selfChecked: _selfChecked, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, ...rest } = progress;
   return rest;
+}
+function evaluationMatchesCurrentEvidence(progress: TaskProgress): boolean {
+  const current = [progress.evidence, progress.supplementalEvidence?.trim() ? `补充证据：\n${progress.supplementalEvidence}` : ''].filter(Boolean).join('\n\n');
+  return progress.evaluationEvidence === current;
 }
 function timestamp(now: Date): string {
   if (!Number.isFinite(now.getTime())) throw new Error('时间无效');
@@ -168,15 +172,17 @@ export function setSupplementalEvidence(state: LearningState, taskId: string, ev
   if (progress.status !== 'completed' || progress.verification !== 'self') throw new Error('只有自行完成且尚未通过 AI 的任务可以补充证据');
   if (typeof evidence !== 'string' || evidence.length > 100000) throw new Error('补充证据必须是有效文本且不超过 100000 字符');
   if (progress.supplementalEvidence === evidence) return state;
-  return replaceProgress(state, taskId, { ...progress, supplementalEvidence: evidence });
+  const { evaluation: _evaluation, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, ...rest } = progress;
+  return replaceProgress(state, taskId, { ...rest, supplementalEvidence: evidence });
 }
 
 export function setEvaluation(state: LearningState, taskId: string, evaluation: Evaluation, source: 'self' | 'ai' = 'ai'): LearningState {
   const [, progress] = taskAndProgress(state, taskId);
   if (progress.status === 'completed' && !(source === 'ai' && progress.verification === 'self')) assertEditable(progress);
   if (progress.status === 'completed' && source !== 'ai') throw new Error('已自行完成的任务只能追加 AI 核验');
-  if (progress.status === 'completed') return replaceProgress(state, taskId, { ...progress, evaluation: evaluationSchema.parse(evaluation), evaluationSource: source });
-  return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation), evaluationSource: source });
+  const evidence = [progress.evidence, progress.supplementalEvidence?.trim() ? `补充证据：\n${progress.supplementalEvidence}` : ''].filter(Boolean).join('\n\n');
+  if (progress.status === 'completed') return replaceProgress(state, taskId, { ...progress, evaluation: evaluationSchema.parse(evaluation), evaluationSource: source, evaluationEvidence: evidence });
+  return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation), evaluationSource: source, evaluationEvidence: evidence });
 }
 
 export function markSelfChecked(state: LearningState, taskId: string): LearningState {
@@ -190,7 +196,7 @@ export function markSelfChecked(state: LearningState, taskId: string): LearningS
 export function completeTask(state: LearningState, taskId: string, verification: 'self' | 'ai', now = new Date()): LearningState {
   const [task, progress] = taskAndProgress(state, taskId);
   if (progress.status === 'completed') {
-    if (progress.verification !== 'self' || verification !== 'ai' || !progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai') return state;
+    if (progress.verification !== 'self' || verification !== 'ai' || !progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai' || !evaluationMatchesCurrentEvidence(progress)) return state;
     let promoted = replaceProgress(state, taskId, { ...progress, verification: 'ai' });
     const verificationItems = getTaskReward(task).items;
     if (verificationItems.length) promoted = applyReward(promoted, task, { xp: 0, coins: 0, items: verificationItems }, 'verification', now);
@@ -202,7 +208,7 @@ export function completeTask(state: LearningState, taskId: string, verification:
   if (verification !== 'self' && verification !== 'ai') throw new Error('验收方式无效');
   if (!isTaskUnlocked(state.campaign, state.progress, taskId)) throw new Error('请先完成前置任务与前一阶段');
   if (Array.from(progress.evidence.trim()).length < 20) throw new Error('请提交至少 20 个字符的行动证据');
-  if (verification === 'ai' && (!progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai')) throw new Error('AI 验收未通过，需达到 70 分且保存核验来源');
+  if (verification === 'ai' && (!progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai' || !evaluationMatchesCurrentEvidence(progress))) throw new Error('AI 验收未通过，需达到 70 分且评价必须对应当前证据');
   const completedAt = timestamp(now);
   const stageIndex = state.campaign.stages.findIndex(stage => stage.tasks.some(item => item.id === taskId));
   const required = [...state.campaign.stages.slice(0, stageIndex).flatMap(stageGateIds), ...task.prerequisites, ...(task.unlockAfter ?? [])];
@@ -217,8 +223,16 @@ export function completeTask(state: LearningState, taskId: string, verification:
   rewarded = applyReward(rewarded, task, { ...missionReward, items: verification === 'ai' ? missionReward.items : [] }, 'mission', now);
   const completedIds = new Set(getTasks(rewarded.campaign).filter(item => rewarded.progress[item.id]?.status === 'completed').map(item => item.id));
   const stage = rewarded.campaign.stages[stageIndex];
-  for (const chain of stage.chains ?? []) if (chain.taskIds.every(id => completedIds.has(id))) rewarded = applyReward(rewarded, task, chain.completionReward ?? { xp: Math.max(10, chain.taskIds.length * 20), coins: chain.track === 'main' ? 5 : 3, items: [] }, 'chain', now, chain.id);
-  if (stageGateIds(stage).every(id => completedIds.has(id))) rewarded = applyReward(rewarded, task, stage.reward ?? { xp: 100, coins: 8, items: [] }, 'stage', now, stage.id);
+  for (const chain of stage.chains ?? []) if (chain.taskIds.every(id => completedIds.has(id))) {
+    const chainReward = chain.completionReward ?? { xp: Math.max(10, chain.taskIds.length * 20), coins: chain.track === 'main' ? 5 : 3, items: [] };
+    const independentlyVerified = chain.taskIds.every(id => rewarded.progress[id]?.verification === 'ai');
+    rewarded = applyReward(rewarded, task, { ...chainReward, items: independentlyVerified ? chainReward.items : [] }, 'chain', now, chain.id);
+  }
+  if (stageGateIds(stage).every(id => completedIds.has(id))) {
+    const stageReward = stage.reward ?? { xp: 100, coins: 8, items: [] };
+    const independentlyVerified = stageGateIds(stage).every(id => rewarded.progress[id]?.verification === 'ai');
+    rewarded = applyReward(rewarded, task, { ...stageReward, items: independentlyVerified ? stageReward.items : [] }, 'stage', now, stage.id);
+  }
   const allMainlineAiVerified = rewarded.campaign.stages.every(item => stageGateIds(item).every(id => completedIds.has(id) && rewarded.progress[id]?.verification === 'ai'));
   if (allMainlineAiVerified) rewarded = applyReward(rewarded, task, { xp: 500, coins: 100, items: [{ itemId: `${rewarded.campaign.id}-season-insignia`, name: '赛季能力徽章', description: '通过赛季主线独立 AI 验收后授予。', rarity: 'legendary', icon: '⬡', quantity: 1 }] }, 'season', now, rewarded.campaign.id);
   return rewarded;

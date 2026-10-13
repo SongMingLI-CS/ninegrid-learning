@@ -41,6 +41,7 @@ export interface TaskProgress {
   evaluation?: Evaluation; verification?: 'self' | 'ai'; completedAt?: string;
   selfChecked?: boolean;
   evaluationSource?: 'self' | 'ai';
+  evaluationEvidence?: string;
 }
 export interface ReviewCard {
   taskId: string; dueAt: string; interval: number; ease: number; repetitions: number;

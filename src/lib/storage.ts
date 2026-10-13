@@ -4,6 +4,13 @@ import { DEMO_CAMPAIGN } from './demo';
 import { createProgressForCampaign, getRewardIdempotencyKey } from './engine';
 
 const STORAGE_KEY = 'ninegrid.learning.v1';
+let storageKey = STORAGE_KEY;
+
+export function setStorageScope(userId?: string): void {
+  if (!userId) { storageKey = STORAGE_KEY; return; }
+  if (!/^[a-zA-Z0-9-]{1,64}$/.test(userId)) throw new Error('账号标识无效');
+  storageKey = `${STORAGE_KEY}.user.${userId}`;
+}
 
 export function createInitialState(): LearningState {
   // Parsing clones the nested demo, so resetting cannot inherit an earlier edit.
@@ -19,7 +26,7 @@ export function loadState(): LearningState {
 export function loadStateSafely(): { state: LearningState; warning?: string; isNew?: boolean } {
   if (typeof window === 'undefined') return { state: createInitialState(), isNew: true };
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     return { state: raw === null ? createInitialState() : importState(raw), isNew: raw === null };
   } catch (error) {
     // Do not rewrite malformed JSON: recovery/export may still need the original.
@@ -31,7 +38,7 @@ export function saveState(state: LearningState): void {
   const raw = exportState(state);
   if (typeof window === 'undefined') return;
   // Propagate quota/permission errors so the UI can report an unsuccessful save.
-  window.localStorage.setItem(STORAGE_KEY, raw);
+  window.localStorage.setItem(storageKey, raw);
 }
 
 export function saveStateSafely(state: LearningState): { ok: true } | { ok: false; error: string } {

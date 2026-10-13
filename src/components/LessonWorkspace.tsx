@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { LessonContent, Task, TaskProgress } from '../../shared/types';
 
 export interface LessonWorkspaceProps {
@@ -18,13 +18,14 @@ export interface LessonWorkspaceProps {
   busy?: boolean;
   editable?: boolean;
   diagnosticMode?: boolean;
-  onDiagnosticFinish?(confidence: 'known' | 'needs-practice'): void;
+  onDiagnosticFinish?(confidence: 'known' | 'needs-practice', answer: string): void;
 }
 
 export function LessonWorkspace({ task, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
   const [hintLevel, setHintLevel] = useState(0);
   const [showChinese, setShowChinese] = useState(false);
   const [diagnosticAnswer, setDiagnosticAnswer] = useState('');
+  useEffect(() => { setHintLevel(0); setShowChinese(false); setDiagnosticAnswer(progress.evidence); }, [task.id, diagnosticMode]);
   const locked = progress.status === 'completed' || !editable;
   const canReverify = progress.status === 'completed' && progress.verification === 'self';
   const canSettle = progress.status === 'completed'
@@ -33,7 +34,7 @@ export function LessonWorkspace({ task, progress, content, loading = false, feed
   return <article className="lesson-workspace" aria-label="学习工作区">
     <header className="lesson-heading"><div><span className="micro-label">LEARNING WORKSPACE · {task.track === 'branch' ? 'OPTIONAL BRANCH' : 'MAINLINE'}</span><h2>{task.title}</h2><p>{task.brief}</p></div><span className="lesson-time">约 {task.minutes} 分钟</span></header>
     {loading && <div className="lesson-loading" role="status">正在按课程蓝图编写本任务内容…{onCancel&&<button type="button" onClick={onCancel}>取消</button>}</div>}
-    {diagnosticMode && <section className="lesson-diagnostic"><span className="lesson-kicker">两分钟掌握诊断</span><h3>{task.recallQuestion}</h3><label>先闭卷写下你的预测<textarea aria-label="两分钟诊断回答" value={diagnosticAnswer} onChange={event => setDiagnosticAnswer(event.target.value)} placeholder="写下结果、理由或判断依据；不用提交给 AI。"/></label><p>核对线索：{task.acceptance}</p><div className="lesson-actions"><button type="button" onClick={() => onDiagnosticFinish?.('known')} disabled={diagnosticAnswer.trim().length < 8}>我能解释，返回今日计划</button><button type="button" onClick={() => { setDiagnosticAnswer(''); onDiagnosticFinish?.('needs-practice'); }} disabled={diagnosticAnswer.trim().length < 8}>还不确定，进入完整练习</button></div></section>}
+    {diagnosticMode && <section className="lesson-diagnostic"><span className="lesson-kicker">两分钟掌握诊断</span><h3>{task.recallQuestion}</h3><label>先闭卷写下你的预测<textarea aria-label="两分钟诊断回答" value={diagnosticAnswer} onChange={event => { setDiagnosticAnswer(event.target.value); onEvidence(event.target.value); }} placeholder="写下预测结果、理由或一个简短解题步骤。"/></label><p>通关标准：{task.acceptance}</p><div className="lesson-actions"><button type="button" onClick={() => onDiagnosticFinish?.('known', diagnosticAnswer.trim())} disabled={diagnosticAnswer.trim().length < 20}>我达到标准 · 记录诊断通关</button><button type="button" onClick={() => onDiagnosticFinish?.('needs-practice', diagnosticAnswer.trim())} disabled={diagnosticAnswer.trim().length < 20}>还不确定 · 保存回答并进入补练</button></div><small>诊断通关计为自行完成；不会显示 AI 验证，也不发高价值道具。</small></section>}
     <section className="lesson-objectives"><strong>本次能力目标</strong>{task.objectives.map(objective=><label key={objective.id}><input type="checkbox" checked={progress.completedObjectives.includes(objective.id)} disabled={locked} onChange={()=>onObjective?.(objective.id)}/>{objective.text}</label>)}</section>
     {content ? <>
       <section className="lesson-purpose"><strong>这次要解决的问题</strong><p>{content.purpose}</p></section>

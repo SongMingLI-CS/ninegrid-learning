@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Campaign, Evaluation, LearningState, LessonContent, Task } from '../shared/types';
 import { campaignSchema, evaluationSchema, goalInputSchema, learningStateSchema, taskSchema } from '../shared/schema';
-import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setEvaluation, setEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
-import { createInitialState, exportState, importState, loadState, saveState, saveStateSafely } from '../src/lib/storage';
+import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
+import { createInitialState, exportState, importState, loadState, loadStateSafely, saveState, saveStateSafely, setStorageScope } from '../src/lib/storage';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 
@@ -26,7 +26,7 @@ function ready(state: LearningState, id: string) {
   return setEvidence(updateObjective(state, id, `${id}-o`), id, EVIDENCE);
 }
 function done(state: LearningState, id: string) { return completeTask(ready(state, id), id, 'self', NOW); }
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); setStorageScope(); });
 
 describe('progression and verification', () => {
   it('requires every earlier stage and explicit prerequisites before unlocking', () => {
@@ -92,6 +92,19 @@ describe('progression and verification', () => {
       expect(changed.progress.a.verification).toBeUndefined();
     }
     expect(setEvidence(evaluated, 'a', EVIDENCE)).toBe(evaluated);
+  });
+  it('invalidates a saved AI pass when supplemental evidence changes but preserves original evidence', () => {
+    let state = ready(fresh(), 'a');
+    state = markSelfChecked(state, 'a');
+    state = completeTask(state, 'a', 'self', NOW);
+    state = setEvaluation(state, 'a', PASS, 'ai');
+    const changed = setSupplementalEvidence(state, 'a', '新增输出结果和解释');
+    expect(changed.progress.a.evidence).toBe(EVIDENCE);
+    expect(changed.progress.a.evaluation).toBeUndefined();
+    expect(changed.progress.a.evaluationSource).toBeUndefined();
+    expect(completeTask(changed, 'a', 'ai', NOW)).toBe(changed);
+    const reevaluated = setEvaluation(changed, 'a', PASS, 'ai');
+    expect(completeTask(reevaluated, 'a', 'ai', NOW).progress.a.verification).toBe('ai');
   });
   it('awards once, creates a next-day review, and protects completed work', () => {
     const state = done(fresh(), 'a');
@@ -209,6 +222,17 @@ describe('schemas and safe state import', () => {
 });
 
 describe('demo and browser storage', () => {
+  it('isolates browser cache by account and restores each learner profile separately', () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('window', { localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value); } } });
+    const first = createInitialState(); first.campaign.title = 'Learner One';
+    setStorageScope('user-111'); saveState(first);
+    setStorageScope('user-222');
+    expect(loadStateSafely().state.campaign.title).not.toBe('Learner One');
+    const second = createInitialState(); second.campaign.title = 'Learner Two'; saveState(second);
+    setStorageScope('user-111');
+    expect(loadState().campaign.title).toBe('Learner One');
+  });
   it('starts all twelve demo missions fresh and gives each a useful official reference', () => {
     const state = createInitialState();
     expect(campaignSchema.safeParse(DEMO_CAMPAIGN).success).toBe(true);
@@ -312,6 +336,16 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     expect(state.rewardLedger?.filter(entry => entry.kind === 'stage')).toHaveLength(1);
     expect(state.rewardLedger?.filter(entry => entry.kind === 'chain' && entry.idempotencyKey.includes('main-chain'))).toHaveLength(1);
     expect(stageAndMainChain?.every(entry => state.rewardLedger?.some(next => next.id === entry.id))).toBe(true);
+  });
+  it('does not grant chain or stage items from self-reported diagnosis completion', () => {
+    let state = fresh();
+    state.campaign.stages[0].chains = [{ id: 'main-chain', title: '主线链路', track: 'main', taskIds: ['a', 'b'], completionReward: { xp: 50, coins: 10, items: [{ itemId: 'chain-relic', name: '链路收藏品', description: '仅保存验收证据。', rarity: 'legendary', icon: '⬡', quantity: 1 }] } }];
+    state.campaign.stages[0].mainlineTaskIds = ['a', 'b'];
+    state.campaign.stages[0].reward = { xp: 80, coins: 10, items: [{ itemId: 'stage-relic', name: '阶段收藏品', description: '阶段挑战奖励。', rarity: 'rare', icon: '✦', quantity: 1 }] };
+    state = done(done(state, 'a'), 'b');
+    expect(state.rewardLedger?.filter(entry => entry.kind === 'chain' || entry.kind === 'stage').every(entry => entry.reward.items.length === 0)).toBe(true);
+    expect(state.inventory?.['chain-relic']).toBeUndefined();
+    expect(state.inventory?.['stage-relic']).toBeUndefined();
   });
   it('migrates older reward claims to owner-scoped keys before a later branch can trigger them', () => {
     let state = fresh();
