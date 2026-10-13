@@ -70,6 +70,31 @@ describe('versioned NumPy curriculum', () => {
     expect(validateCurriculumOutline(shortGoal, { days:2, dailyMinutes:15 })).toBe(false);
   });
 
+  it('checks actual mainline, review, and in-cycle branch minutes as one budget', () => {
+    const outline = outlineFixture();
+    for (const stage of outline.stages) {
+      for (const task of stage.mainline) task.minutes = 13;
+      for (const task of stage.branches.flatMap(branch => branch.tasks)) task.minutes = 19;
+    }
+    outline.stages[0].mainline.slice(0, 4).forEach(task => task.minutes = 21);
+    outline.stages.flatMap(stage => stage.branches.flatMap(branch => branch.tasks)).slice(0, 16).forEach(task => task.minutes++);
+    // 812 mainline + 252 review + 700 in-cycle optional = 1,764, 84 over.
+    expect(outline.stages.flatMap(stage => stage.mainline).reduce((sum, task) => sum + task.minutes, 0)).toBe(812);
+    expect(outline.stages.flatMap(stage => stage.branches.flatMap(branch => branch.tasks)).reduce((sum, task) => sum + task.minutes, 0)).toBe(700);
+    expect(validateCurriculumOutline(outline, { days: 28, dailyMinutes: 60 })).toBe(false);
+
+    const legal = outlineFixture();
+    for (const stage of legal.stages) {
+      for (const task of stage.mainline) task.minutes = 13;
+      for (const task of stage.branches.flatMap(branch => branch.tasks)) task.minutes = 15;
+    }
+    legal.stages[0].mainline.slice(0, 4).forEach(task => task.minutes = 21);
+    expect(legal.stages.flatMap(stage => stage.mainline).reduce((sum, task) => sum + task.minutes, 0)).toBe(812);
+    expect(legal.stages.flatMap(stage => stage.branches.flatMap(branch => branch.tasks)).reduce((sum, task) => sum + task.minutes, 0)).toBe(540);
+    // 812 + 252 review + 540 branches = 1,604, within the 1,680-minute cycle.
+    expect(validateCurriculumOutline(legal, { days: 28, dailyMinutes: 60 })).toBe(true);
+  });
+
   it('plans course size from the budget across compact, standard, short, and long goals', () => {
     const compact = planCurriculumBudget({ days: 14, dailyMinutes: 20 });
     expect(compact).toMatchObject({ feasible: true, totalMinutes: 280, reviewMinutes: 42, stageCount: 2, mainlineTaskCounts: [10, 9], branchChainsPerStage: [0, 0] });

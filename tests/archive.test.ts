@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { newDb } from 'pg-mem';
+import { DataType, newDb } from 'pg-mem';
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 import session from 'express-session';
 import request from 'supertest';
@@ -11,6 +12,7 @@ import sharp from 'sharp';
 import { mountArchiveRoutes, persistEvaluation } from '../server/archive';
 import { mountAttachmentRoutes } from '../server/attachments';
 import { mountGenerationDraftRoutes } from '../server/generationDrafts';
+import { COLLECTION_CATALOG, CATALOG_RARITY_COUNTS } from '../shared/catalog';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { createProgressForCampaign } from '../src/lib/engine';
@@ -19,12 +21,17 @@ import type { LearningState } from '../shared/types';
 
 async function fixture() {
   const memory = newDb();
+  memory.public.registerFunction({ name: 'gen_random_uuid', returns: DataType.uuid, implementation: randomUUID });
   const adapter = memory.adapters.createPg();
   const pool = new adapter.Pool() as unknown as Pool;
+  await pool.query('CREATE TABLE users (id uuid PRIMARY KEY)');
+  await pool.query("INSERT INTO users (id) VALUES ('00000000-0000-4000-8000-000000000001'),('00000000-0000-4000-8000-000000000002')");
   await pool.query('CREATE TABLE seasons (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, campaign_id text NOT NULL, title text NOT NULL, revision integer NOT NULL DEFAULT 1, state jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,campaign_id))');
   await pool.query('CREATE TABLE reward_ledger (id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, kind text NOT NULL, idempotency_key text NOT NULL, reward jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))');
   await pool.query('CREATE TABLE wallets (user_id uuid NOT NULL, currency text NOT NULL, balance bigint NOT NULL DEFAULT 0, PRIMARY KEY(user_id,currency))');
   await pool.query('CREATE TABLE inventory_items (user_id uuid NOT NULL, item_id text NOT NULL, definition jsonb NOT NULL, quantity integer NOT NULL DEFAULT 0, acquired_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,item_id))');
+  await pool.query('CREATE TABLE inventory_item_preferences (user_id uuid NOT NULL,item_id text NOT NULL,is_locked boolean NOT NULL DEFAULT false,is_showcased boolean NOT NULL DEFAULT false,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,item_id))');
+  await pool.query('CREATE TABLE inventory_sales (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL,operation_id uuid NOT NULL,items jsonb NOT NULL,coins bigint NOT NULL CHECK(coins>0),created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(user_id,operation_id))');
   await pool.query('CREATE TABLE task_evaluations (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, evidence_sha256 text NOT NULL, evaluation jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,season_id,task_id,evidence_sha256))');
   await pool.query("CREATE TABLE legacy_imports (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, source_sha256 text NOT NULL, season_ids uuid[] NOT NULL DEFAULT '{}', imported_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,source_sha256))");
   await pool.query('CREATE TABLE attachments (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, storage_key text UNIQUE NOT NULL, mime_type text NOT NULL, byte_size integer NOT NULL, width integer NOT NULL, height integer NOT NULL, sha256 text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())');
@@ -49,6 +56,44 @@ function state(): LearningState {
 }
 
 describe('server-owned learning archives', () => {
+  it('defines the complete catalog by distinct rarity counts, separate from owned inventory', () => {
+    expect(COLLECTION_CATALOG).toHaveLength(155);
+    expect(CATALOG_RARITY_COUNTS).toEqual({ 'small-purple': 45, 'small-gold': 35, 'large-gold': 15, 'small-red': 35, 'large-red': 25 });
+    expect(new Set(COLLECTION_CATALOG.map(item => item.id)).size).toBe(155);
+    expect(COLLECTION_CATALOG.every(item => item.displayValue > item.sellPrice && item.imageKey && item.version === 1)).toBe(true);
+  });
+
+  it('settles account warehouse sales atomically, honors lock, and deduplicates operation IDs', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const other = '00000000-0000-4000-8000-000000000002';
+    const item = COLLECTION_CATALOG[0];
+    await pool.query('INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,1)', [owner, item.id, JSON.stringify(item)]);
+    await pool.query('INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,1)', [other, item.id, JSON.stringify(item)]);
+    const preferences = (user: string, locked: boolean) => request(app).post('/api/inventory/preferences').set('x-test-user', user).send({ items: [{ itemId: item.id, locked, showcased: false }] });
+    await preferences(owner, true).expect(200);
+    const op = '10000000-0000-4000-8000-000000000001';
+    const lockedResponse = await request(app).post('/api/inventory/sell').set('x-test-user', owner).send({ operationId: op, items: [{ itemId: item.id, quantity: 1 }] });
+    expect(lockedResponse.status, lockedResponse.text).toBe(409);
+    expect(lockedResponse.body.error).toBe('ITEM_LOCKED');
+    await preferences(owner, false).expect(200);
+    const sale = () => request(app).post('/api/inventory/sell').set('x-test-user', owner).send({ operationId: op, items: [{ itemId: item.id, quantity: 1 }] });
+    const first = await sale().expect(200);
+    expect(first.body.sale.coins).toBe(item.sellPrice);
+    const repeated = await sale(); expect(repeated.status, repeated.text).toBe(200); expect(repeated.body.idempotent).toBe(true);
+    await request(app).post('/api/inventory/sell').set('x-test-user', owner).send({ operationId: '20000000-0000-4000-8000-000000000002', items: [{ itemId: item.id, quantity: 1 }] }).expect(409);
+    const [held, wallet, sales, otherHeld] = await Promise.all([
+      pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [owner, item.id]),
+      pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [owner]),
+      pool.query('SELECT count(*)::int AS count FROM inventory_sales WHERE user_id=$1', [owner]),
+      pool.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2', [other, item.id]),
+    ]);
+    expect(Number(held.rows[0].quantity)).toBe(0);
+    expect(Number(wallet.rows[0].balance)).toBe(item.sellPrice);
+    expect(sales.rows[0].count).toBe(1);
+    expect(Number(otherHeld.rows[0].quantity)).toBe(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
   it('isolates server generation drafts by owner and activates one finalized season idempotently', async () => {
     const { app, pool, directory } = await fixture();
     const owner = '00000000-0000-4000-8000-000000000001';
@@ -60,14 +105,34 @@ describe('server-owned learning archives', () => {
     const id = created.body.draft.id;
     expect((await request(app).get('/api/generation-drafts').set('x-test-user', other)).body.drafts).toHaveLength(0);
     await request(app).get('/api/generation-drafts').set('x-test-user', owner).expect(200).then(res => expect(res.body.drafts[0].id).toBe(id));
-    await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', other).send({ status: 'failed' }).expect(404);
-    const ready = await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: created.body.draft.revision, status: 'awaiting-confirmation', finalCampaign: campaign }).expect(200);
+    await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', other).send({ revision: 1, status: 'failed' }).expect(404);
+    await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ status: 'generating' }).expect(400).then(res => expect(res.body.code).toBe('DRAFT_REVISION_REQUIRED'));
+    await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: '1', status: 'generating' }).expect(400).then(res => expect(res.body.code).toBe('DRAFT_REVISION_REQUIRED'));
+    const firstDevice = await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: created.body.draft.revision, status: 'generating' }).expect(200);
+    await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: created.body.draft.revision, status: 'partial' }).expect(409).then(res => expect(res.body.code).toBe('DRAFT_REVISION_CONFLICT'));
+    const ready = await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: firstDevice.body.draft.revision, status: 'awaiting-confirmation', finalCampaign: campaign }).expect(200);
     expect(ready.body.draft.status).toBe('awaiting-confirmation');
     const first = await request(app).post(`/api/generation-drafts/${id}/activate`).set('x-test-user', owner).expect(201);
     const again = await request(app).post(`/api/generation-drafts/${id}/activate`).set('x-test-user', owner).expect(200);
     expect(again.body.idempotent).toBe(true);
     expect(again.body.season.id).toBe(first.body.season.id);
     expect((await pool.query('SELECT id FROM seasons WHERE owner_user_id=$1', [owner])).rows).toHaveLength(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('rejects a merged oversized draft atomically while preserving the saved revision and batches', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const campaign = structuredClone(NUMPY_DEMO_CAMPAIGN);
+    const input = { goal: campaign.goal, level: campaign.level, days: campaign.days, dailyMinutes: campaign.dailyMinutes, ultimateReward: campaign.ultimateReward, desiredArtifact: campaign.desiredArtifact, language: campaign.language };
+    const created = await request(app).post('/api/generation-drafts').set('x-test-user', owner).send({ input, rulesVersion: 4 }).expect(201);
+    const id = created.body.draft.id;
+    await pool.query("UPDATE generation_drafts SET batches=$1::jsonb WHERE id=$2", [JSON.stringify({ prior: 'x'.repeat(1_930_000) }), id]);
+    const response = await request(app).patch(`/api/generation-drafts/${id}`).set('x-test-user', owner).send({ revision: created.body.draft.revision, batch: { stageId: 's', chainId: 'main', batchKey: '1', tasks: ['y'.repeat(100_000)] } }).expect(413);
+    expect(response.body.code).toBe('DRAFT_TOO_LARGE');
+    const stored = await pool.query('SELECT revision,batches FROM generation_drafts WHERE id=$1', [id]);
+    expect(stored.rows[0].revision).toBe(created.body.draft.revision);
+    expect(stored.rows[0].batches).toEqual({ prior: 'x'.repeat(1_930_000) });
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 

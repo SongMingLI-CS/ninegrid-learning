@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Aperture, ArrowDown, ArrowRight, ArrowUpRight, Award, BookOpen, Check,
   ChevronDown, ChevronLeft, ChevronRight, CircleCheck, CircleHelp, Clock3, Crosshair,
@@ -17,6 +17,7 @@ import { YouTubeResources } from './components/YouTubeResources';
 import type { VerifiedVideo } from '../server/youtube';
 import { AccountGate, type AccountUser } from './components/AccountGate';
 import { InventoryScreen } from './components/InventoryScreen';
+const WarehouseScreen = lazy(() => import('./components/WarehouseScreen').then(module => ({ default: module.WarehouseScreen })));
 import { apiFetch } from './lib/api';
 import { setStorageScope } from './lib/storage';
 import { NUMPY_DEMO_CAMPAIGN } from './lib/numpyDemo';
@@ -65,7 +66,7 @@ function App() {
   const [state, setState] = useState<LearningState>(() => loaded.isNew ? switchCampaign(loaded.state, NUMPY_DEMO_CAMPAIGN) : loaded.state);
   const [selectedStage, setSelectedStage] = useState(0);
   const [selectedTaskId, setSelectedTaskId] = useState(loaded.state.lastTaskId ?? state.campaign.stages[0]?.tasks[0]?.id ?? '');
-  const [tab, setTab] = useState<Tab>('missions');
+  const [tab, setTab] = useState<Tab>(() => window.location.pathname === '/inventory' ? 'inventory' : 'missions');
   const [goalOpen, setGoalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -76,7 +77,7 @@ function App() {
   const [scopedUserId, setScopedUserId] = useState<string>();
   const [serverSeasons, setServerSeasons] = useState<Array<{ id: string; revision: number; title: string; state: LearningState }>>([]);
   const [serverWallet, setServerWallet] = useState(0);
-  const [serverInventory, setServerInventory] = useState<Array<{ item_id: string; definition: { itemId?: string; name?: string; description?: string; rarity?: string; icon?: string }; quantity: number; sources: Array<{ seasonId: string; taskId: string }> }>>([]);
+  const [serverInventory, setServerInventory] = useState<Array<{ item_id: string; definition: { itemId?: string; name?: string; description?: string; rarity?: string; icon?: string }; quantity: number; is_locked?: boolean; is_showcased?: boolean; sources: Array<{ seasonId: string; taskId: string }> }>>([]);
   const [serverLedger, setServerLedger] = useState<Array<{ id: string; task_id: string; reward: { coins?: number; items?: Array<{ name: string }> } }>>([]);
   const [legacyImportPending, setLegacyImportPending] = useState<LearningState[] | null>(null);
   const [goal, setGoal] = useState(defaultGoal);
@@ -273,7 +274,7 @@ function App() {
         }
         serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, conflicted };
         setState(restored); setSelectedTaskId(restored.lastTaskId ?? restored.campaign.stages[0]?.tasks[0]?.id ?? '');
-        setSelectedStage(0); setTab('missions'); serverHydrated.current = true;
+        setSelectedStage(0); if (window.location.pathname !== '/inventory') setTab('missions'); serverHydrated.current = true;
         setSaveError(conflicted ? '服务器已有较新版本，已恢复本机未发送草稿；请导出草稿或明确选择服务器版本，当前不会覆盖服务器。' : ''); setSyncStatus(conflicted ? 'conflict' : pending ? 'saving' : 'saved'); setScopedUserId(accountUser.id);
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -436,6 +437,7 @@ function App() {
     setBusy('generate'); setGenerationMessage('准备课程总纲…');
     const timeout = window.setTimeout(() => activeRequest.current?.abort('generation-deadline'), 15 * 60 * 1000);
     let recoverableDraft: GenerationDraft | undefined;
+    let revisionConflict = false;
     try {
       const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: reward.trim() || '完成一项真实可用的成果', desiredArtifact: reward.trim() || undefined, language: languagePreference, sourceMaterial: sourceMaterial || undefined };
       const controller = new AbortController(); activeRequest.current = controller;
@@ -458,7 +460,23 @@ function App() {
       const persistServer = async (body: Record<string, unknown>) => {
         if (!accountUser || !draft?.id) return;
         const response = await apiFetch(`/api/generation-drafts/${draft.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: draft.revision, ...body }) });
-        const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? payload.code ?? '服务器生成草稿保存失败');
+        const payload = await response.json();
+        if (!response.ok && response.status === 409 && payload.code === 'DRAFT_REVISION_CONFLICT') {
+          revisionConflict = true;
+          const latestResponse = await apiFetch('/api/generation-drafts');
+          if (latestResponse.ok) {
+            const latestPayload = await latestResponse.json() as { drafts: SavedGenerationDraft[] };
+            const latest = latestPayload.drafts.find(item => item.id === draft?.id);
+            setSavedGenerationDrafts(latestPayload.drafts.filter(item => item.status !== 'activated'));
+            if (latest) {
+              draft = restoreGenerationDraft(latest); recoverableDraft = draft; setGenerationDraft(draft); setPendingDraftId(latest.id);
+              setPendingCampaign(latest.status === 'awaiting-confirmation' ? latest.finalCampaign ?? null : null);
+              setGenerationMessage(latest.status === 'awaiting-confirmation' ? '另一设备已完成此课程；已重新读取服务器版本，请检查后确认创建赛季。' : '检测到另一设备更新了草稿；服务器最新版本已重新读取。本轮未覆盖对方内容，点击继续即可从最新批次恢复。');
+            }
+          }
+          throw new Error('草稿版本冲突：已重新读取服务器版本，本轮更新未覆盖另一设备的修改。');
+        }
+        if (!response.ok) throw new Error(payload.error ?? payload.code ?? '服务器生成草稿保存失败');
         const saved = payload.draft as SavedGenerationDraft;
         draft = restoreGenerationDraft(saved); recoverableDraft = draft; setGenerationDraft(draft); setSavedGenerationDrafts(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
       };
@@ -538,11 +556,11 @@ function App() {
     } catch (error) {
       const aborted = error instanceof DOMException && error.name === 'AbortError';
       const message = aborted ? '生成已取消' : error instanceof Error ? error.message : '连接 DeepSeek 时发生未知错误。';
-      if (recoverableDraft?.id && accountUser) {
+      if (recoverableDraft?.id && accountUser && !revisionConflict) {
         const code = aborted ? 'CANCELLED' : (error as Error & { code?: string })?.code ?? 'GENERATION_FAILED';
         void apiFetch(`/api/generation-drafts/${recoverableDraft.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: aborted ? 'cancelled' : 'failed', failure: { code, message }, revision: recoverableDraft.revision }) }).then(async response => { if (response.ok) { const payload = await response.json() as { draft: SavedGenerationDraft }; setSavedGenerationDrafts(previous => [payload.draft, ...previous.filter(item => item.id !== payload.draft.id)]); } }).catch(() => undefined);
       }
-      setGenerationMessage(`生成中断：${message}。已完成阶段保留，点击“继续/重试”只补失败部分。`);
+      if (!revisionConflict) setGenerationMessage(`生成中断：${message}。已完成阶段保留，点击“继续/重试”只补失败部分。`);
       flash({ title: message, body: '当前赛季和进度已保留；已通过校验的批次保留，可从失败位置继续。', tone: 'warning' });
     } finally { window.clearTimeout(timeout); activeRequest.current = null; setBusy(null); }
   };
@@ -729,6 +747,13 @@ function App() {
   const stageProgress = stageMainline.filter(id => state.progress[id]?.status === 'completed').length;
   const renderedStageTasks = hideCompletedTasks ? visibleStageTasks.filter(item => state.progress[item.id]?.status !== 'completed') : visibleStageTasks;
 
+  useEffect(() => {
+    const syncRoute = () => setTab(window.location.pathname === '/inventory' ? 'inventory' : 'missions');
+    window.addEventListener('popstate', syncRoute);
+    if (window.location.pathname === '/inventory') setTab('inventory');
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, [authLoaded, accountUser?.id]);
+
   if (!authLoaded) return <main className="account-gate"><div role="status" className="account-panel">正在恢复账号会话…</div></main>;
   if (connection.accounts && !accountUser) return <AccountGate onAuthenticated={setAccountUser}/>;
   if (connection.accounts && accountUser && scopedUserId !== accountUser.id) return <main className="account-gate"><div role={saveError ? 'alert' : 'status'} className="account-panel">{legacyImportPending ? <><h1>迁移本机旧档案？</h1><p>发现 {legacyImportPending.length} 个学习赛季 · {legacyImportPending.reduce((sum, item) => sum + Object.values(item.progress).filter(progress => progress.status === 'completed').length, 0)} 项历史任务完成记录。</p><ul>{legacyImportPending.map(item => <li key={item.campaign.id}>{item.campaign.title} · {Object.values(item.progress).filter(progress => progress.status === 'completed').length}/{Object.keys(item.progress).length} 项</li>)}</ul><p>服务端会重新校验结构、保留符合条件的学习成果；旧钱包、道具和 AI 验证标记不会迁入可信奖励。成功前不会删除或覆盖浏览器原档。</p><button className="modal-submit" onClick={() => void importLegacyArchives()}>确认迁移并核对</button><button className="text-button" onClick={() => void startFreshServerSeason()}>不迁移，开始 NumPy 新赛季</button></> : <>{saveError || '正在载入此账号的服务器档案…'}{saveError && <button className="modal-submit" onClick={() => window.location.reload()}>重新连接并重试</button>}</>}</div></main>;
@@ -743,6 +768,8 @@ function App() {
       setAccountUser(null); setAuthLoaded(true); setScopedUserId(undefined); setTab('missions');
     } catch (error) { flash({ title: '退出登录失败', body: error instanceof Error ? error.message : '请重试。', tone: 'warning' }); }
   };
+
+  if (tab === 'inventory' && accountUser) return <Suspense fallback={<main className="account-gate"><div className="account-panel">正在打开个人仓库…</div></main>}><WarehouseScreen account={accountUser.email} onExit={() => { window.history.pushState({}, '', '/'); setTab('missions'); }} onLogout={() => void logout()} /></Suspense>;
 
   return (
     <main className="app-shell">
@@ -760,7 +787,7 @@ function App() {
           <button className={`nav-link ${tab === 'workspace' ? 'active' : ''}`} onClick={() => { setTab('workspace'); setMobileNav(false); }}><BookOpen size={15}/>学习工作区</button>
           <button className={`nav-link ${tab === 'archive' ? 'active' : ''}`} onClick={() => { setTab('archive'); setMobileNav(false); }}><Layers2 size={15} />情报档案</button>
           <button className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} onClick={() => { setTab('reviews'); setMobileNav(false); }}><Radio size={15} />复习信号室 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</button>
-          {accountUser && <button className={`nav-link ${tab === 'inventory' ? 'active' : ''}`} onClick={() => { setTab('inventory'); setMobileNav(false); }}><Backpack size={15}/>个人仓库</button>}
+          {accountUser && <button className={`nav-link ${tab === 'inventory' ? 'active' : ''}`} onClick={() => { window.history.pushState({}, '', '/inventory'); setTab('inventory'); setMobileNav(false); }}><Backpack size={15}/>个人仓库</button>}
         </nav>
         <div className="topbar-actions">
           {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录" aria-label="退出登录">{accountUser.email} · 退出</button>}
@@ -881,7 +908,7 @@ function App() {
 
           <aside className="rewards-panel"><div className="vault-header"><div><span className="micro-label">PERSONAL ARMORY</span><h3>九格能力成果</h3></div><span className="vault-level"><span className="vault-level-dot"/>{stats.slots} / 9 验证</span></div><div className="vault-summary"><span>赛季交付物</span><strong>{campaign.ultimateReward}</strong><div className="vault-summary-track"><i style={{ width: `${stats.slots / 9 * 100}%` }}/></div><small>按能力验收逐格解锁，不按完成任务比例点亮</small></div>
             <div className="vault-grid" aria-label={`九格能力成果，${stats.slots} 格已解锁`}>{(campaign.nineGrid ?? Array.from({length:9},(_,index)=>({id:`empty-${index}`,title:`能力格 ${index+1}`,ability:'课程蓝图尚未配置具体解锁条件',value:'课程蓝图尚未配置',unlockTaskIds:[]}))).map((grid,index)=>{ const verified = Boolean(state.gridOutcomes?.[grid.id]); const eligible = grid.unlockTaskIds.length > 0 && grid.unlockTaskIds.every(id => state.progress[id]?.status === 'completed' && state.progress[id]?.verification === 'ai'); return <div key={grid.id} className={`vault-cell ${verified ? 'vault-open' : ''}`} title={`第 ${index+1} 格：${grid.value}；需通过 AI 核验 ${grid.unlockTaskIds.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')}`}><span className="vault-cell-index">0{index+1}</span><span className="vault-cell-icon">{verified ? <Check size={14}/> : <LockKeyhole size={13}/>}</span><span className="vault-cell-title">{grid.title}</span>{eligible && <div className="grid-outcome-input"><textarea aria-label={`${grid.title}成果`} value={gridDrafts[grid.id]??''} onChange={event=>setGridDrafts(previous=>({...previous,[grid.id]:event.target.value}))} placeholder="提交作品或能力证明"/><button onClick={()=>{try{const next=recordGridOutcome(state,grid.id,gridDrafts[grid.id]??'');update(next);setGridDrafts(previous=>({...previous,[grid.id]:''}));flash({title:`九格解锁：${grid.title}`,body:'能力成果已与任务链和验证记录关联保存。',tone:'success'});}catch(error){flash({title:'成果未解锁',body:error instanceof Error?error.message:'请先提交验证记录。',tone:'warning'});}}}>保存成果</button></div>}</div>;})}</div>
-            <div className="wallet-card"><div className="inventory-heading"><span><strong>个人仓库</strong><small>原创学习收藏 · 不对应任何游戏资产</small></span><b>{inventoryEntries.reduce((sum,entry)=>sum+entry.quantity,0)} 件</b></div><div className="inventory-grid">{inventoryEntries.length ? inventoryEntries.map(entry=><article key={entry.item.itemId} className={`inventory-item rarity-${entry.item.rarity}`} title={entry.item.description}><span className="inventory-icon">{entry.item.icon}</span><strong>{entry.item.name}</strong><small>×{entry.quantity} · {entry.item.rarity==='legendary'?'珍藏':entry.item.rarity==='rare'?'稀有':'常规'}</small><small>来源：{entry.sources.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')||'赛季奖励'}</small></article>) : <div className="inventory-empty"><span>◇</span><strong>收藏仓库待启封</strong><small>{saveError ? '仓库暂不可用，连接恢复后可重试。' : '完成任务与阶段挑战，收集记录会显示在这里。'}</small></div>}</div><div className="wallet-balance"><strong>学习币 · {inventoryBalance}</strong><span>本应用中的虚拟学习奖励</span></div><div className="reward-history"><strong>最近入库记录</strong>{rewardHistory.slice(0,5).map(entry=><small key={entry.id}>{allTasks.find(item=>item.id===entry.taskId)?.title??'能力节点'} → +{entry.reward.coins} 币{entry.reward.items.length ? ` · ${entry.reward.items.map(item=>item.name).join('、')}` : ''}</small>)}</div></div>
+            <div className="wallet-card"><div className="inventory-heading"><span><strong>账户共享仓库</strong><small>跨赛季收藏 · 与课程进度分开保存</small></span><b>{inventoryEntries.reduce((sum,entry)=>sum+entry.quantity,0)} 件</b></div><div className="wallet-balance"><strong>哈弗币 · {inventoryBalance}</strong><span>固定服务器余额</span></div>{serverInventory.some(item=>item.is_showcased) && <div className="showcase-summary"><strong>主页展示藏品</strong><span>{serverInventory.filter(item=>item.is_showcased).map(item=>item.definition.name).join('、')}</span></div>}<button className="review-cta" onClick={()=>{window.history.pushState({},'','/inventory');setTab('inventory');}}>进入完整仓库 <ArrowRight size={14}/></button></div>
             <div className="vault-foot"><span>行动奖励将为真实掌握解锁</span><span>{stats.slots}<i>/</i>9</span></div>
 
             <div className="review-panel"><div className="review-panel-title"><span><Radio size={15}/>复习雷达</span><span className="review-badge">{dueReview.length} 待处理</span></div>{nextReview ? <><div className="review-card"><span className="review-wave"><i/><i/><i/><i/><i/><i/><i/></span><small>下一条记忆信号</small><strong>{allTasks.find(item => item.id === nextReview.taskId)?.title ?? '知识点回顾'}</strong><span>{new Date(nextReview.dueAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })} · 主动回忆</span></div><button className="review-cta" onClick={() => setTab('reviews')}>进入信号室 <ArrowRight size={14}/></button></> : <div className="review-empty"><CircleCheck size={17}/><span>雷达目前安静<small>完成新行动后自动安排间隔复习。</small></span></div>}</div>

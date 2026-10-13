@@ -12,6 +12,8 @@ type DraftRow = {
 const ownerOf = (req: Request) => (req.session as typeof req.session & { userId?: string }).userId;
 const publicDraft = (row: DraftRow) => ({ id: row.id, input: row.input, rulesVersion: row.rules_version, outline: row.outline, batches: row.batches, status: row.status, progress: row.progress, failure: row.failure, revision: row.revision, expiresAt: row.expires_at, ...(row.final_campaign ? { finalCampaign: row.final_campaign } : {}), ...(row.activated_season_id ? { activatedSeasonId: row.activated_season_id } : {}) });
 const validId = (value: string) => /^[0-9a-f-]{36}$/i.test(value);
+const MAX_DRAFT_BYTES = 2_000_000;
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value ?? null), 'utf8');
 
 export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool }): void {
   app.get('/api/generation-drafts', async (req, res, next) => {
@@ -23,14 +25,16 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
   });
 
   app.post('/api/generation-drafts', async (req, res, next) => {
-    if (JSON.stringify(req.body ?? {}).length > 2_000_000) { res.status(413).json({ code: 'DRAFT_TOO_LARGE', error: '课程草稿超过 2 MB 限额。请减少材料或拆成更小课程。' }); return; }
+    if (jsonBytes(req.body) > MAX_DRAFT_BYTES) { res.status(413).json({ code: 'DRAFT_TOO_LARGE', error: '课程草稿超过 2 MB 限额。请减少材料或拆成更小课程。' }); return; }
     const parsed = goalInputSchema.safeParse(req.body?.input);
     if (!parsed.success || req.body?.rulesVersion !== 4) { res.status(400).json({ code: 'INVALID_DRAFT', error: '草稿输入或课程规则版本无效。' }); return; }
     const fingerprintBase = createHash('sha256').update(JSON.stringify({ input: parsed.data, rulesVersion: 4 })).digest('hex');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("DELETE FROM generation_drafts WHERE owner_user_id=$1 AND status NOT IN ('activated','awaiting-confirmation') AND updated_at < now() - interval '30 days'", [ownerOf(req)]);
+      // Serialize account-level count/volume limits for different simultaneous inputs.
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      await client.query("DELETE FROM generation_drafts WHERE owner_user_id=$1 AND status <> 'activated' AND expires_at < now()", [ownerOf(req)]);
       const found = await client.query<DraftRow>('SELECT * FROM generation_drafts WHERE owner_user_id=$1 AND input_fingerprint=$2 FOR UPDATE', [ownerOf(req), fingerprintBase]);
       const existing = found.rows[0];
       if (existing && existing.status !== 'activated') {
@@ -48,7 +52,9 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
   });
 
   app.patch('/api/generation-drafts/:id', async (req, res, next) => {
-    if (!validId(req.params.id) || JSON.stringify(req.body ?? {}).length > 2_000_000) { res.status(400).json({ code: 'INVALID_DRAFT' }); return; }
+    if (!validId(req.params.id)) { res.status(400).json({ code: 'INVALID_DRAFT' }); return; }
+    if (jsonBytes(req.body) > MAX_DRAFT_BYTES) { res.status(413).json({ code: 'DRAFT_TOO_LARGE', error: '课程草稿超过 2 MB 限额。请减少材料或拆成更小课程。' }); return; }
+    if (!Number.isSafeInteger(req.body?.revision) || req.body.revision < 1) { res.status(400).json({ code: 'DRAFT_REVISION_REQUIRED', error: '更新草稿必须携带有效 revision。请重新读取草稿后重试。' }); return; }
     const allowed = new Set(['generating','partial','failed','cancelled','awaiting-confirmation']);
     if (req.body?.status !== undefined && !allowed.has(req.body.status)) { res.status(400).json({ code: 'INVALID_DRAFT_STATUS' }); return; }
     const client = await pool.connect();
@@ -58,7 +64,7 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       const old = result.rows[0];
       if (!old) { await client.query('ROLLBACK'); res.status(404).json({ code: 'DRAFT_NOT_FOUND' }); return; }
       if (old.status === 'activated') { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_ALREADY_ACTIVATED' }); return; }
-      if (Number.isInteger(req.body?.revision) && req.body.revision !== old.revision) { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_REVISION_CONFLICT' }); return; }
+      if (req.body.revision !== old.revision) { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_REVISION_CONFLICT', revision: old.revision, error: '草稿已在另一设备更新。请重新读取后恢复，当前提交未覆盖服务器内容。' }); return; }
       const outline = req.body?.outline ?? old.outline;
       if (outline && !curriculumOutlineSchema.safeParse(outline).success) { await client.query('ROLLBACK'); res.status(400).json({ code: 'INVALID_DRAFT_OUTLINE' }); return; }
       const batches = { ...(old.batches ?? {}) } as Record<string, Record<string, unknown>>;
@@ -78,6 +84,8 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       if (status === 'awaiting-confirmation' && !finalCampaign) { await client.query('ROLLBACK'); res.status(400).json({ code: 'FINAL_CAMPAIGN_REQUIRED' }); return; }
       const progress = req.body?.progress ?? old.progress;
       const failure = req.body?.failure ?? null;
+      const stored = { input: old.input, rulesVersion: old.rules_version, outline: outline ?? null, batches, status, progress: progress ?? {}, failure, finalCampaign: finalCampaign ?? null };
+      if (jsonBytes(stored) > MAX_DRAFT_BYTES) { await client.query('ROLLBACK'); res.status(413).json({ code: 'DRAFT_TOO_LARGE', error: '合并后的课程草稿超过 2 MB 限额；此前已保存的草稿保持不变。请缩短材料或删除不需要的批次。' }); return; }
       const updated = await client.query<DraftRow>(`UPDATE generation_drafts SET outline=$1,batches=$2,status=$3,progress=$4,failure=$5,final_campaign=$6,revision=revision+1,updated_at=now(),expires_at=now()+interval '30 days' WHERE id=$7 AND owner_user_id=$8 RETURNING *`, [outline ? JSON.stringify(outline) : null, JSON.stringify(batches), status, JSON.stringify(progress ?? {}), failure ? JSON.stringify(failure) : null, finalCampaign ? JSON.stringify(finalCampaign) : null, old.id, ownerOf(req)]);
       await client.query('COMMIT'); res.json({ draft: publicDraft(updated.rows[0]) });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
@@ -109,7 +117,8 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
         inserted = await client.query('SELECT id,campaign_id,title,revision,state,created_at,updated_at FROM seasons WHERE owner_user_id=$1 AND campaign_id=$2', [ownerOf(req), campaign.id]);
         if (!inserted.rows[0]) throw error;
       }
-      await client.query("UPDATE generation_drafts SET status='activated',activated_season_id=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3", [inserted.rows[0].id, draft.id, ownerOf(req)]);
+      // Keep only the compact activation key; the full course already lives in seasons.state.
+      await client.query("UPDATE generation_drafts SET status='activated',activated_season_id=$1,input=$4::jsonb,outline=NULL,batches='{}'::jsonb,progress='{}'::jsonb,failure=NULL,final_campaign=NULL,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3", [inserted.rows[0].id, draft.id, ownerOf(req), JSON.stringify({ goal: (draft.input as any).goal, activated: true })]);
       await client.query('COMMIT'); res.status(201).json({ season: inserted.rows[0], idempotent: false });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
     finally { client.release(); }

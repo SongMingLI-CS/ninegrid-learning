@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Express, Request } from 'express';
 import type { Pool } from 'pg';
+import { COLLECTION_CATALOG } from '../shared/catalog';
 import { evaluationSchema, learningStateSchema } from '../shared/schema';
 import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
@@ -111,7 +112,9 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   app.get('/api/inventory', async (req, res, next) => {
     try {
       const [items, ledger] = await Promise.all([
-        pool.query('SELECT item_id,definition,quantity,acquired_at FROM inventory_items WHERE user_id=$1 ORDER BY acquired_at DESC', [ownerOf(req)]),
+        pool.query(`SELECT i.item_id,i.definition,i.quantity,i.acquired_at,COALESCE(p.is_locked,false) AS is_locked,COALESCE(p.is_showcased,false) AS is_showcased
+          FROM inventory_items i LEFT JOIN inventory_item_preferences p ON p.user_id=i.user_id AND p.item_id=i.item_id
+          WHERE i.user_id=$1 AND i.quantity>0 ORDER BY i.acquired_at DESC`, [ownerOf(req)]),
         pool.query('SELECT season_id,task_id,reward,created_at FROM reward_ledger WHERE user_id=$1 ORDER BY created_at DESC LIMIT 2000', [ownerOf(req)]),
       ]);
       const sources = new Map<string, Array<{ seasonId: string; taskId: string; acquiredAt: Date | string }>>();
@@ -122,8 +125,60 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const seasonId = req.query.seasonId;
       const filtered = (items.rows as Array<{ item_id: string; definition: Record<string, unknown>; quantity: number; acquired_at: Date | string }>).map(row => ({ ...row, sources: sources.get(row.item_id) ?? [] }))
         .filter(item => (!rarity || item.definition.rarity === rarity) && (!seasonId || item.sources.some(source => source.seasonId === seasonId)));
-      res.json({ items: filtered });
+      const sales = await pool.query('SELECT operation_id,items,coins,created_at FROM inventory_sales WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [ownerOf(req)]);
+      res.json({ items: filtered, sales: sales.rows });
     } catch (error) { next(error); }
+  });
+
+  app.post('/api/inventory/preferences', async (req, res, next) => {
+    const items = req.body?.items;
+    if (!Array.isArray(items) || items.length < 1 || items.length > 155 || items.some((item: any) => typeof item?.itemId !== 'string' || item.itemId.length > 128 || typeof item.locked !== 'boolean' || typeof item.showcased !== 'boolean')) { res.status(400).json({ error: 'INVALID_INVENTORY_PREFERENCES' }); return; }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      for (const item of items) {
+        const owned = await client.query('SELECT 1 FROM inventory_items WHERE user_id=$1 AND item_id=$2 AND quantity>0', [ownerOf(req), item.itemId]);
+        if (!owned.rowCount) { await client.query('ROLLBACK'); res.status(404).json({ error: 'ITEM_NOT_OWNED', itemId: item.itemId }); return; }
+        await client.query(`INSERT INTO inventory_item_preferences(user_id,item_id,is_locked,is_showcased) VALUES($1,$2,$3,$4)
+        ON CONFLICT(user_id,item_id) DO UPDATE SET is_locked=EXCLUDED.is_locked,is_showcased=EXCLUDED.is_showcased,updated_at=now()`, [ownerOf(req), item.itemId, item.locked, item.showcased]);
+      }
+      await client.query('COMMIT'); res.json({ saved: items.length });
+    } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
+    finally { client.release(); }
+  });
+
+  app.post('/api/inventory/sell', async (req, res, next) => {
+    const operationId = req.body?.operationId;
+    const requested = req.body?.items;
+    if (typeof operationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(operationId) || !Array.isArray(requested) || requested.length < 1 || requested.length > 155 || requested.some((item: any) => typeof item?.itemId !== 'string' || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 10000) || new Set(requested.map((item: any) => item.itemId)).size !== requested.length) { res.status(400).json({ error: 'INVALID_SALE' }); return; }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      const already = await client.query('SELECT operation_id,items,coins,created_at FROM inventory_sales WHERE user_id=$1 AND operation_id=$2', [ownerOf(req), operationId]);
+      if (already.rows[0]) { await client.query('COMMIT'); res.json({ sale: already.rows[0], idempotent: true }); return; }
+      const items = [] as Array<{ itemId: string; name: string; quantity: number; unitPrice: number; total: number }>;
+      let total = 0;
+      for (const requestedItem of requested as Array<{ itemId: string; quantity: number }>) {
+        const definition = COLLECTION_CATALOG.find(item => item.id === requestedItem.itemId);
+        if (!definition || !definition.sellable || definition.limited) { await client.query('ROLLBACK'); res.status(422).json({ error: 'ITEM_NOT_SELLABLE', itemId: requestedItem.itemId }); return; }
+        const held = await client.query('SELECT quantity FROM inventory_items WHERE user_id=$1 AND item_id=$2 FOR UPDATE', [ownerOf(req), requestedItem.itemId]);
+        if (!held.rows[0] || Number(held.rows[0].quantity) < requestedItem.quantity) { await client.query('ROLLBACK'); res.status(409).json({ error: 'INSUFFICIENT_ITEM_QUANTITY', itemId: requestedItem.itemId }); return; }
+        const preference = await client.query('SELECT is_locked FROM inventory_item_preferences WHERE user_id=$1 AND item_id=$2', [ownerOf(req), requestedItem.itemId]);
+        if (preference.rows[0]?.is_locked) { await client.query('ROLLBACK'); res.status(409).json({ error: 'ITEM_LOCKED', itemId: requestedItem.itemId }); return; }
+        const line = requestedItem.quantity * definition.sellPrice; total += line;
+        items.push({ itemId: definition.id, name: definition.name, quantity: requestedItem.quantity, unitPrice: definition.sellPrice, total: line });
+      }
+      if (!Number.isSafeInteger(total) || total <= 0) { await client.query('ROLLBACK'); res.status(422).json({ error: 'INVALID_SALE_TOTAL' }); return; }
+      for (const item of items) await client.query('UPDATE inventory_items SET quantity=quantity-$1 WHERE user_id=$2 AND item_id=$3', [item.quantity, ownerOf(req), item.itemId]);
+      await client.query(`INSERT INTO wallets(user_id,currency,balance) VALUES($1,'learning-coin',$2)
+        ON CONFLICT(user_id,currency) DO UPDATE SET balance=wallets.balance+EXCLUDED.balance`, [ownerOf(req), total]);
+      const sale = await client.query(`INSERT INTO inventory_sales(user_id,operation_id,items,coins) VALUES($1,$2,$3,$4)
+        RETURNING operation_id,items,coins,created_at`, [ownerOf(req), operationId, JSON.stringify(items), total]);
+      await client.query('COMMIT'); res.json({ sale: sale.rows[0], idempotent: false });
+    } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
+    finally { client.release(); }
   });
 
   app.get('/api/seasons', async (req, res, next) => {

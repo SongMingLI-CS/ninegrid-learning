@@ -111,5 +111,9 @@ export function validateCurriculumOutline(outline: CurriculumOutline, input: { d
   if (tasks.some(task => cycle(task.id))) return false;
   const requiredMinutes = outline.stages.reduce((sum, stage) => sum + stage.mainline.reduce((stageSum, task) => stageSum + task.minutes, 0), 0);
   const optionalMinutes = outline.stages.reduce((sum, stage) => sum + stage.branches.reduce((branchSum, branch) => branchSum + branch.tasks.reduce((taskSum, task) => taskSum + task.minutes, 0), 0), 0);
-  return requiredMinutes >= budget.mainlineMinutes && requiredMinutes + budget.reviewMinutes <= budget.totalMinutes && optionalMinutes <= budget.optionalMinutes;
+  // optionalMinutes is a pre-generation estimate. Validate the actual merged
+  // outline totals so longer model estimates cannot silently exceed the cycle.
+  return requiredMinutes >= budget.mainlineMinutes
+    && requiredMinutes + budget.reviewMinutes + optionalMinutes <= budget.totalMinutes
+    && optionalMinutes <= budget.optionalMinutes;
 }

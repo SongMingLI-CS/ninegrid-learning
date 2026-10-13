@@ -232,7 +232,8 @@ describe('curriculum orchestration endpoints', () => {
     const response = await request(app).post('/api/generation/outline').send({ input: shortInput });
     expect(response.status).toBe(422);
     expect(response.body.code).toBe('BUDGET_UNSUITABLE');
-    expect(response.body.error).toMatch(/增加周期|每日时间/);
+    expect(response.body.error).toMatch(/延长周期|增加每日学习时间/);
+    expect(response.body.plannedMinutes.overByMinutes).toBeGreaterThan(0);
     expect(response.body.budget.totalMinutes).toBe(shortInput.days * shortInput.dailyMinutes);
     expect(providerCalls).toBe(1);
   });
