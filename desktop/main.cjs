@@ -634,7 +634,16 @@ async function stopOwnedServices() {
   if (backendChild && backendChild.exitCode === null && policy.mayStopOwnedProcess({ owned: backendOwned, pid: backendChild.pid })) {
     const child = backendChild;
     log('info', `Stopping owned API child PID ${child.pid}.`);
-    try { child.send({ type: 'ninegrid-shutdown' }); } catch { /* The owned child may already be closing. */ }
+    try {
+      if (!child.connected || typeof child.send !== 'function') {
+        log('warn', 'Owned API child has no live IPC channel; waiting before the owned-process fallback.');
+      } else {
+        child.send({ type: 'ninegrid-shutdown' }, error => {
+          if (error) log('warn', `Graceful API shutdown IPC was not delivered: ${error.message}`);
+          else log('info', 'Graceful API shutdown IPC was delivered.');
+        });
+      }
+    } catch (error) { log('warn', `Graceful API shutdown IPC failed: ${error.message}`); }
     await Promise.race([
       new Promise(resolve => child.once('exit', resolve)),
       new Promise(resolve => setTimeout(resolve, 20000)),

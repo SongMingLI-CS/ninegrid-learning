@@ -44,7 +44,13 @@ async function start() {
   process.once('SIGTERM', close);
   process.once('SIGINT', close);
   process.on('message', message => {
-    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'ninegrid-shutdown') void close();
+    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'ninegrid-shutdown') {
+      console.log('NineGrid backend received a graceful shutdown request.');
+      void close().then(() => {
+        console.log('NineGrid backend closed HTTP and database connections.');
+        if (process.connected) process.disconnect();
+      }).catch(() => { process.exitCode = 1; });
+    }
   });
 }
 
