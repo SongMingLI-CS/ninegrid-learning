@@ -413,7 +413,7 @@ async function ensureDatabase(db, paths) {
     if (decision.action !== 'reuse' || identity.port !== db.port || identity.database !== db.database || !policy.isLoopbackOnly(identity.listenAddresses)) {
       throw new Error(`数据库端口 ${db.port} 已占用，但无法核实为当前 NineGrid 的 F 盘 PostgreSQL 18 数据集群。该服务保持原样。`);
     }
-    databaseOwned = false;
+    databaseOwned = databaseOwned && normalizedPath(databaseDataDirectory ?? '') === normalizedPath(paths.postgres);
     databaseDataDirectory = paths.postgres;
     runtimeStatus.service = '复用已核实的 PostgreSQL 18';
     log('info', `Reusing verified PostgreSQL cluster at ${paths.postgres}; process was not started by this app.`);
@@ -469,7 +469,7 @@ async function ensureApi(db, paths) {
     const status = await expectedApiStatus(db);
     const decision = policy.classifyApiListener(true, status, { host: db.host, port: db.port, database: db.database }, paths.root, { version: app.getVersion(), commit: buildInfo.commit });
     if (decision.action !== 'reuse') throw new Error('8787 端口已被占用，但该服务没有提供兼容的 NineGrid 生产账号和数据库身份。没有接管或结束该进程。');
-    backendOwned = false;
+    backendOwned = Boolean(backendOwned && backendChild && backendChild.exitCode === null);
     runtimeStatus.service = '复用已核实的 NineGrid 账号服务';
     runtimeStatus.ai = status.aiMode === 'ready' ? '已配置' : '未配置';
     log('info', 'Reusing compatible production NineGrid API; process was not started by this app.');

@@ -71,6 +71,7 @@
       "dist/**/*",
       "server/**/*",
       "shared/**/*",
+      "src/lib/engine.ts",
       "scripts/windows/db-snapshot.mjs",
       "package.json",
       "node_modules/**/*"
