@@ -107,6 +107,13 @@ describe('progression and verification', () => {
     }
     expect(setEvidence(evaluated, 'a', EVIDENCE)).toBe(evaluated);
   });
+  it('allows supplemental rescue evidence after a failed attempt without replacing the original answer', () => {
+    const state = recordAttempt(setEvidence(fresh(), 'a', EVIDENCE), 'a', { answer: EVIDENCE, hintLevelsUsed: 0, verification: 'ai', passed: false, errorType: 'concept', feedback: '概念有误。' });
+    const changed = setSupplementalEvidence(state, 'a', '短练习输出 shape=(2,3)，ndim=2。');
+    expect(changed.progress.a.evidence).toBe(EVIDENCE);
+    expect(changed.progress.a.supplementalEvidence).toBe('短练习输出 shape=(2,3)，ndim=2。');
+    expect(changed.attempts?.a).toHaveLength(1);
+  });
   it('invalidates a saved AI pass when supplemental evidence changes but preserves original evidence', () => {
     let state = ready(fresh(), 'a');
     state = markSelfChecked(state, 'a');

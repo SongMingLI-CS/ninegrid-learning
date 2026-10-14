@@ -229,7 +229,9 @@ export function setEvidence(state: LearningState, taskId: string, evidence: stri
 
 export function setSupplementalEvidence(state: LearningState, taskId: string, evidence: string): LearningState {
   const [, progress] = taskAndProgress(state, taskId);
-  if (progress.status !== 'completed' || progress.verification !== 'self') throw new Error('只有自行完成且尚未通过 AI 的任务可以补充证据');
+  const hasUnsettledFailure = progress.status !== 'completed' && state.attempts?.[taskId]?.some(attempt => !attempt.passed);
+  const selfCompleted = progress.status === 'completed' && progress.verification === 'self';
+  if (!hasUnsettledFailure && !selfCompleted) throw new Error('只有存在未通过记录的任务或自行完成的任务可以补充证据');
   if (typeof evidence !== 'string' || evidence.length > 100000) throw new Error('补充证据必须是有效文本且不超过 100000 字符');
   if (progress.supplementalEvidence === evidence) return state;
   const { evaluation: _evaluation, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, ...rest } = progress;

@@ -57,7 +57,7 @@ describe('lesson challenge disclosure', () => {
     const evidence = '原始答案仍在这里：我预测 shape 并记录了真实运行输出。';
     const latestFailedAttempt={at:'2026-10-14T00:00:00.000Z',answer:evidence,hintLevelsUsed:0,verification:'ai' as const,passed:false,errorType:'operation' as const,feedback:'索引列方向写反了。',evaluation:{passed:false,score:42,feedback:'列索引方向不正确。',gaps:['需要先写清行索引，再写列索引。'],nextStep:'用 2×3 数组测试。'}};
     render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence, status: 'active' }} content={content} failedAttempts={3} latestFailedAttempt={latestFailedAttempt} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={vi.fn()}/>);
-    expect(screen.getByText(/连续三次独立尝试未通过/)).toBeTruthy();
+    expect(screen.getByText(/连续多次独立尝试未通过/)).toBeTruthy();
     expect(screen.getByText('索引列方向写反了。')).toBeTruthy();
     expect(screen.getByText(/需要先写清行索引，再写列索引/)).toBeTruthy();
     expect((screen.getByLabelText('学习答案与成果') as HTMLTextAreaElement).value).toBe(evidence);
@@ -73,5 +73,19 @@ describe('lesson challenge disclosure', () => {
     fireEvent.change(practice,{target:{value:'新短练习：预测并核对形状。'}});
     expect(onSupplementalEvidence).toHaveBeenCalledWith('新短练习：预测并核对形状。');
     expect((screen.getByLabelText('学习答案与成果') as HTMLTextAreaElement).value).toBe(evidence);
+  });
+  it('offers staged rescue after the first failed answer and can request a transfer without generated lesson content', () => {
+    const evidence = 'Shape 顺序写错，并误以为不规则列表会自动补零。';
+    const onRescue = vi.fn();
+    const onRequestTransfer = vi.fn();
+    const latestFailedAttempt = { at:'2026-10-15T00:00:00.000Z', answer:evidence, hintLevelsUsed:0, verification:'ai' as const, passed:false, errorType:'concept' as const, feedback:'shape 应按行、列排列。', evaluation:{passed:false,score:30,feedback:'维数与不规则列表结论均不正确。',gaps:['二维 shape 是 (行数, 列数)。'],nextStep:'先用 2×3 数组核对输出。'} };
+    const { rerender } = render(<LessonWorkspace task={task} progress={{completedObjectives:[],evidence,status:'active'}} failedAttempts={1} latestFailedAttempt={latestFailedAttempt} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={onRescue} onRequestTransfer={onRequestTransfer}/>);
+    expect(screen.getByRole('button',{name:'开始分层救援'})).toBeTruthy();
+    expect(screen.getByText('shape 应按行、列排列。')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button',{name:'开始分层救援'}));
+    expect(onRescue).toHaveBeenCalledTimes(1);
+    rerender(<LessonWorkspace task={task} progress={{completedObjectives:[],evidence,status:'active'}} rescueLevel={4} failedAttempts={1} latestFailedAttempt={latestFailedAttempt} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={onRescue} onRequestTransfer={onRequestTransfer}/>);
+    fireEvent.click(screen.getByRole('button',{name:'生成新的独立变式'}));
+    expect(onRequestTransfer).toHaveBeenCalledTimes(1);
   });
 });
