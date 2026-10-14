@@ -67,16 +67,13 @@
 
     npm run build
 
-## Ubuntu 部署预备
+## Windows 本机持久运行
 
-Ubuntu 部署使用独立 PostgreSQL 与持久附件卷；`APP_PORT` 默认仅映射到 `127.0.0.1:8787`。请在已确认空闲的备用端口和独立 Compose 项目名下测试。登录 Cookie 在生产模式要求 HTTPS，因此反向代理需终止 TLS，并把请求转发到本机端口。
+本项目按单用户本机使用。生产前端由 `npm run build` 构建，账号 API 通过 `npm start` 提供；PostgreSQL、私有附件、备份和日志统一位于 `F:\Projects\NineGridData`。数据库和 API 只监听 `127.0.0.1`，不会向局域网或公网开放。首次迁移与一键操作说明见 [Windows 本机运行手册](docs/windows-local.md)。
 
-1. Ubuntu 安装 Docker Engine 与 Compose 插件；将仓库克隆到服务器，复制 `.env.example` 为 `.env`。
-2. 设置 `POSTGRES_PASSWORD`、`SESSION_SECRET`、`APP_ORIGIN`。密码与会话密钥必须换成随机值，可用 `openssl rand -hex 32` 生成；`APP_ORIGIN` 填实际 HTTPS 域名。按需配置 `DEEPSEEK_API_KEY`、`YOUTUBE_API_KEY`。
-3. 执行 `docker compose config --quiet` 检查配置，再执行 `docker compose up -d --build`。应用启动时自动迁移数据库；Nginx/Caddy 等 TLS 反向代理应转发到本机 `127.0.0.1:8787`。
-4. TLS 反向代理转发至 `127.0.0.1:8787`，并仅在确认可信代理跳数后设置 `TRUST_PROXY=1`。备份：`sh scripts/backup-db.sh ./backups`，会生成数据库、私有图片附件和校验文件。恢复到隔离的新数据库：`RESTORE_DB=ninegrid_restore sh scripts/restore-db.sh ./backups/文件.dump ./backups/附件.tar.gz`；脚本拒绝覆盖当前配置的应用数据库，并将附件恢复到单独目录。
+桌面快捷方式“九格行动本机版”会启动本地数据库和生产应用，并打开 `http://127.0.0.1:8787/`。修改代码后需要重新运行 `npm run build`；`npm run dev` 保留给开发，不作为日常使用方式。备份包含 PostgreSQL 与附件，并带 SHA-256 清单；恢复始终写入独立的新数据库和新附件目录，不会自动切换当前账号库。
 
-`npm run test:postgres` 在本机启动临时原生 PostgreSQL，并验证重复迁移、注册/登录、所有权隔离、存档读写、并发奖励、证据版本、私有附件、服务重启和独立库备份恢复；Windows 需安装 PostgreSQL 客户端工具，非标准目录用 `PG_TOOLS_DIR` 指定。Ubuntu 集成部署和真实 DeepSeek/YouTube 在线请求需分别报告；缺少外部密钥时不会把模拟测试描述成在线验证。浏览器端保留原始本机档案，确认导入时服务器会将旧成果记为自行完成，不采信旧钱包或 AI 标记。
+`npm run test:postgres` 在本机启动隔离的原生 PostgreSQL 实例，并验证重复迁移、注册/登录、所有权隔离、存档读写、并发奖励、证据版本、私有附件、重启和独立备份恢复；Windows 使用 PostgreSQL 18 客户端工具。浏览器端保留原始本机档案，确认导入时服务器会将旧成果记为自行完成，不采信旧钱包或 AI 标记。
 
 ## 方法出处
 
