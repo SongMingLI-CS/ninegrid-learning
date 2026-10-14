@@ -58,6 +58,7 @@ describe('local entry and account feature discoverability', () => {
     await screen.findByRole('heading', { name: '情报归档行动' });
     expect(document.body.textContent).not.toContain('哈弗币');
     const nav = screen.getByRole('navigation', { name: '主导航' });
+    expect(within(nav).getAllByRole('button')).toHaveLength(8);
     for (const name of ['今日学习', '赛季', '学习记录', '复习', '仓库', '商城', '挑战', '个人主页']) {
       expect(within(nav).getByRole('button', { name: new RegExp(name) })).toBeTruthy();
     }

@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowDownWideNarrow, ArrowUpDown, Check, ChevronLeft, ChevronRight, LockKeyhole, Search, ShieldCheck, Sparkles, Tag, UnlockKeyhole, X } from 'lucide-react';
 import { COLLECTION_CATALOG, CATALOG_RARITY_COUNTS, GENERATED_CATALOG_IMAGE_IDS, type CollectionItem, type CollectionRarity } from '../../shared/catalog';
 import { apiFetch } from '../lib/api';
+import { AccountFeatureNavigation } from './AccountFeatureNavigation';
 import { formatHafverCoins } from '../../shared/economy';
 import './WarehouseScreen.css';
 
 type HeldItem = { item_id: string; definition: Partial<CollectionItem> & { itemId?: string; name: string; description: string; rarity: string; icon?: string }; quantity: number; acquired_at: string; sources: Array<{ seasonId: string; taskId: string; acquiredAt: string }>; is_locked: boolean; is_showcased: boolean };
 type Sale = { operation_id: string; items: Array<{ name: string; quantity: number; total: number }>; coins: number; created_at: string };
-type Props = { account: string; onExit: () => void; onLogout: () => void };
+type Props = { account: string; onExit: () => void; onLogout: () => void; onNavigate: (path: string) => void };
 const rarityLabels: Record<CollectionRarity, string> = { 'small-purple': '小紫', 'small-gold': '小金', 'large-gold': '大金', 'small-red': '小红', 'large-red': '大红' };
 const rarityOrder: Record<CollectionRarity, number> = { 'small-purple': 1, 'small-gold': 2, 'large-gold': 3, 'small-red': 4, 'large-red': 5 };
 const money = formatHafverCoins;
@@ -27,7 +28,7 @@ function Artwork({ item, dim = false, fullSize = false }: { item: Pick<Collectio
   </svg><span className="wh-art-ref">临时矢量稿 · {item.imageKey.toUpperCase()}</span></>}</div>;
 }
 
-export function WarehouseScreen({ account, onExit, onLogout }: Props) {
+export function WarehouseScreen({ account, onExit, onLogout, onNavigate }: Props) {
   const [items, setItems] = useState<HeldItem[]>([]);
   const [seasonalCatalog, setSeasonalCatalog] = useState<CollectionItem[]>([]);
   const [balance, setBalance] = useState(0);
@@ -112,6 +113,7 @@ export function WarehouseScreen({ account, onExit, onLogout }: Props) {
 
   return <main className="warehouse-page">
     <header className="wh-topbar"><button className="wh-brand" onClick={onExit}><span className="wh-brand-mark">9</span><span>NINEGRID <small>FIELD ARCHIVE</small></span></button><div className="wh-breadcrumb">个人账户 <b>/</b> 仓库</div><div className="wh-account"><span>{account}</span><button onClick={onLogout}>退出</button></div></header>
+    <AccountFeatureNavigation currentPath="/inventory" onNavigate={onNavigate}/>
     <section className="wh-intro"><div><span className="wh-kicker"><span/> ACCOUNT SHARED INVENTORY</span><h1>行动仓库</h1><p>跨赛季保存的个人收藏。物品的展示估值用于收藏统计，回收价才是可入账的哈弗币。</p></div><button className="wh-back" onClick={onExit}><ArrowLeft size={15}/> 返回课程</button></section>
     <section className="wh-metrics" aria-label="仓库统计"><article><small>哈弗币余额</small><strong>{money(balance)}</strong><span>账户共享余额</span></article><article><small>持有物品</small><strong>{money(items.reduce((sum,item)=>sum+item.quantity,0))}<i> 件</i></strong><span>{ownedKinds} 种不同物品</span></article><article><small>图鉴完成度</small><strong>{catalogHeldKinds}<i> / {COLLECTION_CATALOG.length}</i></strong><span>{completionPercent === 0 && catalogHeldKinds ? '<1%' : `${completionPercent}%`} 已收集种类</span></article><article><small>图鉴展示估值</small><strong>{money(estimated)}</strong><span>参考估值，不等于余额</span></article><article><small>可出售回收</small><strong>{money(items.reduce((sum,held)=>sum+(!held.is_locked?(COLLECTION_CATALOG.find(item=>item.id===held.item_id)?.sellPrice??0)*held.quantity:0),0))}</strong><span>已排除锁定和未知旧藏品</span></article></section>
     <div className="wh-subbar"><div className="wh-tabs"><button className={tab==='owned'?'active':''} onClick={()=>{setTab('owned');setPage(0);setSelected(null)}}>我的仓库 <span>{ownedKinds}</span></button><button className={tab==='catalog'?'active':''} onClick={()=>{setTab('catalog');setPage(0);setSelected(null)}}>完整图鉴 <span>{COLLECTION_CATALOG.length}</span></button></div><div className="wh-total">图鉴规格 {Object.entries(CATALOG_RARITY_COUNTS).map(([key,count])=><span key={key}>{rarityLabels[key as CollectionRarity]} {count}</span>)}</div></div>

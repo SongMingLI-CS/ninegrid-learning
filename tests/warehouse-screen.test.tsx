@@ -37,8 +37,10 @@ describe('independent warehouse page', () => {
   it('separates owned inventory from the 155-item catalog and reports collection by kinds', async () => {
     inventory = { items: [{ item_id: item.id, definition: item, quantity: 2, acquired_at: '2026-10-10T08:00:00Z', sources: [{ seasonId: 'season-a', taskId: 'numpy-lesson' }], is_locked: false, is_showcased: false }], sales: [] };
     wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
-    const { container } = render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
+    const onNavigate = vi.fn();
+    const { container } = render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} onNavigate={onNavigate} />);
     expect(await screen.findByText('行动仓库')).toBeTruthy();
+    expect(container.querySelector('.account-feature-navigation')).toBeTruthy();
     expect(container.querySelector('.wh-art img')?.getAttribute('src')).toBe('/assets/catalog/thumbs/small-purple-01.webp');
     fireEvent.click(screen.getByRole('button', { name: `查看${item.name}详情` }));
     expect(container.querySelector('.wh-detail-art .wh-art img')?.getAttribute('src')).toBe('/assets/catalog/items/small-purple-01.webp');
@@ -53,7 +55,7 @@ describe('independent warehouse page', () => {
   it('previews batch recovery value, then updates the account balance and quantity after sale', async () => {
     inventory = { items: [{ item_id: item.id, definition: item, quantity: 2, acquired_at: '2026-10-10T08:00:00Z', sources: [], is_locked: false, is_showcased: false }], sales: [] };
     wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
-    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
+    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} onNavigate={() => {}} />);
     const checkbox = await screen.findByRole('checkbox', { name: `选择${item.name}出售` });
     fireEvent.click(checkbox);
     fireEvent.click(screen.getByRole('button', { name: /出售已选/ }));
@@ -68,7 +70,7 @@ describe('independent warehouse page', () => {
   it('excludes locked collections from the default batch-sale action and recovery total', async () => {
     inventory = { items: [{ item_id: item.id, definition: item, quantity: 2, acquired_at: '2026-10-10T08:00:00Z', sources: [], is_locked: true, is_showcased: false }], sales: [] };
     wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
-    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
+    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} onNavigate={() => {}} />);
     await screen.findByRole('checkbox', { name: `选择${item.name}出售` });
     const saleTotal = screen.getByRole('button', { name: /出售已选 · 0/ });
     expect(saleTotal.hasAttribute('disabled')).toBe(true);

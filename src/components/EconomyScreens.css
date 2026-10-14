@@ -61,3 +61,161 @@
   .shop-modal-backdrop { padding:10px; }
   .shop-modal { max-height:calc(100dvh - 20px); overflow:auto; padding:16px; }
 }
+
+/* Account pages use the same reading scale as the learning workspace. */
+.economy-page { font-size:16px; line-height:1.65; }
+.econ-header>button,.econ-user button,.econ-primary,.econ-secondary,.econ-shortcuts button { font-size:14px; }
+.econ-header>button,.econ-user button { min-height:40px; }
+.econ-header>div:nth-child(2)>span,.econ-kicker { font-size:12px; letter-spacing:.1em; }
+.econ-header h1 { font-size:26px; }
+.econ-user { font-size:13px; color:#c0ccc4; }
+.econ-balance span { font-size:14px; }
+.econ-balance small { font-size:13px; color:#b3c1b8; }
+.econ-intro p,.challenge-hero p,.profile-hero p { font-size:16px; line-height:1.7; color:#c0ccc4; }
+.econ-intro label,.challenge-selectors label,.profile-fields label { font-size:14px; color:#c0ccc4; }
+.econ-intro select,.challenge-selectors select,.profile-fields input,.profile-fields textarea { min-height:44px; font-size:15px; }
+.econ-error,.econ-notice { font-size:15px; line-height:1.65; }
+.shop-box-art span { font-size:12px; }
+.shop-box-content h3 { font-size:24px; }
+.shop-box-content>p { font-size:15px; line-height:1.65; color:#c0cbc4; }
+.shop-price span,.shop-price small,.shop-pool>strong,.shop-pool>div,.shop-math { font-size:13px; }
+.shop-pool>div { min-height:36px; }
+.shop-pool b { font-size:14px; }
+.shop-pool small { white-space:normal; overflow-wrap:anywhere; font-size:13px; color:#b6c2ba; }
+.shop-math small { font-size:13px; color:#b0beb5; }
+.econ-primary,.econ-secondary { min-height:46px; }
+.econ-muted { font-size:13px; line-height:1.6; color:#b9c5bd; }
+.shop-results p,.shop-results article span,.shop-results article b { font-size:14px; line-height:1.6; }
+.econ-log p,.profile-challenges>p,.challenge-history article { font-size:14px; line-height:1.6; color:#c0cbc3; }
+.econ-shortcuts button { min-height:44px; }
+.challenge-selectors label { font-size:14px; }
+.challenge-task strong { font-size:16px; }
+.challenge-task p { font-size:15px; line-height:1.65; color:#becac2; }
+.challenge-task small { font-size:13px; color:#b2c0b7; }
+.challenge-tiers>button { font-size:15px; }
+.challenge-tiers>button>span { font-size:16px; }
+.challenge-tiers>button>b { font-size:20px; }
+.challenge-tiers>button>small,.challenge-tiers>button>div span { font-size:13px; color:#bfcbc3; }
+.challenge-fee>span,.challenge-fee>small { font-size:14px; line-height:1.6; }
+.challenge-fee>.econ-primary { min-height:48px; }
+.active-challenge p,.challenge-result,.challenge-result small { font-size:15px; line-height:1.7; }
+.profile-hero small { font-size:13px; color:#bdc9c1; }
+.profile-hero-stats span,.profile-metrics article span { font-size:13px; }
+.profile-hero-stats strong,.profile-metrics strong { font-size:17px; }
+.profile-editor p,.profile-showcase>p,.profile-seasons>p { font-size:14px; line-height:1.65; color:#bdc9c1; }
+.profile-fields label { font-size:14px; }
+.profile-showcase b,.profile-showcase small,.profile-seasons header span { font-size:13px; }
+.profile-stages span,.profile-grid article b { font-size:13px; }
+.profile-grid article small,.profile-grid article span,.profile-final-artifact>strong,.profile-final-artifact>span,.profile-final-artifact p { font-size:12px; line-height:1.55; }
+.profile-final-artifact details summary { font-size:13px; }
+.shop-modal { width:min(720px,100%); }
+.shop-modal h2 { font-size:25px; }
+.shop-modal p,.shop-modal dl,.shop-modal button { font-size:15px; line-height:1.65; }
+.shop-modal dt,.shop-modal dd { font-size:15px; }
+@media (min-width:1800px) {
+  .economy-page { font-size:17px; }
+  .econ-header h1 { font-size:30px; }
+  .econ-intro h2,.challenge-hero h2,.profile-hero h2 { font-size:34px; }
+  .econ-intro p,.challenge-hero p,.profile-hero p { font-size:17px; }
+  .profile-grid article small,.profile-grid article span { font-size:13px; }
+  .profile-final-artifact>strong,.profile-final-artifact>span,.profile-final-artifact p { font-size:14px; }
+}
+@media (max-width:600px) {
+  .econ-header h1 { font-size:20px; }
+  .econ-header>div:nth-child(2)>span,.econ-kicker { font-size:10px; }
+  .econ-user { font-size:0; }
+  .econ-user button { font-size:12px; }
+  .econ-balance span,.econ-balance small { font-size:13px; }
+  .econ-intro p,.challenge-hero p,.profile-hero p { font-size:15px; }
+  .shop-box-content h3 { font-size:21px; }
+  .shop-box-content>p,.shop-pool>div,.shop-math,.shop-pool>strong { font-size:13px; }
+  .shop-pool small { font-size:12px; }
+  .challenge-task p { font-size:14px; }
+  .challenge-task small,.challenge-tiers>button>small,.challenge-tiers>button>div span { font-size:12px; }
+  .profile-hero small,.profile-hero-stats span,.profile-metrics article span { font-size:12px; }
+  .profile-hero-stats strong,.profile-metrics strong { font-size:14px; }
+  .profile-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .profile-grid article b { font-size:12px; }
+  .profile-grid article small,.profile-grid article span { font-size:11px; }
+  .profile-final-artifact>strong,.profile-final-artifact>span,.profile-final-artifact p { font-size:12px; }
+}
+
+/* Keep account-only routes connected to the full learning workspace. */
+@media (min-width:1600px) {
+  .economy-page { width:min(100%, 2880px); margin-inline:auto; padding-inline:clamp(28px, 2vw, 64px); }
+  .shop-page { max-width:2400px; }
+  .challenge-page { max-width:1920px; }
+  .profile-page { max-width:2200px; }
+}
+
+/* The section heading, collection summary, and rarity tiles are rows, not columns. */
+.profile-metrics { display:block; }
+.profile-collection-summary {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  gap:8px 18px;
+  margin-top:12px;
+  padding:13px 15px;
+  border:1px solid #303c37;
+  background:#151d1c;
+  color:#c3cec4;
+  font-size:14px;
+}
+.profile-collection-summary strong { color:#e1e9dd; font-size:18px; }
+.profile-rarity-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr));
+  gap:8px;
+  margin-top:10px;
+}
+.profile-metrics .profile-rarity-grid article {
+  display:flex;
+  justify-content:space-between;
+  min-height:58px;
+  padding:12px 14px;
+}
+.profile-rarity-grid article span { color:#c0cbc2; }
+.profile-filters { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0; }
+.profile-filters button,.profile-season-actions button {
+  min-height:40px;
+  padding:8px 12px;
+  border:1px solid #3b4c44;
+  background:#18211f;
+  color:#c7d2c8;
+  font-size:14px;
+}
+.profile-filters button.selected {
+  border-color:#819777;
+  background:#28362b;
+  color:#edf4e8;
+  box-shadow:inset 0 -2px #a9d392;
+}
+.profile-season-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+.profile-season-actions button:hover,.profile-filters button:hover { border-color:#83a587; }
+.profile-showcase article { width:180px; }
+.profile-showcase select {
+  width:100%;
+  min-height:40px;
+  margin-top:8px;
+  padding:6px 8px;
+  border:1px solid #425148;
+  border-radius:3px;
+  background:#151d1c;
+  color:#e1e9df;
+  font-size:13px;
+}
+
+@media (min-width:1800px) {
+  .profile-rarity-grid { grid-template-columns:repeat(5,minmax(0,1fr)); }
+}
+
+@media (max-width:600px) {
+  .profile-collection-summary { gap:5px 10px; padding:10px; font-size:13px; }
+  .profile-collection-summary strong { font-size:16px; }
+  .profile-rarity-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .profile-filters { gap:5px; }
+  .profile-filters button { flex:1 1 calc(33.333% - 5px); min-height:40px; padding:6px 7px; font-size:13px; }
+  .profile-season-actions button { flex:1 1 calc(50% - 7px); min-height:42px; font-size:13px; }
+  .profile-showcase article { width:calc(50% - 5px); }
+}

@@ -925,7 +925,7 @@ function App() {
 
   if (accountUser && ['inventory','shop','challenges','profile'].includes(tab)) {
     return <Suspense fallback={<main className="account-gate"><div className="account-panel">正在打开页面…</div></main>}>
-      {tab==='inventory' ? <WarehouseScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()}/> :
+      {tab==='inventory' ? <WarehouseScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
        tab==='shop' ? <ShopScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
        tab==='challenges' ? <ChallengesScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
        <ProfileScreen key={accountUser.id} account={accountUser.email} currentSeasonId={currentSeasonId} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute} onCreateSeason={()=>{navigateRoute('/');setGoalOpen(true);}} onSelectSeason={switchServerSeason} onContinueSeason={continueProfileSeason} onFlushSeason={flushProfileSeason} onLifecycleChanged={applyLifecycle}/>}</Suspense>;
@@ -953,7 +953,6 @@ function App() {
       <nav className={`main-nav ${mobileNav ? 'nav-open' : ''}`} aria-label="主导航">
         <button className={`nav-link ${tab === 'today' ? 'active' : ''}`} onClick={() => navigateTab('today')}><Clock3 size={16}/>今日学习</button>
         <button className={`nav-link ${tab === 'missions' ? 'active' : ''}`} onClick={() => navigateTab('missions')}><Crosshair size={16}/>赛季</button>
-        <button className={`nav-link ${tab === 'workspace' ? 'active' : ''}`} onClick={() => navigateTab('workspace')}><BookOpen size={16}/>学习区</button>
         <button className={`nav-link ${tab === 'history' ? 'active' : ''}`} onClick={() => navigateTab('history')}><Activity size={16}/>学习记录</button>
         <button className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} onClick={() => navigateTab('reviews')}><Radio size={16}/>复习 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</button>
         <button className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'inventory' ? 'active' : ''}`} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/inventory','仓库')}><Backpack size={16}/>仓库{!accountUser&&<small>需账号</small>}</button>

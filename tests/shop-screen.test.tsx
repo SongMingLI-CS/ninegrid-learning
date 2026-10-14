@@ -20,6 +20,14 @@ function serve(){
 
 describe('independent safe shop page',()=>{
   afterEach(()=>{cleanup();vi.unstubAllGlobals();calls.length=0;});
+  it('keeps all account sections reachable from the shop',async()=>{
+    const navigate=vi.fn();serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={navigate}/>);
+    await screen.findByRole('heading',{name:'保险箱补给'});
+    const nav=screen.getByRole('navigation',{name:'账号功能导航'});
+    expect(within(nav).getByRole('button',{name:'商城'}).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(within(nav).getByRole('button',{name:'挑战'}));expect(navigate).toHaveBeenCalledWith('/challenges');
+    expect(within(nav).getAllByRole('button')).toHaveLength(8);
+  });
   it('shows whole-coin expected recovery for fractional probability averages',async()=>{
     serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
     await screen.findByRole('heading',{name:'保险箱补给'});

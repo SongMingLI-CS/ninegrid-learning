@@ -22,6 +22,14 @@ beforeEach(()=>{
 });
 afterEach(()=>{cleanup();api.mockReset()});
 describe('server profile actions',()=>{
+ it('provides the complete account navigation from the profile',async()=>{
+  const navigate=vi.fn();render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={navigate}/>);
+  await screen.findByRole('heading',{name:'个人学习档案'});
+  const nav=screen.getByRole('navigation',{name:'账号功能导航'});
+  expect(within(nav).getByRole('button',{name:'个人主页'}).getAttribute('aria-current')).toBe('page');
+  expect(within(nav).getAllByRole('button')).toHaveLength(8);
+  fireEvent.click(within(nav).getByRole('button',{name:'仓库'}));expect(navigate).toHaveBeenCalledWith('/inventory');
+ });
  it('flushes the current answer before sending both lifecycle revisions and updates the application',async()=>{
   const flush=vi.fn(async()=>8),changed=vi.fn(async()=>{});
   render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}} onFlushSeason={flush} onLifecycleChanged={changed}/>);

@@ -33,3 +33,69 @@
   .wh-art { height:128px; }
   .wh-card-name { font-size:12px; }
 }
+
+/* Account warehouse: readable controls and item metadata at normal browser zoom. */
+.warehouse-page { font-size:15px; line-height:1.6; }
+.wh-brand { font-size:14px; }
+.wh-brand small { font-size:11px; }
+.wh-breadcrumb,.wh-account { font-size:13px; }
+.wh-intro h1 { font-size:32px; }
+.wh-intro p { max-width:72ch; font-size:15px; line-height:1.7; color:#bfcbc4; }
+.wh-kicker { font-size:12px; }
+.wh-metrics small,.wh-metrics span { font-size:13px; color:#b2c0b8; }
+.wh-metrics strong { font-size:26px; }
+.wh-metrics strong i { font-size:14px; }
+.wh-tabs button { font-size:15px; }
+.wh-tabs button span,.wh-total { font-size:12px; }
+.wh-controls>label { font-size:13px; color:#b8c5bd; }
+.wh-controls select,.wh-search input { min-height:42px; font-size:14px; }
+.wh-grid-heading strong { font-size:15px; }
+.wh-grid-heading small,.wh-card-meta,.wh-card-foot { font-size:13px; color:#b0bdb5; }
+.wh-bulk button,.wh-pagination { font-size:13px; }
+.wh-bulk button { min-height:40px; }
+.wh-card-name { font-size:15px; }
+.wh-card-flags i { font-size:12px; }
+.wh-art-ref { font-size:10px; }
+.wh-detail-title h2 { font-size:21px; }
+.wh-detail-desc { font-size:15px; line-height:1.7; }
+.wh-detail-tags span,.wh-detail-values dt,.wh-detail-values dd { font-size:13px; }
+.wh-detail-values dd small { font-size:12px; }
+.wh-source strong,.wh-source p,.wh-detail-actions button { font-size:14px; }
+.wh-detail-actions button { min-height:44px; }
+.wh-detail-empty strong,.wh-state strong { font-size:16px; }
+.wh-detail-empty p,.wh-state p,.wh-error,.wh-notice { font-size:14px; line-height:1.65; }
+.wh-sales h3 { font-size:16px; }
+.wh-sales small,.wh-sales p,.wh-sales li { font-size:13px; }
+.wh-sales li b { font-size:13px; }
+.wh-footer { font-size:11px; }
+.wh-modal { font-size:16px; }
+.wh-modal h2 { font-size:24px; }
+.wh-modal>p,.wh-modal li,.wh-modal-total { font-size:15px; line-height:1.65; }
+.wh-modal li b,.wh-modal-total strong { font-size:15px; }
+.wh-modal-actions button { min-height:44px; font-size:14px; }
+@media (min-width:1800px) {
+  .wh-grid { grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); }
+  .wh-card-open { min-height:280px; }
+  .wh-art { height:clamp(155px,8vw,210px); }
+}
+@media (max-width:600px) {
+  .wh-brand small { font-size:10px; }
+  .wh-breadcrumb,.wh-total { font-size:11px; }
+  .wh-intro h1 { font-size:26px; }
+  .wh-intro p { font-size:14px; }
+  .wh-metrics small,.wh-metrics span { font-size:12px; }
+  .wh-tabs button { font-size:13px; }
+  .wh-controls>label { font-size:12px; }
+  .wh-controls select,.wh-search input { font-size:13px; }
+  .wh-grid-heading strong,.wh-card-name { font-size:14px; }
+  .wh-card-meta,.wh-card-foot { font-size:12px; }
+  .wh-card-name,.wh-card-meta,.wh-card-foot span { white-space:normal; text-overflow:clip; }
+  .wh-bulk button,.wh-pagination { font-size:12px; }
+  .wh-detail-desc { font-size:14px; }
+  .wh-detail-values dt,.wh-detail-values dd,.wh-detail-actions button { font-size:13px; }
+  .wh-footer { font-size:10px; }
+}
+
+@media (min-width:1800px) {
+  .wh-workbench { grid-template-columns:minmax(0,1fr) minmax(390px,420px); gap:clamp(18px,1.4vw,32px); }
+}
