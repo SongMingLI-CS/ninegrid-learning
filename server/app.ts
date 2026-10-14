@@ -1,4 +1,5 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import express, { type Request, type Response } from 'express';
 import session from 'express-session';
@@ -47,7 +48,7 @@ const MAX_CONTEXT_LENGTH = 100_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 20;
 
-type Options = { apiKey?: string; model?: string; fetchImpl?: typeof fetch; youtubeApiKey?: string; youtubeFetchImpl?: typeof fetch; auth?: { pool: Pool; sessionSecret: string; secureCookie: boolean; appOrigin?: string } };
+type Options = { apiKey?: string; model?: string; fetchImpl?: typeof fetch; youtubeApiKey?: string; youtubeFetchImpl?: typeof fetch; accountUnavailableReason?: string; auth?: { pool: Pool; sessionSecret: string; secureCookie: boolean; appOrigin?: string } };
 type ErrorCode =
   | 'API_KEY_MISSING'
   | 'INVALID_REQUEST'
@@ -278,7 +279,21 @@ export function createApp(options: Options = {}) {
   }
 
   app.get('/api/status', (_req, res) => {
-    res.json({ configured: Boolean(configuredKey?.trim()), model: configuredModel, accounts: Boolean(options.auth), youtubeConfigured: Boolean((options.youtubeApiKey ?? process.env.YOUTUBE_API_KEY)?.trim()) });
+    const gitValue = (args: string[]) => {
+      const result = spawnSync('git', args, { cwd: process.cwd(), encoding: 'utf8', windowsHide: true });
+      return result.status === 0 ? result.stdout.trim() : '';
+    };
+    const commit = process.env.NINEGRID_COMMIT?.trim() || gitValue(['rev-parse', '--short=12', 'HEAD']) || 'unknown';
+    const branch = process.env.NINEGRID_BRANCH?.trim() || gitValue(['branch', '--show-current']) || 'detached';
+    const accounts = Boolean(options.auth);
+    res.json({
+      configured: Boolean(configuredKey?.trim()), model: configuredModel, accounts,
+      youtubeConfigured: Boolean((options.youtubeApiKey ?? process.env.YOUTUBE_API_KEY)?.trim()),
+      application: 'ninegrid-learning', version: '0.1.0', commit, branch,
+      environment: process.env.NODE_ENV ?? 'development', runtimeMode: accounts ? 'accounts' : 'local',
+      accountAvailability: accounts ? 'enabled' : options.accountUnavailableReason ?? 'not_configured',
+      aiMode: configuredKey?.trim() ? 'ready' : 'unconfigured',
+    });
   });
   if (options.auth) app.use('/api', requireAuthenticated);
   if (options.auth) mountArchiveRoutes(app, { pool: options.auth.pool });

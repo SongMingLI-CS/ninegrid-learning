@@ -48,6 +48,7 @@ export function AccountGate({ onAuthenticated }: { onAuthenticated(user: Account
           {[{icon:Target,title:'确定目标',text:'把学习需求编排成可执行的阶段'},{icon:BookOpen,title:'完成任务',text:'讲解、练习与独立挑战循序推进'},{icon:ShieldCheck,title:'验证成果',text:'保存真实作品，积累九格能力'}].map(({icon:Icon,title,text},i)=><div className="account-preview-row" key={title}><span className="account-preview-node"><Icon size={18}/></span><div><strong>{title}</strong><small>{text}</small></div><span className="account-preview-index">0{i+1}</span></div>)}
           <div className="account-preview-footer"><span><Check size={13}/>进度随账号保存</span><ChevronRight size={14}/></div>
         </div>
+        <nav className="account-feature-links" aria-label="登录后功能入口"><strong>登录后可直接进入</strong><div>{['今日学习','赛季','学习记录','复习','仓库','商城','挑战','个人主页'].map(label=><a key={label} href="#account-form-title">{label}<small>登录后开放</small></a>)}</div></nav>
         <div className="account-story-foot"><span>清晰任务</span><i/><span>主动练习</span><i/><span>长期成果</span></div>
       </section>
       <section className="account-card" aria-labelledby="account-form-title">

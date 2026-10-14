@@ -14,6 +14,8 @@ function response(body: unknown) { return new Response(JSON.stringify(body), { s
 function serve() {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === '/api/status') return response({ accounts: true, configured: false, model: 'deepseek-flash' });
+    if (url === '/api/auth/csrf') return response({ token: 'test-csrf-token' });
     if (url === '/api/inventory' && (!init?.method || init.method === 'GET')) return response(inventory);
     if (url === '/api/wallet') return response(wallet);
     if (url === '/api/seasons') return response(seasons);

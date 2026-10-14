@@ -1,0 +1,188 @@
+{
+  "capturedAt": "2026-10-14T10:40:10.760Z",
+  "source": "local development page http://127.0.0.1:5173/",
+  "report": [
+    {
+      "label": "mobile",
+      "cssViewport": {
+        "width": 390,
+        "height": 844
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 390,
+      "bodyFont": "16px",
+      "navFont": "16px",
+      "contentWidth": 366,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    },
+    {
+      "label": "tablet-portrait",
+      "cssViewport": {
+        "width": 768,
+        "height": 1024
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 768,
+      "bodyFont": "16px",
+      "navFont": "16px",
+      "contentWidth": 736,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    },
+    {
+      "label": "tablet-landscape",
+      "cssViewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 1024,
+      "bodyFont": "16px",
+      "navFont": "16px",
+      "contentWidth": 963,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    },
+    {
+      "label": "desktop",
+      "cssViewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 1366,
+      "bodyFont": "16px",
+      "navFont": "16px",
+      "contentWidth": 1284,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    },
+    {
+      "label": "4k-200-simulated-css",
+      "cssViewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 1920,
+      "bodyFont": "16px",
+      "navFont": "16px",
+      "contentWidth": 1766,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    },
+    {
+      "label": "4k-150-simulated-css",
+      "cssViewport": {
+        "width": 2560,
+        "height": 1440
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 2560,
+      "bodyFont": "17px",
+      "navFont": "17px",
+      "contentWidth": 2355,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    },
+    {
+      "label": "4k-100-simulated-css",
+      "cssViewport": {
+        "width": 3840,
+        "height": 2160
+      },
+      "devicePixelRatio": 1,
+      "visualViewportScale": 1,
+      "documentWidth": 3840,
+      "bodyFont": "17px",
+      "navFont": "17px",
+      "contentWidth": 3000,
+      "navigationLabels": [
+        "今日学习",
+        "赛季",
+        "学习区",
+        "学习记录",
+        "复习",
+        "仓库需账号",
+        "商城需账号",
+        "挑战需账号",
+        "个人主页需账号"
+      ],
+      "browserZoom": "100%",
+      "systemScaling": "simulated via CSS viewport only; not OS scaling"
+    }
+  ]
+}

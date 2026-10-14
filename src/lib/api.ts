@@ -2,10 +2,13 @@ let accountMode: Promise<boolean> | undefined;
 
 async function accountsEnabled(): Promise<boolean> {
   accountMode ??= fetch('/api/status', { credentials: 'same-origin' }).then(async response => {
-    if (!response.ok) return false;
+    if (!response.ok) throw new Error(`/api/status returned HTTP ${response.status}`);
     const status = await response.json() as { accounts?: unknown };
     return status.accounts === true;
-  }).catch(() => false);
+  }).catch(error => {
+    accountMode = undefined;
+    throw new Error(`Cannot determine server account mode: ${error instanceof Error ? error.message : 'connection failed'}`);
+  });
   return accountMode;
 }
 

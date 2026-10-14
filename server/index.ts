@@ -21,9 +21,14 @@ async function start() {
   const secureCookie = sessionCookieIsSecure(production, appOrigin);
   const pool = databaseUrl ? createPool(databaseUrl) : undefined;
   if (pool) await runMigrations(pool);
+  const accountUnavailableReason = !databaseUrl && !sessionSecret
+    ? 'missing_database_and_session_secret'
+    : !databaseUrl ? 'missing_database'
+      : !sessionSecret || sessionSecret.length < 32 ? 'missing_session_secret' : 'enabled';
   const app = createApp({
     ...(process.env.DEEPSEEK_API_KEY ? { apiKey: process.env.DEEPSEEK_API_KEY } : {}),
     ...(process.env.YOUTUBE_API_KEY ? { youtubeApiKey: process.env.YOUTUBE_API_KEY } : {}),
+    accountUnavailableReason,
     ...(pool && sessionSecret ? { auth: { pool, sessionSecret, secureCookie, appOrigin } } : {}),
   });
   const trustProxy = process.env.TRUST_PROXY?.trim();

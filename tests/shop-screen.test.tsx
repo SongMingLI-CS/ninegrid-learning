@@ -9,6 +9,8 @@ function response(body:unknown,status=200){return new Response(JSON.stringify(bo
 function serve(){
   vi.stubGlobal('fetch',vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
     const url=String(input);const body=init?.body?JSON.parse(String(init.body)):undefined;calls.push({url,body});
+    if(url==='/api/status')return response({accounts:true});
+    if(url==='/api/auth/csrf')return response({token:'test-csrf-token'});
     if(url==='/api/shop')return response({version:ECONOMY_VERSION,balance:2000000,boxes:Object.values(BOXES).map(box=>({...box,expectedRecovery:poolExpectedRecovery(box.pool),poolTotal:poolTotals(box.pool)})),operations:[]});
     if(url==='/api/inventory')return response({items:[],transactions:[]});
     if(url==='/api/shop/purchase')return response({purchase:{total:body.quantity*BOXES[body.boxId as keyof typeof BOXES].price},idempotent:false},201);

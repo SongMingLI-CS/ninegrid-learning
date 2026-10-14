@@ -30,6 +30,16 @@ function missionBase(id: string, prerequisites: string[] = []) {
 const provider = (value: unknown, finishReason = 'stop') => new Response(JSON.stringify({ choices: [{ finish_reason: finishReason, message: { content: typeof value === 'string' ? value : JSON.stringify(value) } }] }), { status: 200 });
 
 describe('DeepSeek boundary', () => {
+  it('exposes safe runtime mode and source version without disclosing configuration values', async () => {
+    const response = await request(createApp({ apiKey: '' })).get('/api/status');
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ application: 'ninegrid-learning', version: '0.1.0', runtimeMode: 'local', aiMode: 'unconfigured' });
+    expect(response.body.commit).toMatch(/^[0-9a-f]{12}$|^unknown$/);
+    expect(typeof response.body.branch).toBe('string');
+    expect(response.body).not.toHaveProperty('DATABASE_URL');
+    expect(response.body).not.toHaveProperty('SESSION_SECRET');
+  });
+
   it('keeps static application assets available when a browser visits through an origin alias', async () => {
     const oldNodeEnv = process.env.NODE_ENV;
     const oldAppOrigin = process.env.APP_ORIGIN;
