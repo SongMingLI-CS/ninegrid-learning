@@ -198,6 +198,7 @@ function createMainWindow() {
   });
   mainWindow = win;
   win.on('close', event => {
+    if (allowQuit) return;
     if (!closeGate.shouldIntercept()) return;
     event.preventDefault();
     if (!win.isDestroyed()) win.webContents.send('ninegrid:request-close');
@@ -675,6 +676,8 @@ if (!singleton) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    allowQuit = false;
+    closeGate.reset();
     if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
     else if (startupWindow && !startupWindow.isDestroyed()) { if (startupWindow.isMinimized()) startupWindow.restore(); startupWindow.focus(); }
     else { createStartupWindow(); void startRuntime(); }

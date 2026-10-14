@@ -7,6 +7,7 @@ function createCloseGate() {
       return false;
     },
     approveOnce() { approved = true; },
+    reset() { approved = false; },
   };
 }
 
