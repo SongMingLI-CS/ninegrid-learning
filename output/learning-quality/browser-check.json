@@ -30,6 +30,12 @@
       "larger live browser viewport sizes in this run"
     ]
   },
+  "postCommitRefresh": {
+    "displayedCommit": "2e317781d312",
+    "accountSessionRestored": true,
+    "seasonRestored": "NumPy 数据准备行动",
+    "continueLearningRestoredTask": "建立测量样本：从 Python 列表创建数组"
+  },
   "screenshots": [
     "profile-account.jpg",
     "warehouse-account.jpg",
