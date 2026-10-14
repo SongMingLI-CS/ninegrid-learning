@@ -105,6 +105,17 @@ describe('versioned NumPy curriculum', () => {
     expect(validateCurriculumOutline(normalized, { days: 28, dailyMinutes: 60 })).toBe(true);
   });
 
+  it('moves readable but non-ID task prerequisites into course prerequisites and keeps valid task edges', () => {
+    const input = outlineFixture() as unknown as Record<string, any>;
+    input.stages[0].mainline[1].prerequisites = ['s0-m0', 'Python 嵌套列表', '能读懂 shape 输出'];
+    const normalized = normalizeGeneratedCurriculumOutline(input) as any;
+    expect(normalized.stages[0].mainline[1].prerequisites).toEqual(['s0-m0']);
+    expect(normalized.prerequisites).toContain('Python 嵌套列表');
+    expect(normalized.prerequisites).toContain('能读懂 shape 输出');
+    expect(curriculumOutlineSchema.safeParse(normalized).success).toBe(true);
+    expect(validateCurriculumOutline(normalized, { days: 28, dailyMinutes: 60 })).toBe(true);
+  });
+
   it('checks actual mainline, review, and in-cycle branch minutes as one budget', () => {
     const outline = outlineFixture();
     for (const stage of outline.stages) {

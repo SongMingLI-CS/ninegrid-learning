@@ -27,6 +27,7 @@ export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
     ? candidate.prerequisites.split(/[;；\n]+/u).map(item => item.trim()).filter(Boolean)
     : candidate.prerequisites;
   if (!Array.isArray(candidate.stages)) return { ...candidate, prerequisites };
+  const coursePrerequisites = Array.isArray(prerequisites) ? [...prerequisites] : prerequisites;
   const normalizePhrase = (phrase: string) => phrase.normalize('NFKC').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
   const externalPrerequisites = Array.isArray(prerequisites) ? prerequisites.filter((item): item is string => typeof item === 'string').map(normalizePhrase) : [];
   const stages = candidate.stages as Array<Record<string, unknown>>;
@@ -34,6 +35,7 @@ export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
     ...(Array.isArray(stage.mainline) ? stage.mainline as Array<Record<string, unknown>> : []),
     ...(Array.isArray(stage.branches) ? (stage.branches as Array<Record<string, unknown>>).flatMap(branch => Array.isArray(branch.tasks) ? branch.tasks as Array<Record<string, unknown>> : []) : []),
   ]);
+  const generatedTaskIds = new Set(tasks.flatMap(task => typeof task.id === 'string' ? [task.id] : []));
   const byPhrase = new Map<string, string>();
   const ambiguous = new Set<string>();
   for (const task of tasks) {
@@ -51,8 +53,14 @@ export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
     const next = task.prerequisites.flatMap((dependency): string[] => {
       if (typeof dependency !== 'string') return [dependency as string];
       const key = normalizePhrase(dependency);
+      if (generatedTaskIds.has(dependency)) return [dependency];
       if (byPhrase.has(key)) return [byPhrase.get(key)!];
       if (dependency.length >= 5 && externalPrerequisites.some(item => item.length >= 5 && (item.includes(key) || key.includes(item)))) return [];
+      const isReadablePrerequisite = /[\s\p{P}\p{S}]/u.test(dependency) || /[A-Za-z]/u.test(dependency) && /\p{Script=Han}/u.test(dependency);
+      if (isReadablePrerequisite && Array.isArray(coursePrerequisites) && !coursePrerequisites.some(item => typeof item === 'string' && normalizePhrase(item) === key)) {
+        coursePrerequisites.push(dependency);
+        return [];
+      }
       return [dependency];
     });
     return { ...task, prerequisites: next };
@@ -62,7 +70,7 @@ export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
     ...(Array.isArray(stage.mainline) ? { mainline: (stage.mainline as Array<Record<string, unknown>>).map(normalizeTask) } : {}),
     ...(Array.isArray(stage.branches) ? { branches: (stage.branches as Array<Record<string, unknown>>).map(branch => ({ ...branch, ...(Array.isArray(branch.tasks) ? { tasks: (branch.tasks as Array<Record<string, unknown>>).map(normalizeTask) } : {}) })) } : {}),
   }));
-  return { ...candidate, prerequisites, stages: normalizedStages };
+  return { ...candidate, prerequisites: coursePrerequisites, stages: normalizedStages };
 }
 
 /** Repair a hallucinated standalone gate ID only when its actual final mainline task is explicitly a synthesis or assessment. */
