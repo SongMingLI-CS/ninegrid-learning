@@ -411,6 +411,21 @@ describe('curriculum orchestration endpoints', () => {
     expect(response.body.lesson.challenge.prompt).toContain('新短文');
     expect(response.body.lesson.challenge.rubric).toEqual(task.objectives.map(objective => objective.text));
   });
+  it('rejects a transfer prompt that changes a task-required matrix shape', async () => {
+    const campaign = structuredClone(generated);
+    const task = campaign.stages[0].tasks[0];
+    task.title = '预测 NumPy 2×3 数组结果';
+    task.brief = '对 2×3 整数矩阵预测 shape、dtype 和 axis 求和结果。';
+    Object.assign(task, { deliverable: '提供 2×3 矩阵的可运行验证代码和结果解释。' });
+    task.objectives = [{ id: 'shape', text: '正确说明 2×3 整数矩阵的 shape 和轴求和。' }];
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({
+      ...lesson,
+      challenge: { ...lesson.challenge, prompt: '新挑战：对 2×4 整数矩阵预测 shape、dtype 和 axis 求和结果。' },
+    }) }))
+      .post('/api/lesson').send({ campaign, taskId: task.id, language: 'mixed', revision: 2, transferChallenge: true });
+    expect(response.status).toBe(502);
+    expect(response.body.code).toBe('INVALID_AI_OUTPUT');
+  });
   it('passes a relevant material excerpt and exact omission notice into a long-course lesson', async () => {
     let sent: any;
     const campaign = structuredClone(generated) as any;

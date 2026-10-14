@@ -8,6 +8,12 @@ export function taskChallengeContract(task: Pick<Task, 'title' | 'brief' | 'deli
   };
 }
 
+export function preservesExplicitMatrixShapes(task: Pick<Task, 'title' | 'brief' | 'deliverable' | 'objectives'>, prompt: string): boolean {
+  const contract = [task.title, task.brief, task.deliverable, ...task.objectives.map(objective => objective.text)].join('\n');
+  const shapes = [...contract.matchAll(/(\d+)\s*[×xX]\s*(\d+)/g)].map(match => [match[1], match[2]] as const);
+  return shapes.every(([rows, columns]) => new RegExp(`(^|\\D)${rows}\\s*[×xX]\\s*${columns}(?!\\d)`).test(prompt));
+}
+
 export function usesCodeExample(task: Pick<Task, 'title' | 'brief' | 'knowledgePoints'>): boolean {
   return /\b(numpy|python|array|ndarray|code|program|script|terminal|sql|function|variable|axis|dtype)\b/i.test(`${task.title} ${task.brief} ${(task.knowledgePoints ?? []).join(' ')}`);
 }
