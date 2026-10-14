@@ -56,6 +56,6 @@
 
 ### Task 5: Commit and push
 
-- [ ] Review the full diff and verification evidence.
-- [ ] Commit all intended changes on `codex/learning-loop-fixes` and push that branch.
-- [ ] Verify the resulting SHA, upstream equality, and clean worktree.
+- [x] Review the full diff and verification evidence.
+- [x] Commit all intended changes on `codex/learning-loop-fixes` and push that branch.
+- [x] Verify the resulting SHA, upstream equality, and clean worktree.
