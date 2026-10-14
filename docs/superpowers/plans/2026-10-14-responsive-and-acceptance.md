@@ -75,4 +75,4 @@ This follow-up starts from the pushed SHA above and is recorded in [real-browser
 - [ ] User-confirmed browser transaction steps: purchase the small cache, open it, inspect and lock an item, then sell an eligible item and inspect the ledger/balance. Browser policy requires the user to perform the final purchase and sale actions; the test browser remains at the purchase confirmation.
 - [ ] Isolated remote HTTPS deployment remains conditional on a non-secret test hostname/site configuration and sufficient server resources; the Ubuntu host remains unchanged.
 - [ ] Physical Windows 4K scaling and local screenshot-file export remain unavailable in this environment. The previous CSS-viewport simulation remains documented separately.
-- [ ] Commit/push this follow-up to `codex/learning-loop-fixes`, without merging `main`.
+- [x] Commit/push this follow-up to `codex/learning-loop-fixes`, without merging `main`.
