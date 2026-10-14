@@ -12,7 +12,7 @@ Each exact prompt is the prefix above followed by `Catalog name: <name>. Subject
 
 ## Per-ID records
 
-Resumed after second user interruption with 10/57 objects imported (large-gold-07..15 and small-red-08), 20 WebP outputs, 581,374 bytes. small-red-07 first attempt failed with `image generation failed: connection failed: error sending request`; no source or output was produced for that attempt. It will be retried on resume. small-red-08 finished during interruption and was inspected from its saved PNG. Per-ID status below is authoritative for subsequent progress.
+Historical batch status: all 57 assigned IDs have since been completed and imported. Across the five rarity batches, all 155 catalog entries now have distinct detail and thumbnail WebP files. The per-ID notes below preserve the import history and are not a list of outstanding items.
 
 ### large-gold-07 — 高能密封电池
 

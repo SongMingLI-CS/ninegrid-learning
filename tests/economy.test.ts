@@ -1,5 +1,7 @@
 import { describe,expect,it } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync,readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import sharp from 'sharp';
 import { CATALOG_RARITY_COUNTS,COLLECTION_CATALOG,GENERATED_CATALOG_IMAGE_IDS } from '../shared/catalog';
 import { BOXES,CHALLENGES,chainCompletionCoins,formatHafverCoins,learningCoinsForMinutes,poolExpectedRecovery,poolTotals,validateEconomy } from '../shared/economy';
 
@@ -11,13 +13,24 @@ describe('versioned economy rules',()=>{
     const ranges:Record<string,[number,number]>={'small-purple':[20_000,80_000],'small-gold':[100_000,300_000],'large-gold':[400_000,900_000],'small-red':[600_000,1_000_000],'large-red':[1_000_000,2_000_000]};
     for(const [rarity,[min,max]] of Object.entries(ranges)){const items=COLLECTION_CATALOG.filter(item=>item.rarity===rarity);expect(Math.min(...items.map(item=>item.displayValue))).toBe(min);expect(Math.max(...items.map(item=>item.displayValue))).toBe(max);}
   });
-  it('ships a distinct detail image and thumbnail for every catalog item',()=>{
+  it('ships distinct, decodable detail images and thumbnails for every catalog item',async()=>{
     expect(GENERATED_CATALOG_IMAGE_IDS.size).toBe(COLLECTION_CATALOG.length);
+    const detailHashes=new Set<string>();
+    const thumbnailHashes=new Set<string>();
     for(const item of COLLECTION_CATALOG){
       expect(GENERATED_CATALOG_IMAGE_IDS.has(item.id),item.id).toBe(true);
-      expect(existsSync(`public/assets/catalog/items/${item.id}.webp`),`${item.id} detail`).toBe(true);
-      expect(existsSync(`public/assets/catalog/thumbs/${item.id}.webp`),`${item.id} thumbnail`).toBe(true);
+      const detail=`public/assets/catalog/items/${item.id}.webp`;
+      const thumbnail=`public/assets/catalog/thumbs/${item.id}.webp`;
+      expect(existsSync(detail),`${item.id} detail`).toBe(true);
+      expect(existsSync(thumbnail),`${item.id} thumbnail`).toBe(true);
+      const [detailMetadata,thumbnailMetadata]=await Promise.all([sharp(detail).metadata(),sharp(thumbnail).metadata()]);
+      expect([detailMetadata.format,detailMetadata.width,detailMetadata.height],`${item.id} detail metadata`).toEqual(['webp',768,768]);
+      expect([thumbnailMetadata.format,thumbnailMetadata.width,thumbnailMetadata.height],`${item.id} thumbnail metadata`).toEqual(['webp',220,220]);
+      detailHashes.add(createHash('sha256').update(readFileSync(detail)).digest('hex'));
+      thumbnailHashes.add(createHash('sha256').update(readFileSync(thumbnail)).digest('hex'));
     }
+    expect(detailHashes.size,'unique detail images').toBe(COLLECTION_CATALOG.length);
+    expect(thumbnailHashes.size,'unique thumbnails').toBe(COLLECTION_CATALOG.length);
   });
   it('validates exact full-pool recovery expectation below each box price',()=>{
     const result=validateEconomy();

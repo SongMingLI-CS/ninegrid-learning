@@ -4,9 +4,9 @@ Assigned scope: `small-purple-07..45` (39 objects) and `small-gold-07..35` (29 o
 
 Import command: `node scripts/import-generated-collection-art.mjs <source.png> <id>`; outputs are `public/assets/catalog/items/<id>.webp` (768×768) and `public/assets/catalog/thumbs/<id>.webp` (220×220).
 
-Progress: 24 / 68 imported. Pending prompts are prepared, not a claim of generation. Imported images were visually inspected for recognizable subject, square composition, realistic materials, charcoal background, and absence of readable text or logos.
+Historical batch status: all 68 assigned IDs have since been completed and imported. Across the five rarity batches, all 155 catalog entries now have distinct detail and thumbnail WebP files. The current source of truth is `shared/catalog.ts` plus the per-file integrity regression in `tests/economy.test.ts`; the progress notes below describe the import history at the time they were written, not outstanding work.
 
-Resumed after temporary interruption. The first small-purple-16 request failed with a connection error; the user authorized one retry. Remaining IDs continue in batches of four independent built-in calls.
+Historical note: `small-purple-16` initially hit a connection error and was successfully generated on the authorized retry. There are no pending IDs in this batch.
 
 
 ## small-purple-07 — 储存芯片
