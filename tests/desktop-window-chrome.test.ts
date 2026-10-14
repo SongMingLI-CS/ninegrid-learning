@@ -93,6 +93,8 @@ describe('Electron title bar chrome', () => {
     expect(read('src/styles-overrides.css')).toContain('html.ninegrid-desktop');
     expect(read('index.html')).toContain('ninegrid-titlebar-host.css');
     expect(hostCss).not.toMatch(/\n\.brand\s*\{/);
+    expect(hostCss).toContain('.account-entry .account-header { display: none; }');
+    expect(read('src/components/AccountGate.tsx')).toContain('路线 / 01');
     expect(main.match(/windowChromeOptions\(\)/g)).toHaveLength(3);
     expect(main).toContain('Menu.setApplicationMenu(null)');
   });

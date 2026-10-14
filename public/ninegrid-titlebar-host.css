@@ -26,3 +26,4 @@ html.ninegrid-desktop .app-header .topbar-actions { margin-left: 0; }
 html.ninegrid-desktop .main-nav { flex-wrap: nowrap; }
 html.ninegrid-desktop .main-nav .nav-link { min-height: 42px; }
 html.ninegrid-desktop .account-gate { min-height: calc(100vh - env(titlebar-area-height, 44px)); }
+html.ninegrid-desktop .account-entry .account-header { display: none; }

@@ -44,7 +44,7 @@ export function AccountGate({ onAuthenticated }: { onAuthenticated(user: Account
         <h1 id="account-story-title">把想学的，<br/>变成<span>真正会的。</span></h1>
         <p className="account-story-copy">从一个明确目标出发。沿着主线深入，在支线中探索，<br className="account-desktop-break"/>用独立完成的作品，留下属于你的能力成果。</p>
         <div className="account-route-preview" aria-label="学习路线功能预览">
-          <div className="account-preview-head"><span><Layers3 size={14}/>学习路线预览</span><span>SEASON / 01</span></div>
+          <div className="account-preview-head"><span><Layers3 size={14}/>学习路线预览</span><span>路线 / 01</span></div>
           {[{icon:Target,title:'确定目标',text:'把学习需求编排成可执行的阶段'},{icon:BookOpen,title:'完成任务',text:'讲解、练习与独立挑战循序推进'},{icon:ShieldCheck,title:'验证成果',text:'保存真实作品，积累九格能力'}].map(({icon:Icon,title,text},i)=><div className="account-preview-row" key={title}><span className="account-preview-node"><Icon size={18}/></span><div><strong>{title}</strong><small>{text}</small></div><span className="account-preview-index">0{i+1}</span></div>)}
           <div className="account-preview-footer"><span><Check size={13}/>进度随账号保存</span><ChevronRight size={14}/></div>
         </div>
