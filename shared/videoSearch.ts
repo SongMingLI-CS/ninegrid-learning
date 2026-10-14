@@ -19,9 +19,16 @@ export function buildTaskVideoQuery(task: VideoTopic, language: 'en' | 'zh' | 'm
       words.push(word);
     }
   }
+  // Keep concrete parameter forms (for example axis=0/axis=1) without also
+  // repeating the same bare token in the query.
+  const qualifiedBases = new Set(words.flatMap(word => {
+    const match = /^([A-Za-z][A-Za-z0-9_.-]*)=\d+(?:\.\d+)?$/u.exec(word);
+    return match ? [match[1].toLocaleLowerCase('en')] : [];
+  }));
   const suffix = language === 'zh' ? '中文教程' : 'tutorial';
   const topic: string[] = [];
   for (const word of words) {
+    if (qualifiedBases.has(word.toLocaleLowerCase('en'))) continue;
     if (word.toLowerCase() === suffix.toLowerCase()) continue;
     if (topic.length >= 12) break;
     if ([...topic, word, suffix].join(' ').length > 100) continue;

@@ -11,7 +11,7 @@ describe('YouTube candidate verification', () => {
     const repeated = { ...task, knowledgePoints: ['NumPy axis reductions', 'axis=0 axis=1 shape'],
       brief: 'NumPy axis reductions '.repeat(30), acceptance: 'Submit code, screenshots, explanation and a grading checklist.' };
     const result = await searchTaskVideos(repeated, { apiKey: '', budgetMinutes: 20, language: 'en' });
-    expect(result.query).toBe('NumPy axis reductions axis=0 axis=1 shape tutorial');
+    expect(result.query).toBe('NumPy reductions axis=0 axis=1 shape tutorial');
     expect(new URL(result.searchUrl).searchParams.get('search_query')).toBe(result.query);
     expect(result.query).toBe(buildTaskVideoQuery(repeated, 'en'));
     expect(result.query).not.toMatch(/Submit|screenshots|checklist|Predict/);
