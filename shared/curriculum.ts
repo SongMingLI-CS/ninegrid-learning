@@ -20,6 +20,33 @@ export const curriculumOutlineSchema = z.object({
 export type CurriculumOutline = z.infer<typeof curriculumOutlineSchema>;
 export type OutlineTask = z.infer<typeof outlineTaskSchema> & { track: 'main' | 'branch'; chainId: string };
 
+export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.prerequisites !== 'string') return value;
+  const prerequisites = candidate.prerequisites.split(/[;；\n]+/u).map(item => item.trim()).filter(Boolean);
+  return { ...candidate, prerequisites };
+}
+
+/** Repair a hallucinated standalone gate ID only when its actual final mainline task is explicitly a synthesis or assessment. */
+export function normalizeMissingStageGates(outline: CurriculumOutline): CurriculumOutline | null {
+  const taskIds = new Set(outline.stages.flatMap(stage => [
+    ...stage.mainline.map(task => task.id),
+    ...stage.branches.flatMap(branch => branch.tasks.map(task => task.id)),
+  ]));
+  let changed = false;
+  const stages = outline.stages.map(stage => {
+    if (taskIds.has(stage.gateTaskId)) return stage;
+    const finalTask = stage.mainline.at(-1);
+    if (!finalTask || !/(综合|阶段|终局|最终).{0,8}(验收|测评|小测|考核)|(?:验收|测评|小测|考核).{0,8}(综合|阶段|终局|最终)/u.test(finalTask.title)) return stage;
+    changed = true;
+    return { ...stage, gateTaskId: finalTask.id };
+  });
+  if (!changed) return null;
+  if (stages.some(stage => !taskIds.has(stage.gateTaskId))) return null;
+  return { ...outline, stages };
+}
+
 export interface CurriculumBudgetPlan {
   feasible: boolean;
   totalMinutes: number;

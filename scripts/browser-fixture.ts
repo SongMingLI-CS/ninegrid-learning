@@ -28,7 +28,7 @@ const pgPort=await freePort(),webPort=Number(process.env.NINEGRID_BROWSER_PORT)|
 const testBalance=Number(process.env.NINEGRID_BROWSER_SEED_BALANCE??0);
 const aiBudget=Number(process.env.NINEGRID_BROWSER_AI_BUDGET??10);
 if(!Number.isSafeInteger(testBalance)||testBalance<0||testBalance>10_000_000)throw new Error('NINEGRID_BROWSER_SEED_BALANCE must be an isolated test balance from 0 to 10000000');
-if(!Number.isSafeInteger(aiBudget)||aiBudget<1||aiBudget>14)throw new Error('NINEGRID_BROWSER_AI_BUDGET must be between 1 and 14');
+if(!Number.isSafeInteger(aiBudget)||aiBudget<1||aiBudget>55)throw new Error('NINEGRID_BROWSER_AI_BUDGET must be between 1 and 55');
 const secretFile=join(root,'test-password');await writeFile(secretFile,dbPassword,{mode:0o600});
 try{await execute(join(bin,`initdb${ext}`),['-D',join(root,'cluster'),'-U','postgres','--auth=scram-sha-256','--pwfile',secretFile,'--encoding=UTF8','--locale=C'],{cwd:root});}finally{await unlink(secretFile);}
 const processPg=spawn(join(bin,`postgres${ext}`),['-D',join(root,'cluster'),'-p',String(pgPort),'-c','listen_addresses=127.0.0.1','-c','shared_buffers=32MB'],{cwd:root,windowsHide:true,stdio:'ignore'});

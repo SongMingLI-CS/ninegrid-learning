@@ -69,7 +69,7 @@ describe('DeepSeek boundary', () => {
       return provider(generated);
     };
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl })).post('/api/generate').send({ input });
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.campaign.title).toBe('路径追踪行动');
     expect(res.body.campaign.source).toBe('deepseek');
     expect(res.body.campaign.id).not.toBe('server-ignores-this');
@@ -104,6 +104,13 @@ describe('DeepSeek boundary', () => {
     expect(res.body.evaluation.passed).toBe(false);
     expect(res.body.evaluation.gaps).toEqual(['路径表示位置']);
     expect(res.body.verification).toBe('ai');
+  });
+  it('returns assisted feedback rather than independent mastery after an answer has been exposed', async () => {
+    const evaluation = { passed: true, score: 95, feedback: '答案内容符合标准。', gaps: [], nextStep: '换题练习。' };
+    const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(evaluation) })).post('/api/evaluate').send({ task: mission('t0'), evidence: '完成代码并给出了运行输出和解释，数组形状为三行两列。', verificationSource: 'ai', challenge: { revision: 1, prompt: '本题', rubric: ['输出与解释'], hintLevelsUsed: 0, answerRevealed: true } });
+    expect(res.status).toBe(200);
+    expect(res.body.evaluation.passed).toBe(true);
+    expect(res.body.independent).toBe(false);
   });
 });
 
@@ -148,9 +155,9 @@ describe('curriculum orchestration endpoints', () => {
   const lesson = {
     purpose: 'Use ndarray shape to predict a result before running code.', explanation: 'An ndarray stores values in dimensions. shape reports each dimension size.',
     terms: [{ en: 'shape', zh: '形状', context: 'A 2 by 3 array has shape (2, 3).' }],
-    example: { prompt: 'Inspect a small array.', code: 'a = np.array([[1, 2], [3, 4]])\nprint(a.shape)', walkthrough: 'There are two rows and two columns, so the shape is (2, 2).' },
+    example: { kind: 'code', prompt: 'Inspect a small array.', content: 'a = np.array([[1, 2], [3, 4]])\nprint(a.shape)', walkthrough: 'There are two rows and two columns, so the shape is (2, 2).' },
     guidedPractice: { prompt: 'Predict the shape of a 2x3 array.', expected: '(2, 3)', hint: 'Count rows, then columns.' },
-    challenge: { prompt: 'Create a 3x2 array and explain its shape.', acceptance: 'Runnable code and a correct dimension explanation.', hints: ['Start with nested lists.'] },
+    challenge: { prompt: 'Do four True/False/Not Given questions and quote their answers.', rubric: ['State the task output and explain your method.'], referenceAnswer: 'Expected array has three rows and two columns.', hints: ['Start from the requested deliverable.'] },
     language: 'mixed', generatedAt: '2026-10-13T00:00:00.000Z', revision: 1,
   };
   const schedule = { date: '2026-10-13', theme: 'Predict NumPy shapes, then verify independently.', items: [
@@ -189,6 +196,7 @@ describe('curriculum orchestration endpoints', () => {
       const prompt = payload.messages[0].content as string;
       if (prompt.includes('concise version-4 curriculum outline')) {
         calls.push('outline');
+        expect(payload.max_tokens).toBe(8192);
         const context = JSON.parse(payload.messages[1].content);
         expect(context.input.sourceMaterial).toBeUndefined();
         expect(context.sourceMaterialExcerpt).toContain('nested list');
@@ -234,6 +242,43 @@ describe('curriculum orchestration endpoints', () => {
     expect(finalResponse.body.campaign.stages[0].tasks[0].title).toBe('Create one array');
   });
 
+  it('raises the provider output ceiling for a long outline without changing the regular request ceiling', async () => {
+    let maxTokens = 0;
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
+      maxTokens = JSON.parse(String(options?.body)).max_tokens;
+      return provider({});
+    } })).post('/api/generation/outline').send({ input: { ...input, days: 28, dailyMinutes: 60 } });
+    expect(response.status).toBe(502);
+    expect(maxTokens).toBe(16_384);
+  });
+
+  it('maps conventionalized model task IDs only when stage prefix and numeric identities preserve the planned order', async () => {
+    const outline = structuredClone(shortOutline);
+    outline.stages[0].id = 'S1';
+    outline.stages[0].gateTaskId = 'S1T2';
+    outline.stages[0].mainline[0].id = 'S1T1';
+    outline.stages[0].mainline[1].id = 'S1T2';
+    outline.stages[0].mainline[1].prerequisites = ['S1T1'];
+    outline.nineGrid.forEach(grid => { grid.taskIds = ['S1T1', 'S1T2']; });
+    const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
+      const payload = JSON.parse(String(options?.body));
+      const tasks = JSON.parse(payload.messages[1].content).stage.tasks;
+      const generated = stageDetails(tasks.map((_task: unknown, index: number) => `S1-${String(index + 1).padStart(2, '0')}`));
+      generated.tasks = generated.tasks.map(task => ({ ...task, acceptance: ['提交可运行代码。', '核对实际输出。'] as unknown as string }));
+      return provider(generated);
+    } })).post('/api/generation/stage').send({ input: shortInput, outline, stageId: 'S1', chainId: 'S1-main', taskIds: ['S1T1','S1T2'] });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.tasks.map((task: { id: string }) => task.id)).toEqual(['S1T1','S1T2']);
+    expect(res.body.tasks[0].acceptance).toBe('提交可运行代码。\n核对实际输出。');
+
+    const reordered = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
+      const tasks = JSON.parse(JSON.parse(String(options?.body)).messages[1].content).stage.tasks;
+      return provider(stageDetails(tasks.map((_task: unknown, index: number) => `S1-${String(2 - index).padStart(2, '0')}`)));
+    } })).post('/api/generation/stage').send({ input: shortInput, outline, stageId: 'S1', chainId: 'S1-main', taskIds: ['S1T1','S1T2'] });
+    expect(reordered.status).toBe(502);
+    expect(reordered.body.code).toBe('INVALID_AI_OUTPUT');
+  });
+
   it('returns an actionable budget mismatch instead of treating an underfilled course as a generic schema error', async () => {
     let providerCalls = 0;
     const overlongShortOutline = structuredClone(shortOutline);
@@ -255,7 +300,13 @@ describe('curriculum orchestration endpoints', () => {
     expect(res.body.lesson.explanation).toContain('shape');
     expect(sent.messages[0].content).toMatch(/untrusted/i);
     expect(sent.messages[0].content).toMatch(/JSON/i);
+    expect(sent.messages[0].content).toMatch(/same task|exactly the supplied task/i);
     expect(sent.messages[1].content).toContain('调查变量与文件路径');
+    expect(res.body.lesson.challenge.prompt).toContain(generated.stages[0].tasks[0].brief);
+    expect(res.body.lesson.challenge.rubric).toEqual(generated.stages[0].tasks[0].objectives.map((objective: any) => objective.text));
+    expect(res.body.lesson.challenge.referenceAnswer).toBe('Expected array has three rows and two columns.');
+    expect(res.body.lesson.challenge.acceptance).toBeUndefined();
+    expect(res.body.lesson.challenge.prompt).not.toContain('True/False/Not Given');
   });
   it('accepts a compact single-task lesson request without sending the whole campaign to the provider', async () => {
     let sent: any;
@@ -266,6 +317,39 @@ describe('curriculum orchestration endpoints', () => {
     const userPrompt = sent.messages[1].content as string;
     expect(userPrompt).toContain(task.id);
     expect(userPrompt).not.toContain(generated.stages[0].tasks[1].id);
+  });
+  it('keeps learner rubric tied to the task and separates the hidden reference answer', async () => {
+    let sent: any;
+    const campaign = structuredClone(generated);
+    const task = campaign.stages[0].tasks[0];
+    task.title = 'IELTS main idea and evidence';
+    task.brief = 'Write one main-idea sentence and quote one sentence that supports it.';
+    task.acceptance = 'Both parts are relevant and the quote exactly matches the passage.';
+    task.objectives = [{ id: 'find-main-idea', text: 'State the central idea in your own words.' }, { id: 'locate-evidence', text: 'Quote a sentence and explain its relevance.' }];
+    const leaked = 'The answer is “False”; the evidence is sentence four.';
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => { sent = JSON.parse(String(options?.body)); return provider({ ...lesson, challenge: { ...lesson.challenge, prompt: 'Four True/False/Not Given questions', referenceAnswer: leaked, rubric: ['False: sentence four'] } }); } }))
+      .post('/api/lesson').send({ campaign, taskId: task.id, language: 'en' }).expect(200);
+    expect(sent.messages[0].content).toMatch(/same.*task|task.*requirements/i);
+    expect(response.body.lesson.challenge).toMatchObject({ prompt: expect.stringContaining(task.brief), rubric: task.objectives.map(objective => objective.text), referenceAnswer: leaked });
+    expect(response.body.lesson.challenge.rubric.join(' ')).not.toContain('sentence four');
+    expect(response.body.lesson.example.kind).toBe('text');
+  });
+  it('adds server lesson version metadata and accepts a single model rubric placeholder', async () => {
+    const { generatedAt: _generatedAt, revision: _revision, ...modelLesson } = lesson;
+    const task = generated.stages[0].tasks[0];
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({ ...modelLesson, challenge: { ...modelLesson.challenge, rubric: 'Show the requested output.' } }) }))
+      .post('/api/lesson').send({ campaign: generated, taskId: task.id, language: 'mixed', revision: 7 }).expect(200);
+    expect(response.body.lesson.generatedAt).toMatch(/^2026-/);
+    expect(response.body.lesson.revision).toBe(7);
+    expect(response.body.lesson.challenge.rubric).toEqual(task.objectives.map(objective => objective.text));
+  });
+  it('creates a versioned transfer prompt while keeping the exact original task rubric', async () => {
+    const task = generated.stages[0].tasks[0];
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({ ...lesson, challenge: { ...lesson.challenge, prompt: '新短文：一项城市交通研究。写出作者的主张，引用一句证据，并说明支持关系。' } }) }))
+      .post('/api/lesson').send({ campaign: generated, taskId: task.id, language: 'mixed', revision: 2, transferChallenge: true }).expect(200);
+    expect(response.body.lesson.revision).toBe(2);
+    expect(response.body.lesson.challenge.prompt).toContain('新短文');
+    expect(response.body.lesson.challenge.rubric).toEqual(task.objectives.map(objective => objective.text));
   });
   it('passes a relevant material excerpt and exact omission notice into a long-course lesson', async () => {
     let sent: any;

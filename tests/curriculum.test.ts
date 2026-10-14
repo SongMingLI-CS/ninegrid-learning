@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { campaignSchema } from '../shared/schema';
-import { curriculumOutlineSchema, validateCurriculumOutline } from '../shared/curriculum';
+import { curriculumOutlineSchema, normalizeGeneratedCurriculumOutline, normalizeMissingStageGates, validateCurriculumOutline } from '../shared/curriculum';
 import { planCurriculumBudget } from '../shared/curriculum';
 import { createProgressForCampaign, isTaskUnlocked, recordGridOutcome } from '../src/lib/engine';
 
@@ -69,6 +69,30 @@ describe('versioned NumPy curriculum', () => {
     expect(validateCurriculumOutline(branchOnlyGrid, { days:28, dailyMinutes:60 })).toBe(false);
     const shortGoal = { ...underfilled, stages: [{ ...underfilled.stages[0], mainline: [underfilled.stages[0].mainline[0]], gateTaskId: underfilled.stages[0].mainline[0].id, branches: [] }], nineGrid: outline.nineGrid.map(grid => ({ ...grid, taskIds: [`s0-m0`] })), densityRationale:'仅有两天预算，本路线只保留最关键主线能力。' };
     expect(validateCurriculumOutline(shortGoal, { days:2, dailyMinutes:15 })).toBe(false);
+  });
+
+  it('binds a clearly named final synthesis task when the model invents a separate gate ID', () => {
+    const outline = outlineFixture();
+    outline.stages.forEach((stage, index) => {
+      stage.gateTaskId = `s${index}-G1`;
+      stage.mainline.at(-1)!.title = `阶段综合验收 ${index + 1}`;
+    });
+    const normalized = normalizeMissingStageGates(outline);
+    expect(normalized).not.toBe(outline);
+    expect(normalized?.stages.map(stage => stage.gateTaskId)).toEqual(outline.stages.map(stage => stage.mainline.at(-1)!.id));
+    expect(validateCurriculumOutline(normalized!, { days: 28, dailyMinutes: 60 })).toBe(true);
+
+    const ambiguous = structuredClone(outline);
+    ambiguous.stages[0].mainline.at(-1)!.title = '练习最后一项';
+    expect(normalizeMissingStageGates(ambiguous)).toBeNull();
+  });
+
+  it('preserves a model-returned prerequisite sentence as a bounded list instead of dropping it', () => {
+    const input = outlineFixture() as unknown as Record<string, unknown>;
+    input.prerequisites = '已掌握 ndarray；可以运行 Python';
+    const normalized = normalizeGeneratedCurriculumOutline(input);
+    expect(normalized).toMatchObject({ prerequisites: ['已掌握 ndarray', '可以运行 Python'] });
+    expect(curriculumOutlineSchema.safeParse(normalized).success).toBe(true);
   });
 
   it('checks actual mainline, review, and in-cycle branch minutes as one budget', () => {

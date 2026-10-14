@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LessonContent, Task, TaskProgress } from '../../shared/types';
+import { lessonExposesReferenceAnswer, taskChallengeContract } from '../../shared/learningChallenge';
 import { apiFetch } from '../lib/api';
 
 export interface LessonWorkspaceProps {
@@ -17,14 +18,17 @@ export interface LessonWorkspaceProps {
   onComplete(): void;
   onCancel?(): void;
   onHintUsed?(level: number): void;
+  onAnswerRevealed?(): void;
+  onRequestTransfer?(): void;
   busy?: boolean;
   editable?: boolean;
   diagnosticMode?: boolean;
   onDiagnosticFinish?(confidence: 'known' | 'needs-practice', answer: string): void;
 }
 
-export function LessonWorkspace({ task, seasonId, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
-  const [hintLevel, setHintLevel] = useState(0);
+export function LessonWorkspace({ task, seasonId, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, onAnswerRevealed, onRequestTransfer, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
+  const [hintLevel, setHintLevel] = useState(progress.hintLevelsUsed ?? 0);
+  const [answerVisible, setAnswerVisible] = useState(progress.answerRevealed ?? false);
   const [showChinese, setShowChinese] = useState(false);
   const [diagnosticAnswer, setDiagnosticAnswer] = useState('');
   const [attachmentId, setAttachmentId] = useState('');
@@ -32,8 +36,9 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
   const [imageError, setImageError] = useState('');
   const [imageAnalysis, setImageAnalysis] = useState<{ recognizedText: string; analysis: string; uncertainties: string[]; nextStep: string }>();
   const imageRequest = useRef<AbortController | null>(null);
+  const exampleContainsAnswer = Boolean(content && lessonExposesReferenceAnswer(content));
   useEffect(() => {
-    imageRequest.current?.abort(); setHintLevel(0); setShowChinese(false); setDiagnosticAnswer(progress.evidence); setAttachmentId(''); setImageAnalysis(undefined); setImageError('');
+    imageRequest.current?.abort(); setHintLevel(progress.hintLevelsUsed ?? 0); setAnswerVisible(progress.answerRevealed ?? false); setShowChinese(false); setDiagnosticAnswer(progress.evidence); setAttachmentId(''); setImageAnalysis(undefined); setImageError('');
     if (!seasonId) return;
     const controller = new AbortController(); imageRequest.current = controller;
     void apiFetch(`/api/seasons/${seasonId}/tasks/${task.id}/attachments`, { signal: controller.signal })
@@ -41,7 +46,10 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
       .then(payload => { if (!controller.signal.aborted && payload.attachments?.[0]) setAttachmentId(payload.attachments[0].id); })
       .catch(error => { if (!controller.signal.aborted) setImageError(error instanceof Error ? error.message : '附件恢复失败'); });
     return () => controller.abort();
-  }, [task.id, seasonId, diagnosticMode]);
+  }, [task.id, seasonId, diagnosticMode, content?.revision, progress.hintLevelsUsed, progress.answerRevealed]);
+  useEffect(() => {
+    if (exampleContainsAnswer && !progress.answerRevealed) onAnswerRevealed?.();
+  }, [task.id, seasonId, content?.revision, exampleContainsAnswer, progress.answerRevealed]);
   const uploadImage = async (file?: File) => {
     if (!file || !seasonId) return;
     setImageBusy(true); setImageError(''); setImageAnalysis(undefined);
@@ -68,8 +76,9 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
   const locked = progress.status === 'completed' || !editable;
   const canReverify = progress.status === 'completed' && progress.verification === 'self';
   const canSettle = progress.status === 'completed'
-    ? canReverify && progress.evaluationSource === 'ai' && Boolean(progress.evaluation?.passed && progress.evaluation.score >= 70)
-    : Boolean(progress.selfChecked || progress.evaluationSource === 'ai' && progress.evaluation?.passed);
+    ? !progress.answerRevealed && canReverify && progress.evaluationSource === 'ai' && Boolean(progress.evaluation?.passed && progress.evaluation.score >= 70)
+    : !progress.answerRevealed && Boolean(progress.selfChecked || progress.evaluationSource === 'ai' && progress.evaluation?.passed);
+  const taskChallenge = content?.challenge ?? taskChallengeContract(task);
   return <article className="lesson-workspace" aria-label="学习工作区">
     <header className="lesson-heading"><div><span className="micro-label">LEARNING WORKSPACE · {task.track === 'branch' ? 'OPTIONAL BRANCH' : 'MAINLINE'}</span><h2>{task.title}</h2><p>{task.brief}</p></div><span className="lesson-time">约 {task.minutes} 分钟</span></header>
     {loading && <div className="lesson-loading" role="status">正在按课程蓝图编写本任务内容…{onCancel&&<button type="button" onClick={onCancel}>取消</button>}</div>}
@@ -81,15 +90,15 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
       <section className="lesson-explanation"><div className="lesson-section-heading"><h3>讲解</h3><button type="button" className="text-button" onClick={() => setShowChinese(value => !value)}>{showChinese ? '收起中文辅助' : '展开中文辅助'}</button></div><div className="lesson-copy">{content.explanation}</div>
         {showChinese && <dl className="term-list">{content.terms.map((term, index) => <div key={`${term.en}-${index}`}><dt>{term.en}<span>{term.zh}</span></dt><dd>{term.context}</dd></div>)}</dl>}
       </section>
-      <section className="lesson-example"><span className="lesson-kicker">01 · 示例 → 预测后运行</span><h3>{content.example.prompt}</h3><pre><code>{content.example.code}</code></pre><p>{content.example.walkthrough}</p></section>
+      <section className="lesson-example"><span className="lesson-kicker">01 · 示例 · {content.example.kind === 'code' ? '先预测，再运行' : '阅读材料示例'}</span><h3>{content.example.prompt}</h3>{content.example.kind === 'code' ? <pre><code>{content.example.content}</code></pre> : <blockquote>{content.example.content}</blockquote>}<p>{content.example.walkthrough}</p></section>
       <section className="lesson-guided"><span className="lesson-kicker">02 · 补全练习</span><h3>{content.guidedPractice.prompt}</h3><p><strong>核对结果：</strong>{content.guidedPractice.expected}</p><details><summary>看一级提示</summary><p>{content.guidedPractice.hint}</p></details></section>
-      <section className="lesson-challenge"><span className="lesson-kicker">03 · 独立挑战</span><h3>{content.challenge.prompt}</h3><p><strong>通过标准：</strong>{content.challenge.acceptance}</p><details onToggle={event => { if ((event.currentTarget as HTMLDetailsElement).open) { const next = Math.min(5, hintLevel + 1); setHintLevel(next); onHintUsed?.(next); } }}><summary>需要提示？（已用 {hintLevel} 级）</summary><ol>{content.challenge.hints.slice(0, Math.max(1, hintLevel)).map((hint, index) => <li key={`${index}-${hint}`}>{hint}</li>)}</ol></details></section>
+      <section className="lesson-challenge"><span className="lesson-kicker">03 · 本任务独立验收 · 版本 {content.revision}</span><h3>{taskChallenge.prompt}</h3><div><strong>作答前评分维度</strong><ul>{taskChallenge.rubric.map((criterion, index) => <li key={`${index}-${criterion}`}>{criterion}</li>)}</ul><p>提交自己完成的结果与关键依据。示例和补全练习用于学习，不计作这项独立验收。</p></div>{exampleContainsAnswer && <p className="lesson-feedback" role="status">教学示例已包含本题参考答案；本版本仅用于学习反馈，无法作为独立掌握证明。请生成同目标迁移题。</p>}<details onToggle={event => { if ((event.currentTarget as HTMLDetailsElement).open) { const next = Math.min(5, hintLevel + 1); if (next > hintLevel) { setHintLevel(next); onHintUsed?.(next); } } }}><summary>需要提示？（已用 {hintLevel} 级）</summary><ol>{content.challenge.hints.slice(0, hintLevel).map((hint, index) => <li key={`${index}-${hint}`}>{hint}</li>)}</ol></details><div className="answer-disclosure"><button type="button" disabled={busy || locked} onClick={() => { if (!answerVisible) { setAnswerVisible(true); onAnswerRevealed?.(); } }}>{answerVisible ? '参考答案已查看' : exampleContainsAnswer ? '参考答案已出现在示例中' : '查看参考答案'}</button> {(answerVisible || exampleContainsAnswer) && <><p>{content.challenge.referenceAnswer}</p><small>{exampleContainsAnswer ? '本题答案已出现在教学内容中；' : '你已查看本题答案；'}当前版本只提供学习反馈，不计独立掌握。</small><button type="button" onClick={onRequestTransfer} disabled={busy || locked}>生成同目标迁移题</button></>}</div></section>
     </> : <>
       <section className="lesson-explanation"><span className="lesson-kicker">本次问题</span><div className="lesson-copy">{task.brief}</div><p className="lesson-copy">{task.curiosity}</p></section>
       <section className="lesson-example"><span className="lesson-kicker">学习路线</span><ol className="lesson-steps">{task.steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ol><p>本任务的讲解内容尚未生成。你仍可先使用随课程附带的演示内容、例子或官方资料；AI 联机后可以按需生成详细教学。</p></section>
     </>}
     <section className="lesson-deliverable">
-      <span className="lesson-kicker">交付与验收</span><h3>{task.acceptance}</h3>
+      <span className="lesson-kicker">提交结果与过程证据</span><p>验收按本赛季保存的任务目标、验收标准、当前挑战版本和本次作答帮助状态执行。</p>
       <label className="evidence-label">原始完成证据<textarea aria-label="学习答案与成果" value={progress.evidence} disabled={locked} onChange={event => onEvidence(event.target.value)} placeholder="先写自己的预测，再贴代码、输出、解释或卡住的位置。"/></label>
       {canReverify && <label className="evidence-label supplemental-evidence">补充证据（可选）<textarea aria-label="补充证据" value={progress.supplementalEvidence ?? ''} onChange={event => onSupplementalEvidence?.(event.target.value)} placeholder="补充新的运行结果、解释或修正后的作品；原始完成记录会保留。"/></label>}
       {seasonId && <section className="image-evidence">
@@ -102,7 +111,9 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
         </>}
         {imageAnalysis && <div className="lesson-feedback"><strong>识别到的内容：</strong>{imageAnalysis.recognizedText || '没有识别到清晰文字'}<p>{imageAnalysis.analysis}</p>{imageAnalysis.uncertainties.length > 0 && <p>不确定处：{imageAnalysis.uncertainties.join('；')}</p>}<p>下一步：{imageAnalysis.nextStep}</p><small>图片本身未被视为独立掌握证明。</small></div>}
       </section>}
-      <div className="lesson-actions"><button type="button" onClick={onSelfCheck} disabled={busy || locked}>我已独立完成 · 自评</button><button type="button" onClick={onEvaluate} disabled={busy || (progress.status === 'completed' ? !canReverify : !editable)}>{busy ? '核验中…' : canReverify ? '基于原证据请求 AI 核验' : '提交给 AI 核验'}</button><button type="button" onClick={onComplete} disabled={busy || !canSettle}>{canReverify ? '升级为 AI 验证' : '结算任务与奖励'}</button></div>
+      <div className="lesson-actions"><button type="button" onClick={onSelfCheck} disabled={busy || locked || progress.answerRevealed}>我已独立完成 · 自评</button><button type="button" onClick={onEvaluate} disabled={busy || (progress.status === 'completed' ? !canReverify : !editable)}>{busy ? '核验中…' : canReverify ? '基于原证据请求 AI 核验' : '提交给 AI 核验'}</button><button type="button" onClick={onComplete} disabled={busy || !canSettle}>{canReverify ? '升级为 AI 验证' : '结算任务与奖励'}</button></div>
+      {progress.answerRevealed && <p className="lesson-feedback" role="status">当前挑战已暴露参考答案，或你已主动查看；本次评价只提供学习反馈，不能结算为独立掌握。请生成同目标迁移题并提交新证据。</p>}
+      {progress.assistedEvaluation && <div className="lesson-feedback" role="status"><strong>学习反馈：{progress.assistedEvaluation.score}/100</strong><p>{progress.assistedEvaluation.feedback}</p><small>本次作答使用了参考答案，不计入独立掌握。</small></div>}
       {progress.selfChecked && <p className="lesson-feedback" role="status">自我检查已记录；这不是 AI 掌握度或百分制评分。</p>}
       {progress.status === 'completed' && <p className="lesson-feedback" role="status">成果已保存 · {progress.verification === 'ai' ? 'AI 已核验' : '由你自行完成'} · 复习已安排</p>}
       {feedback && <p className="lesson-feedback" role="status">{feedback}</p>}

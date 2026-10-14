@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Campaign, Evaluation, LearningState, LessonContent, Task } from '../shared/types';
 import { campaignSchema, evaluationSchema, goalInputSchema, learningStateSchema, taskSchema } from '../shared/schema';
-import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
+import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setAssistedEvaluation, setChallengeAssistance, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
 import { createInitialState, exportState, importState, loadState, loadStateSafely, saveState, saveStateSafely, setStorageScope } from '../src/lib/storage';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
@@ -395,6 +395,47 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     const reviewed = rateReview(state, 'a', 2, NOW, { answer: 'ndarray shape describes dimensions', hintUsed: true });
     expect(reviewed.reviews[0].history[0]).toMatchObject({ answer: 'ndarray shape describes dimensions', hintUsed: true });
   });
+  it('records challenge help and refuses mastery settlement after the reference answer was revealed', () => {
+    let state = cacheLesson(ready(fresh(), 'a'), 'a', {
+      purpose: 'Learn the task.', explanation: 'Explanation.', terms: [],
+      example: { kind: 'code', prompt: 'Example', content: 'x = 1', walkthrough: 'Run it.' },
+      guidedPractice: { prompt: 'Practice', expected: '1', hint: 'Try the first value.' },
+      challenge: { prompt: 'Complete the assigned task.', rubric: ['Show evidence.'], referenceAnswer: 'Expected result.', hints: ['Check the output.'] },
+      language: 'mixed', generatedAt: NOW.toISOString(), revision: 1,
+    });
+    state = setChallengeAssistance(state, 'a', 1, { hintLevelsUsed: 2 });
+    state = setChallengeAssistance(state, 'a', 1, { answerRevealed: true });
+    expect(state.progress.a).toMatchObject({ lessonRevision: 1, hintLevelsUsed: 2, answerRevealed: true });
+    state = setEvidence(state, 'a', EVIDENCE);
+    expect(() => setEvaluation(state, 'a', PASS, 'ai')).toThrow(/参考答案/);
+    state = setAssistedEvaluation(state, 'a', PASS);
+    expect(state.progress.a.evaluation).toBeUndefined();
+    expect(() => completeTask(state, 'a', 'ai', NOW)).toThrow(/参考答案/);
+  });
+  it('archives the old answer and evaluation with its lesson revision when teaching is regenerated', () => {
+    let state = ready(fresh(), 'a');
+    state = cacheLesson(state, 'a', {
+      purpose: 'Learn the task.', explanation: 'Old explanation.', terms: [],
+      example: { kind: 'code', prompt: 'Example', content: 'x = 1', walkthrough: 'Run it.' },
+      guidedPractice: { prompt: 'Practice', expected: '1', hint: 'Try the first value.' },
+      challenge: { prompt: 'Old task challenge.', rubric: ['Show old evidence.'], referenceAnswer: 'Old answer.', hints: ['Old hint.'] },
+      language: 'mixed', generatedAt: NOW.toISOString(), revision: 1,
+    });
+    state = setChallengeAssistance(state, 'a', 1, { hintLevelsUsed: 1 });
+    state = setEvidence(state, 'a', EVIDENCE);
+    state = setEvaluation(state, 'a', PASS, 'ai');
+    state = cacheLesson(state, 'a', {
+      purpose: 'Learn again.', explanation: 'New explanation.', terms: [],
+      example: { kind: 'code', prompt: 'Example', content: 'x = 2', walkthrough: 'Run it again.' },
+      guidedPractice: { prompt: 'Practice', expected: '2', hint: 'Try the new value.' },
+      challenge: { prompt: 'New transfer task.', rubric: ['Show new evidence.'], referenceAnswer: 'New answer.', hints: ['New hint.'] },
+      language: 'mixed', generatedAt: NOW.toISOString(), revision: 2,
+    }, true);
+    expect(state.progress.a).toMatchObject({ evidence: '', lessonRevision: 2, hintLevelsUsed: 0, answerRevealed: false });
+    expect(state.progress.a.evaluation).toBeUndefined();
+    expect(state.attempts?.a?.at(-1)).toMatchObject({ answer: EVIDENCE, lessonRevision: 1, evaluation: PASS });
+    expect(state.content?.a.challenge.referenceAnswer).toBe('New answer.');
+  });
   it('fits required recall and mainline work inside the user time budget', () => {
     const campaign = fresh().campaign;
     campaign.dailyMinutes = 18;
@@ -413,12 +454,13 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     expect(restored.history?.some(record => record.campaign.id === 'second')).toBe(true);
   });
   it('isolates attempts, teaching history, grid outcomes and adjustments across goals through save/export', () => {
-    const lesson: LessonContent = { purpose: '识别结构', explanation: 'shape describes dimensions.', terms: [{ en: 'shape', zh: '形状', context: 'array dimensions' }], example: { prompt: '预测维度', code: 'x.shape', walkthrough: '比较输出' }, guidedPractice: { prompt: '预测', expected: '(2,)', hint: '看长度' }, challenge: { prompt: '独立验证', acceptance: '说明输出', hints: ['检查 axis'] }, language: 'mixed', generatedAt: NOW.toISOString(), revision: 1 };
+    const lesson: LessonContent = { purpose: '识别结构', explanation: 'shape describes dimensions.', terms: [{ en: 'shape', zh: '形状', context: 'array dimensions' }], example: { kind: 'code', prompt: '预测维度', content: 'x.shape', walkthrough: '比较输出' }, guidedPractice: { prompt: '预测', expected: '(2,)', hint: '看长度' }, challenge: { prompt: '独立验证', rubric: ['说明输出'], referenceAnswer: '参考输出', hints: ['检查 axis'] }, language: 'mixed', generatedAt: NOW.toISOString(), revision: 1 };
     let original = ready(fresh(), 'a');
     original = markSelfChecked(original, 'a');
     original = recordAttempt(original, 'a', { answer: EVIDENCE, hintLevelsUsed: 1, verification: 'self', passed: false, feedback: '自评記錄' }, NOW);
     original = cacheLesson(original, 'a', lesson);
     original = cacheLesson(original, 'a', { ...lesson, revision: 2 }, true);
+    original = setEvidence(original, 'a', EVIDENCE);
     original.campaign.nineGrid = Array.from({ length: 9 }, (_, index) => ({ id: index === 0 ? 'grid-a' : `grid-${index}`, title: `格${index + 1}`, ability: '解释', value: '作品', unlockTaskIds: ['a'] }));
     original = completeTask(original, 'a', 'self', NOW);
     original = setEvaluation(original, 'a', PASS, 'ai');
@@ -435,7 +477,7 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     saveState(switched);
     switched = loadState();
     const restored = switchCampaign(switched, original.campaign);
-    expect(restored.attempts?.a).toHaveLength(1);
+    expect(restored.attempts?.a).toHaveLength(2);
     expect(restored.contentHistory?.a).toHaveLength(1);
     expect(restored.gridOutcomes?.['grid-a']?.artifact).toBe(EVIDENCE);
     expect(restored.dailyAdjustments).toEqual({ '2026-10-13': 'too-hard' });

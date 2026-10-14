@@ -8,9 +8,9 @@ const starterLesson = {
   purpose: '从你已学的 ndarray、shape、dtype 出发，闭卷预测后用 3×2 小数组检查 shape、类型和 axis。',
   explanation: 'An ndarray stores values in a regular grid. Its shape gives the length of each axis; dtype is the value representation. For shape (3, 2), there are 3 rows and 2 columns. axis=1 reduces each row and returns 3 values. 中文辅助：shape 是每个维度的长度；axis=1 沿每行计算，保留行数。',
   terms: [{ en:'array / ndarray', zh:'数组 / 多维数组', context:'np.array([[70,80],[60,90]]) creates a 2-D ndarray.' }, { en:'shape', zh:'形状', context:'This array has shape (2,2).' }, { en:'dtype', zh:'数据类型', context:'arr.dtype reports the stored numeric kind.' }, { en:'axis', zh:'轴', context:'axis=1 leaves one result per row.' }],
-  example: { prompt:'Predict shape, dtype and row means.', code:'import numpy as np\nscores=np.array([[70,80,90],[60,75,85]])\nprint(scores.shape, scores.dtype)\nprint(scores.mean(axis=1))', walkthrough:'There are 2 rows and 3 columns, so shape is (2,3); axis=1 produces one mean per row.' },
+  example: { kind:'code' as const, prompt:'Predict shape, dtype and row means.', content:'import numpy as np\nscores=np.array([[70,80,90],[60,75,85]])\nprint(scores.shape, scores.dtype)\nprint(scores.mean(axis=1))', walkthrough:'There are 2 rows and 3 columns, so shape is (2,3); axis=1 produces one mean per row.' },
   guidedPractice: { prompt:'A 4-row, 2-column array has shape ____. One result per row uses axis=____.', expected:'(4, 2); axis=1', hint:'Read rows first; axis=1 reduces across each row.' },
-  challenge: { prompt:'Create a 3×2 integer score array. Print shape and dtype, then calculate one mean per row.', acceptance:'shape is (3,2); dtype is integer; there are 3 means and each matches one row.', hints:['Write three inner lists with two values each.','Check .shape.','Use axis=1 for one result per row.'] },
+  challenge: { prompt:'Create a 3×2 integer score array. Print shape and dtype, then calculate one mean per row.', rubric:['Submit the array construction and actual output.','Explain how the dimensions and axis relate to each result.'], referenceAnswer:'A 3×2 integer array has shape (3, 2); axis=1 returns three row means.', hints:['Write three inner lists with two values each.','Check .shape.','Use axis=1 for one result per row.'] },
   language: 'mixed' as const, generatedAt:'2026-10-13T00:00:00.000Z', revision:1,
 };
 const units: Unit[][] = [

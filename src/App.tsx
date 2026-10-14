@@ -10,7 +10,8 @@ import type { Campaign, GoalInput, LearningState, Task, TaskProgress } from '../
 import { planCurriculumBudget, type CurriculumOutline } from '../shared/curriculum';
 import { formatHafverCoins } from '../shared/economy';
 import { campaignSchema } from '../shared/schema';
-import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask } from './lib/engine';
+import { lessonExposesReferenceAnswer, taskChallengeContract } from '../shared/learningChallenge';
+import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setAssistedEvaluation, setChallengeAssistance, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask } from './lib/engine';
 import { loadStateSafely, saveStateSafely, exportState, importState } from './lib/storage';
 import { LessonWorkspace } from './components/LessonWorkspace';
 import { TodaySchedule } from './components/TodaySchedule';
@@ -335,7 +336,7 @@ function App() {
     setState(previous => previous.schedules?.[localDate] ? previous : { ...previous, schedules: { ...(previous.schedules ?? {}), [localDate]: schedule } });
   }, [campaign.id, localDate]);
 
-  const beginTask = async (nextTask: Task, options: { diagnostic?: boolean } = {}) => {
+  const beginTask = async (nextTask: Task, options: { diagnostic?: boolean; regenerate?: boolean; transfer?: boolean } = {}) => {
     if (accountUser && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived')) {
       setSelectedTaskId(nextTask.id); setTab('workspace'); setSaveError('赛季暂停或归档后仅可预览。请在个人主页恢复赛季后继续学习。'); return;
     }
@@ -351,12 +352,16 @@ function App() {
     setTab('workspace');
     if (!unlocked && state.progress[nextTask.id]?.status !== 'completed') flash({ title: '后续任务预览', body: '查看不改变进度；完成课程前置任务后才可提交结算。', tone: 'warning' });
     const cached = state.content?.[nextTask.id] ?? nextTask.teaching;
-    if (!cached && (connection.configured || apiKey) && !busy) {
+    if (cached && state.progress[nextTask.id]?.lessonRevision !== cached.revision) {
+      setState(previous => previous.campaign.id === campaign.id ? setChallengeAssistance(previous, nextTask.id, cached.revision, {}) : previous);
+    }
+    if ((!cached || options.regenerate) && (connection.configured || apiKey) && !busy) {
       setBusy('lesson'); setLessonError(''); const controller = new AbortController(); activeRequest.current = controller;
       try {
-        const response = await apiFetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignContext: { goal: campaign.goal, level: campaign.level, prerequisites: campaign.prerequisites, desiredArtifact: campaign.desiredArtifact, sourceMaterial: campaign.sourceMaterial }, task: nextTask, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+        const nextRevision = cached ? cached.revision + 1 : Math.max(1, (state.contentHistory?.[nextTask.id]?.length ?? 0) + 1);
+        const response = await apiFetch('/api/lesson', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignContext: { goal: campaign.goal, level: campaign.level, prerequisites: campaign.prerequisites, desiredArtifact: campaign.desiredArtifact, sourceMaterial: campaign.sourceMaterial }, task: nextTask, taskId: nextTask.id, language: campaign.language ?? 'mixed', revision: nextRevision, transferChallenge: options.transfer === true, ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
         const payload = await response.json(); if (!response.ok) throw new Error(payload.error ?? '课程内容生成失败');
-        setState(previous => previous.campaign.id === campaign.id ? cacheLesson(previous, nextTask.id, payload.lesson, false) : previous);
+        setState(previous => previous.campaign.id === campaign.id ? cacheLesson(previous, nextTask.id, payload.lesson, Boolean(cached && options.regenerate)) : previous);
       } catch (error) { if(!(error instanceof DOMException&&error.name==='AbortError'))setLessonError(error instanceof Error ? error.message : '内容生成失败，可重试或继续看任务概要。'); }
       finally { activeRequest.current=null; setBusy(null); }
     }
@@ -665,6 +670,7 @@ function App() {
     if (!task || !taskProgress || taskProgress.evidence.trim().length < 20) {
       flash({ title: '还没到撤离条件', body: '先提交至少 20 个字的过程、答案或作品路径，说明你做了什么、结果如何。', tone: 'warning' }); return;
     }
+    if (taskProgress.answerRevealed) { flash({ title: '需要新的独立题目', body: '已查看参考答案；本次可以保留作学习记录，但不能作为独立掌握证明。请生成同目标迁移题。', tone: 'warning' }); return; }
     update(markSelfChecked(state, task.id));
     setState(previous => recordAttempt(previous, task.id, { answer: taskProgress.evidence, hintLevelsUsed: hintLevels[task.id] ?? 0, verification: 'self', passed: false, errorType: hintLevels[task.id] ? 'hint-dependence' : 'none', feedback: '记录为自行完成；这不是 AI 掌握度评分。' }));
     flash({ title: '自我检查已记录', body: '这只是自行完成记录，不会显示成 100 分掌握；需要时可以再请求 AI 核验。', tone: 'success' });
@@ -674,11 +680,12 @@ function App() {
     if (!task || !taskProgress || taskProgress.evidence.trim().length < 20) {
       flash({ title: '请先提交可供核验的情报', body: '写下至少 20 个字的答案或作品记录，AI 会依据课程验收标准核对。', tone: 'warning' }); return;
     }
-    const targetTask = task; const targetId = task.id; const originalEvidence = taskProgress.evidence; const supplementalEvidence = taskProgress.supplementalEvidence ?? ''; const evidence = supplementalEvidence.trim() ? `${originalEvidence}\n\n补充证据：\n${supplementalEvidence}` : originalEvidence; const submitted = structuredClone(currentState.current); const archiveAtStart = serverArchive.current; setBusy('evaluate'); const controller = new AbortController(); activeRequest.current = controller;
+    const targetTask = task; const targetId = task.id; const originalEvidence = taskProgress.evidence; const supplementalEvidence = taskProgress.supplementalEvidence ?? ''; const evidence = supplementalEvidence.trim() ? `${originalEvidence}\n\n补充证据：\n${supplementalEvidence}` : originalEvidence; let submitted = structuredClone(currentState.current); const lesson = submitted.content?.[targetId] ?? targetTask.teaching; if (lesson) submitted = setChallengeAssistance(submitted, targetId, lesson.revision, { hintLevelsUsed: submitted.progress[targetId]?.hintLevelsUsed ?? hintLevels[targetId] ?? 0, answerRevealed: submitted.progress[targetId]?.answerRevealed === true || lessonExposesReferenceAnswer(lesson) }); const challengeProgress = submitted.progress[targetId]; const archiveAtStart = serverArchive.current; setState(submitted); setBusy('evaluate'); const controller = new AbortController(); activeRequest.current = controller;
     try {
       const run = async (archive?: NonNullable<typeof serverArchive.current>) => {
         if (accountUser && archive) await writeServerArchive(archive, submitted);
-        const response = await apiFetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: targetTask, evidence, verificationSource: 'ai', ...(accountUser && archive ? { seasonId: archive.id, taskId: targetId } : {}), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
+        const challengeContract = lesson ? { prompt: lesson.challenge.prompt, rubric: lesson.challenge.rubric } : taskChallengeContract(targetTask);
+        const response = await apiFetch('/api/evaluate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: targetTask, evidence, verificationSource: 'ai', ...(lesson ? { challenge: { revision: lesson.revision, ...challengeContract, hintLevelsUsed: challengeProgress.hintLevelsUsed ?? 0, answerRevealed: challengeProgress.answerRevealed ?? false } } : {}), ...(accountUser && archive ? { seasonId: archive.id, taskId: targetId } : {}), ...(apiKey ? { apiKey } : {}), model }), signal: controller.signal });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'AI 校准失败');
         if (accountUser && archive && serverArchive.current === archive && payload.revision) archive.revision = payload.revision;
@@ -689,14 +696,16 @@ function App() {
       const result = payload.evaluation;
       const current = currentState.current;
       if (current.campaign.id === submitted.campaign.id && current.progress[targetId]?.evidence === originalEvidence && (current.progress[targetId]?.supplementalEvidence ?? '') === supplementalEvidence) {
-        const evaluated = recordAttempt(setEvaluation(current, targetId, result, 'ai'), targetId, { answer: evidence, hintLevelsUsed: hintLevels[targetId] ?? 0, verification: 'ai', passed: result.passed, score: result.score, errorType: result.passed ? 'none' : result.gaps.length ? 'concept' : 'operation', feedback: result.feedback });
+        const independent = payload.independent !== false;
+        const evaluatedState = independent ? setEvaluation(current, targetId, result, 'ai') : setAssistedEvaluation(current, targetId, result);
+        const evaluated = recordAttempt(evaluatedState, targetId, { answer: evidence, hintLevelsUsed: challengeProgress.hintLevelsUsed ?? 0, verification: independent ? 'ai' : 'none', passed: independent && result.passed, score: result.score, errorType: !independent || challengeProgress.hintLevelsUsed ? 'hint-dependence' : result.passed ? 'none' : result.gaps.length ? 'concept' : 'operation', feedback: result.feedback, ...(lesson ? { lessonRevision: lesson.revision } : {}), answerRevealed: challengeProgress.answerRevealed ?? false, evaluation: result });
         setState(evaluated);
         if (accountUser && serverArchive.current === archiveAtStart && archiveAtStart) savePendingDraft({ userId: archiveAtStart.userId, seasonId: archiveAtStart.id, revision: archiveAtStart.revision, state: evaluated, updatedAt: new Date().toISOString() });
       }
       if (serverArchive.current !== archiveAtStart || currentState.current.campaign.id !== submitted.campaign.id) return;
       if (currentState.current.progress[targetId]?.evidence !== originalEvidence || (currentState.current.progress[targetId]?.supplementalEvidence ?? '') !== supplementalEvidence) { flash({ title: '答案已在核验期间更改', body: '为避免旧结果覆盖新答案，请重新提交当前内容。', tone: 'warning' }); return; }
-      flash({ title: result.passed ? 'AI 已确认任务掌握' : '发现几个待补线索', body: result.feedback, tone: result.passed ? 'success' : 'warning' });
-      if (!result.passed && (connection.configured || apiKey)) {
+      flash({ title: payload.independent === false ? '已记录辅助学习反馈' : result.passed ? 'AI 已确认任务掌握' : '发现几个待补线索', body: payload.independent === false ? `参考答案已查看；请生成同目标迁移题进行独立验收。${result.feedback}` : result.feedback, tone: payload.independent === false || !result.passed ? 'warning' : 'success' });
+      if (payload.independent !== false && !result.passed && (connection.configured || apiKey)) {
         try {
           const compactTask = (item: Task) => ({ id: item.id, title: item.title, brief: item.brief.slice(0, 500), minutes: item.minutes, track: item.track ?? 'main', prerequisites: item.prerequisites?.slice(0, 8), recallQuestion: item.recallQuestion?.slice(0, 400), acceptance: item.acceptance.slice(0, 400) });
           const candidates = readyTasks.filter(item => item.id !== task.id).slice(0, 10);
@@ -914,7 +923,7 @@ function App() {
 
         {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={getDailyBudgetMinutes(state, localDate)} onVideoWatched={index => setState(previous => markVideoWatched(previous, localDate, index))} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
         : tab === 'workspace' && task ? <>
-          <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.evaluation?.feedback} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => setHintLevels(previous => ({ ...previous, [task.id]: level }))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
+          <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.assistedEvaluation?.feedback || taskProgress?.evaluation?.feedback} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => { setHintLevels(previous => ({ ...previous, [task.id]: level })); const lesson=state.content?.[task.id]??task.teaching; if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level})); }} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
             setDiagnosticMode(false);
             try {
               let next = setEvidence(state, task.id, answer);
@@ -1002,7 +1011,7 @@ function App() {
             <div className="streak-panel"><Flame size={16}/><span>今天的行动记录</span><strong>{startedAt ? '进行中' : stats.completed > 0 ? '档案已保存' : '等待部署'}<small>{startedAt ? timeLabel + ' · 该休息时就休息' : '节奏由你掌握，不靠熬时长'}</small></strong></div>
             <button className="backup-link" onClick={() => { const blob = new Blob([exportState(state)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'ninegrid-learning-backup.json'; link.click(); URL.revokeObjectURL(url); flash({ title: '档案已导出', body: '备份文件不含 API Key。', tone: 'success' }); }}><ArrowDown size={13}/>导出赛季情报档案</button>
           </aside>
-        </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : tab === 'inventory' && accountUser ? <InventoryScreen key={accountUser.id} seasons={serverSeasons}/> : task ? <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onEvaluate={() => void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask}/> : null}
+            </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : tab === 'inventory' && accountUser ? <InventoryScreen key={accountUser.id} seasons={serverSeasons}/> : task ? <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy==='lesson'} busy={busy==='evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign,state.progress,task.id)||taskProgress?.status==='completed'} feedback={lessonError||taskProgress?.assistedEvaluation?.feedback||taskProgress?.evaluation?.feedback} onEvidence={value=>setState(previous=>setEvidence(previous,task.id,value))} onSupplementalEvidence={value=>setState(previous=>setSupplementalEvidence(previous,task.id,value))} onEvaluate={()=>void evaluateWithAI()} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level=>{setHintLevels(previous=>({...previous,[task.id]:level}));const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level}));}} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}}/> : null}
 
         <footer className="global-footer"><span>九格行动 <i>·</i> 每一格，都由真正掌握解锁。</span><span>SESSION <i>—</i> {timeLabel}</span><span>休息也是行动计划的一部分。</span></footer>
       </div>

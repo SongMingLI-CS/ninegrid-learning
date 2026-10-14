@@ -19,14 +19,30 @@ export const rewardBundleSchema = z.object({
   xp: z.number().int().min(0).max(10000), coins: z.number().int().min(0).max(MAX_HAFVER_COINS),
   items: z.array(z.object({ itemId: idSchema, name: text(120), description: text(500), rarity: z.enum(['common', 'rare', 'legendary']), icon: text(40), quantity: z.number().int().min(1).max(99) })).max(10),
 });
-export const lessonContentSchema = z.object({
+const lessonContentShapeSchema = z.object({
   purpose: text(2000), explanation: text(12000), terms: z.array(z.object({ en: text(100), zh: text(100), context: text(500) })).max(30),
-  example: z.object({ prompt: text(2000), code: text(12000), walkthrough: text(4000) }),
+  example: z.object({ kind: z.enum(['code','text']), prompt: text(2000), content: text(12000), walkthrough: text(4000) }),
   guidedPractice: z.object({ prompt: text(3000), expected: text(2000), hint: text(1000) }),
-  challenge: z.object({ prompt: text(4000), acceptance: text(3000), hints: z.array(text(1000)).min(1).max(5) }),
+  challenge: z.object({ prompt: text(4000), rubric: z.array(text(1000)).min(1).max(20), referenceAnswer: text(6000), hints: z.array(text(1000)).min(1).max(5) }),
   sourceBasis: z.enum(['none','material','mixed']).optional(), sourceNotes: z.array(text(1000)).max(10).optional(),
   language: z.enum(['en', 'zh', 'mixed']), generatedAt: dateSchema, revision: z.number().int().min(1).max(1000),
 });
+export const lessonContentSchema = z.preprocess(value => {
+  if (!value || typeof value !== 'object') return value;
+  const lesson = value as Record<string, any>;
+  const example = lesson.example && typeof lesson.example === 'object' ? lesson.example as Record<string, unknown> : {};
+  const challenge = lesson.challenge && typeof lesson.challenge === 'object' ? lesson.challenge as Record<string, unknown> : {};
+  const legacy = typeof example.code === 'string' || typeof challenge.acceptance === 'string';
+  return {
+    ...lesson,
+    example: { ...example, kind: example.kind ?? (typeof example.code === 'string' ? 'code' : 'text'), content: example.content ?? example.code },
+    challenge: {
+      ...challenge,
+      rubric: typeof challenge.rubric === 'string' ? [challenge.rubric] : challenge.rubric ?? (legacy ? ['按本任务能力要求完成交付，并解释关键依据。'] : undefined),
+      referenceAnswer: challenge.referenceAnswer ?? (legacy ? '旧版答案尚未与当前任务建立可靠对应；重新生成讲解后再查看参考答案。' : undefined),
+    },
+  };
+}, lessonContentShapeSchema);
 export const dailyScheduleSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), theme: text(500),
   items: z.array(z.object({
@@ -172,9 +188,17 @@ const progressSchema = z.object({
   completedObjectives: z.array(idSchema).max(20).refine(unique, '已完成目标不能重复'),
   evidence: z.string().max(100000), status: z.enum(['idle', 'active', 'completed']),
   supplementalEvidence: z.string().max(100000).optional(),
-  evaluation: evaluationSchema.optional(), verification: z.enum(['self', 'ai']).optional(), completedAt: dateSchema.optional(),
+  evaluation: evaluationSchema.optional(), assistedEvaluation: evaluationSchema.optional(), verification: z.enum(['self', 'ai']).optional(), completedAt: dateSchema.optional(),
   selfChecked: z.boolean().optional(),
   evaluationSource: z.enum(['self','ai']).optional(), evaluationEvidence: z.string().max(200000).optional(),
+  lessonRevision: z.number().int().min(1).max(1000).optional(), hintLevelsUsed: z.number().int().min(0).max(5).optional(),
+  answerRevealed: z.boolean().optional(), evaluationLessonRevision: z.number().int().min(1).max(1000).optional(),
+});
+const attemptSchema = z.object({
+  at: dateSchema, answer: z.string().max(100000), hintLevelsUsed: z.number().int().min(0).max(5),
+  verification: z.enum(['self','ai','none']), passed: z.boolean(), score: z.number().min(0).max(100).optional(),
+  errorType: z.enum(['concept','operation','hint-dependence','prerequisite','none']).optional(), feedback: z.string().max(8000),
+  lessonRevision: z.number().int().min(1).max(1000).optional(), answerRevealed: z.boolean().optional(), evaluation: evaluationSchema.optional(),
 });
 const reviewSchema = z.object({
   taskId: idSchema, dueAt: dateSchema, interval: z.number().int().min(1).max(36500),
@@ -189,14 +213,14 @@ export const learningStateSchema = z.object({
   reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)),
   content: z.record(idSchema, lessonContentSchema).optional(),
   schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(),
-  history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), attempts: z.record(idSchema, z.array(z.object({ at: dateSchema, answer: z.string().max(100000), hintLevelsUsed: z.number().int().min(0).max(5), verification: z.enum(['self','ai','none']), passed: z.boolean(), score: z.number().min(0).max(100).optional(), errorType: z.enum(['concept','operation','hint-dependence','prerequisite','none']).optional(), feedback: z.string().max(8000) })).max(10000)).optional(), contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(), gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(), dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(), knownTasks: z.record(idSchema, z.boolean()).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
+  history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), attempts: z.record(idSchema, z.array(attemptSchema).max(10000)).optional(), contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(), gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(), dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(), knownTasks: z.record(idSchema, z.boolean()).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
   wallet: z.object({ currency: z.string().max(40), balance: z.number().int().min(0).max(MAX_HAFVER_COINS) }).optional(),
   inventory: z.record(idSchema, z.object({ item: rewardBundleSchema.shape.items.element, quantity: z.number().int().min(1).max(1000000), acquiredAt: dateSchema, sources: z.array(idSchema).max(10000) })).optional(),
   rewardLedger: z.array(z.object({ id: idSchema, campaignId: idSchema.default('legacy-unknown'), taskId: idSchema, at: dateSchema, reward: rewardBundleSchema, kind: z.enum(['mission','verification','chain','stage','season','review']), idempotencyKey: idSchema })).max(100000).optional(),
   gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(),
   dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(),
   knownTasks: z.record(idSchema, z.boolean()).optional(),
-  attempts: z.record(idSchema, z.array(z.object({ at: dateSchema, answer: z.string().max(100000), hintLevelsUsed: z.number().int().min(0).max(5), verification: z.enum(['self','ai','none']), passed: z.boolean(), score: z.number().min(0).max(100).optional(), errorType: z.enum(['concept','operation','hint-dependence','prerequisite','none']).optional(), feedback: z.string().max(8000) })).max(10000)).optional(),
+  attempts: z.record(idSchema, z.array(attemptSchema).max(10000)).optional(),
   contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(),
   lastTaskId: idSchema.optional(),
 }).superRefine((state, ctx) => {

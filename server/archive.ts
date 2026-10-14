@@ -645,7 +645,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   });
 }
 
-export async function persistEvaluation(pool: Pool, userId: string, seasonId: string, taskId: string, evidence: string, evaluation: Evaluation): Promise<number> {
+export async function persistEvaluation(pool: Pool, userId: string, seasonId: string, taskId: string, evidence: string, evaluation: Evaluation, lessonRevision?: number): Promise<number> {
   const verifiedEvaluation = evaluationSchema.parse(evaluation);
   const client = await pool.connect();
   try {
@@ -656,13 +656,20 @@ export async function persistEvaluation(pool: Pool, userId: string, seasonId: st
     if (row.lifecycle_status !== 'active') throw new Error(row.lifecycle_status === 'paused' ? 'SEASON_PAUSED' : 'ARCHIVED_SEASON_READ_ONLY');
     const taskExists = row.state.campaign.stages.some(stage => stage.tasks.some(task => task.id === taskId));
     if (!taskExists || taskEvidence(row.state, taskId) !== evidence) throw new Error('EVIDENCE_STALE');
+    if (lessonRevision !== undefined) {
+      const task = row.state.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === taskId)!;
+      const lesson = row.state.content?.[taskId] ?? task.teaching;
+      const progress = row.state.progress[taskId];
+      if (progress.answerRevealed) throw new Error('ANSWER_REVEALED');
+      if (!lesson || lesson.revision !== lessonRevision || (progress.lessonRevision !== undefined && progress.lessonRevision !== lessonRevision)) throw new Error('LESSON_CHALLENGE_STALE');
+    }
     const hash = evidenceHash(evidence);
     await client.query(`INSERT INTO task_evaluations (id,owner_user_id,season_id,task_id,evidence_sha256,evaluation)
       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (owner_user_id,season_id,task_id,evidence_sha256)
       DO UPDATE SET evaluation=EXCLUDED.evaluation,created_at=now()`, [randomUUID(), userId, seasonId, taskId, hash, JSON.stringify(verifiedEvaluation)]);
     const state = structuredClone(row.state);
     const old = state.progress[taskId];
-    state.progress[taskId] = { ...old, evaluation: verifiedEvaluation, evaluationSource: 'ai', evaluationEvidence: evidence };
+    state.progress[taskId] = { ...old, evaluation: verifiedEvaluation, evaluationSource: 'ai', evaluationEvidence: evidence, ...(lessonRevision !== undefined ? { lessonRevision, evaluationLessonRevision: lessonRevision } : {}) };
     const updated = await client.query('UPDATE seasons SET state=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3 AND revision=$4 RETURNING revision', [JSON.stringify(state), seasonId, userId, row.revision]);
     if (!updated.rows[0]) throw new Error('REVISION_CONFLICT');
     await client.query('COMMIT');

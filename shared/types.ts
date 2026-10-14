@@ -7,16 +7,16 @@ export interface RewardBundle { xp: number; coins: number; items: ItemReward[] }
 export interface GridOutcome { id: string; title: string; ability: string; value: string; unlockTaskIds: string[]; artifact?: string }
 export interface LessonContent {
   purpose: string; explanation: string; terms: { en: string; zh: string; context: string }[];
-  example: { prompt: string; code: string; walkthrough: string };
+  example: { kind: 'code' | 'text'; prompt: string; content: string; walkthrough: string };
   guidedPractice: { prompt: string; expected: string; hint: string };
-  challenge: { prompt: string; acceptance: string; hints: string[] };
+  challenge: { prompt: string; rubric: string[]; referenceAnswer: string; hints: string[] };
   sourceBasis?: 'none' | 'material' | 'mixed'; sourceNotes?: string[];
   language: 'en' | 'zh' | 'mixed'; generatedAt: string; revision: number;
 }
 export interface ScheduleItem { taskId: string; kind: 'review' | 'lesson' | 'practice' | 'reflection' | 'video'; minutes: number; required: boolean; deliverable: string; resourceId?: string; resourceTitle?: string; resourceUrl?: string; watched?: boolean }
 export interface DailySchedule { date: string; theme: string; items: ScheduleItem[]; totalMinutes: number; outcome: string; nextUnlock: string; revision: number }
 export interface RewardEntry { id: string; campaignId: string; taskId: string; at: string; reward: RewardBundle; kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season' | 'review'; idempotencyKey: string }
-export interface TaskAttempt { at: string; answer: string; hintLevelsUsed: number; verification: 'self' | 'ai' | 'none'; passed: boolean; score?: number; errorType?: 'concept' | 'operation' | 'hint-dependence' | 'prerequisite' | 'none'; feedback: string }
+export interface TaskAttempt { at: string; answer: string; hintLevelsUsed: number; verification: 'self' | 'ai' | 'none'; passed: boolean; score?: number; errorType?: 'concept' | 'operation' | 'hint-dependence' | 'prerequisite' | 'none'; feedback: string; lessonRevision?: number; answerRevealed?: boolean; evaluation?: Evaluation }
 export interface CampaignSnapshot { campaign: Campaign; progress: Record<string, TaskProgress>; reviews: ReviewCard[]; notes: Record<string, string>; content?: Record<string, LessonContent>; schedules?: Record<string, DailySchedule>; attempts?: Record<string, TaskAttempt[]>; contentHistory?: Record<string, LessonContent[]>; gridOutcomes?: Record<string, { artifact: string; verifiedAt: string; taskIds: string[] }>; dailyAdjustments?: Record<string, 'half' | 'more' | 'skip-known' | 'too-hard'>; knownTasks?: Record<string, boolean>; lastTaskId?: string }
 export interface Task {
   id: string; title: string; brief: string; kind: TaskKind; minutes: number; xp: number;
@@ -49,6 +49,11 @@ export interface TaskProgress {
   selfChecked?: boolean;
   evaluationSource?: 'self' | 'ai';
   evaluationEvidence?: string;
+  assistedEvaluation?: Evaluation;
+  lessonRevision?: number;
+  hintLevelsUsed?: number;
+  answerRevealed?: boolean;
+  evaluationLessonRevision?: number;
 }
 export interface ReviewCard {
   taskId: string; dueAt: string; interval: number; ease: number; repetitions: number;
