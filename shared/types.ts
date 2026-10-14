@@ -17,7 +17,7 @@ export interface ScheduleItem { taskId: string; kind: 'review' | 'lesson' | 'pra
 export interface DailySchedule { date: string; theme: string; items: ScheduleItem[]; totalMinutes: number; outcome: string; nextUnlock: string; revision: number }
 export interface RewardEntry { id: string; campaignId: string; taskId: string; at: string; reward: RewardBundle; kind: 'mission' | 'verification' | 'chain' | 'stage' | 'season' | 'review'; idempotencyKey: string }
 export interface TaskAttempt { at: string; answer: string; hintLevelsUsed: number; verification: 'self' | 'ai' | 'none'; passed: boolean; score?: number; errorType?: 'concept' | 'operation' | 'hint-dependence' | 'prerequisite' | 'none'; feedback: string; lessonRevision?: number; answerRevealed?: boolean; evaluation?: Evaluation }
-export interface CampaignSnapshot { campaign: Campaign; progress: Record<string, TaskProgress>; reviews: ReviewCard[]; notes: Record<string, string>; content?: Record<string, LessonContent>; schedules?: Record<string, DailySchedule>; attempts?: Record<string, TaskAttempt[]>; contentHistory?: Record<string, LessonContent[]>; gridOutcomes?: Record<string, { artifact: string; verifiedAt: string; taskIds: string[] }>; dailyAdjustments?: Record<string, 'half' | 'more' | 'skip-known' | 'too-hard'>; knownTasks?: Record<string, boolean>; lastTaskId?: string }
+export interface CampaignSnapshot { campaign: Campaign; progress: Record<string, TaskProgress>; reviews: ReviewCard[]; notes: Record<string, string>; content?: Record<string, LessonContent>; schedules?: Record<string, DailySchedule>; attempts?: Record<string, TaskAttempt[]>; contentHistory?: Record<string, LessonContent[]>; gridOutcomes?: Record<string, { artifact: string; verifiedAt: string; taskIds: string[] }>; dailyAdjustments?: Record<string, 'half' | 'more' | 'skip-known' | 'too-hard'>; knownTasks?: Record<string, boolean>; rescueLevels?: Record<string, number>; lastTaskId?: string }
 export interface Task {
   id: string; title: string; brief: string; kind: TaskKind; minutes: number; xp: number;
   prerequisites: string[]; objectives: Objective[]; curiosity: string; steps: string[];
@@ -33,6 +33,7 @@ export interface Campaign {
   dailyMinutes: number; ultimateReward: string; createdAt: string;
   source: 'demo' | 'deepseek'; stages: Stage[]; prerequisites?: string[]; nineGrid?: GridOutcome[];
   desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
+  quickDiagnostic?: GoalInput['quickDiagnostic'];
   curriculumRulesVersion?: number; densityRationale?: string;
   seasonalCollectible?: {
     id: string; name: string; story: string; appearance: string; abilityOutcome: string;
@@ -41,6 +42,7 @@ export interface Campaign {
 }
 export interface Evaluation {
   passed: boolean; score: number; feedback: string; gaps: string[]; nextStep: string;
+  requiredCriteria?: { id: string; met: boolean; evidence: string }[];
 }
 export interface TaskProgress {
   completedObjectives: string[]; evidence: string; status: 'idle' | 'active' | 'completed';
@@ -69,9 +71,11 @@ export interface LearningState {
   dailyAdjustments?: Record<string, 'half' | 'more' | 'skip-known' | 'too-hard'>;
   knownTasks?: Record<string, boolean>;
   attempts?: Record<string, TaskAttempt[]>; contentHistory?: Record<string, LessonContent[]>;
+  rescueLevels?: Record<string, number>;
   lastTaskId?: string;
 }
 export interface GoalInput {
   goal: string; level: string; days: number; dailyMinutes: number; ultimateReward: string;
   desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
+  quickDiagnostic?: { version: 1; items: Array<{ id: string; prompt: string; confidence: 'known' | 'needs-practice' | 'unknown'; response?: string }> };
 }

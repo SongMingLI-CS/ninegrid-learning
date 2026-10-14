@@ -1,0 +1,40 @@
+{
+  "capturedAt": "2026-10-14T22:02:00+08:00",
+  "runtime": {
+    "url": "http://127.0.0.1:5173/",
+    "branch": "codex/learning-loop-fixes",
+    "commit": "ce51c842b267",
+    "workingTreeModified": true,
+    "accounts": true,
+    "runtimeMode": "accounts",
+    "aiMode": "unconfigured",
+    "database": "isolated persistent local PostgreSQL, loopback port 55432"
+  },
+  "browser": {
+    "cssViewport": "390x844",
+    "devicePixelRatio": 1,
+    "zoom": 1,
+    "consoleErrors": [],
+    "consoleWarnings": [],
+    "verified": [
+      "authenticated account session and server-backed season overview",
+      "profile displays server wallet, mainline/all-task progress, self-completion versus AI verification, catalog kinds, and season state",
+      "warehouse separates owned inventory from the 155-item catalog and shows server balance",
+      "profile continue-learning opens the last active task",
+      "IELTS goal selects a distinct short-reading, English-response, and skill-priority diagnostic set; skip returns without creating a season",
+      "learning workspace content and evidence form remain reachable on a 390px viewport"
+    ],
+    "notVerified": [
+      "real DeepSeek calls (server reports unconfigured)",
+      "390px browser purchase/open/sell transactions (not executed in this UI run; PostgreSQL transaction tests passed)",
+      "larger live browser viewport sizes in this run"
+    ]
+  },
+  "screenshots": [
+    "profile-account.jpg",
+    "warehouse-account.jpg",
+    "lesson-account.jpg",
+    "season-account-390.jpg",
+    "quick-diagnostic-ielts.jpg"
+  ]
+}

@@ -40,4 +40,24 @@ describe('lesson challenge disclosure', () => {
     expect(screen.getByText(/教学示例已包含本题参考答案/)).toBeTruthy();
     expect(screen.getByRole('button', { name: '参考答案已出现在示例中' })).toBeTruthy();
   });
+
+  it('offers optional Feynman assessment and preserves the learner evidence and independent challenge context', () => {
+    const onEvaluate = vi.fn();
+    const onEvidence = vi.fn();
+    render(<LessonWorkspace task={{ ...task, kind: 'boss' }} progress={{ completedObjectives: [], evidence: '', status: 'active' }} content={content} feynmanAvailable onEvidence={onEvidence} onEvaluate={onEvaluate} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    fireEvent.click(screen.getByRole('button', { name: '切换到费曼验收' }));
+    expect(screen.getByText(/针对性追问：如果把/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('学习答案与成果'), { target: { value: '概念解释：\nshape 表示各轴长度。\n具体例子：二维数组有两行三列。\n适用条件或常见误区：元素总数不因 reshape 改变。\n追问回答：如果元素数不同，无法按给定形状重排。' } });
+    fireEvent.click(screen.getByRole('button', { name: '提交费曼验收' }));
+    expect(onEvidence).toHaveBeenCalled();
+    expect(onEvaluate).toHaveBeenCalledWith('feynman');
+  });
+
+  it('shows staged rescue after three failed attempts without replacing saved evidence', () => {
+    const evidence = '原始答案仍在这里：我预测 shape 并记录了真实运行输出。';
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence, status: 'active' }} content={content} failedAttempts={3} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={vi.fn()}/>);
+    expect(screen.getByText(/连续三次独立尝试未通过/)).toBeTruthy();
+    expect((screen.getByLabelText('学习答案与成果') as HTMLTextAreaElement).value).toBe(evidence);
+    fireEvent.click(screen.getByRole('button', { name: '开始分层救援' }));
+  });
 });

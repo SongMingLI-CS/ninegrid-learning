@@ -108,19 +108,33 @@ describe('DeepSeek boundary', () => {
     expect(res.status).toBe(403);
   });
   it('returns feedback without turning a failing assessment into a pass', async () => {
-    const evaluation = { passed: false, score: 40, feedback: '你混淆了路径和内容。', gaps: ['路径表示位置'], nextStep: '解释一个不存在的路径。' };
+    const evaluation = { passed: false, score: 40, feedback: '你混淆了路径和内容。', gaps: ['路径表示位置'], nextStep: '解释一个不存在的路径。', requiredCriteria: [{ id: 't0-o', met: false, evidence: '未区分路径和内容' }] };
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(evaluation) })).post('/api/evaluate').send({ task: mission('t0'), evidence: '我认为路径就是文件里的全部文本，所以可以直接当成读取的内容。', verificationSource: 'ai' });
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.evaluation.passed).toBe(false);
     expect(res.body.evaluation.gaps).toEqual(['路径表示位置']);
     expect(res.body.verification).toBe('ai');
   });
   it('returns assisted feedback rather than independent mastery after an answer has been exposed', async () => {
-    const evaluation = { passed: true, score: 95, feedback: '答案内容符合标准。', gaps: [], nextStep: '换题练习。' };
+    const evaluation = { passed: true, score: 95, feedback: '答案内容符合标准。', gaps: ['可以补充边界情况'], nextStep: '换题练习。', requiredCriteria: [{ id: 't0-o', met: true, evidence: '答案给出了路径输出并解释差异' }] };
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(evaluation) })).post('/api/evaluate').send({ task: mission('t0'), evidence: '完成代码并给出了运行输出和解释，数组形状为三行两列。', verificationSource: 'ai', challenge: { revision: 1, prompt: '本题', rubric: ['输出与解释'], hintLevelsUsed: 0, answerRevealed: true } });
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.evaluation.passed).toBe(true);
     expect(res.body.independent).toBe(false);
+  });
+  it('does not pass a high-scoring assessment that misses a required criterion', async () => {
+    const evaluation = { passed: true, score: 95, feedback: '整体不错。', gaps: ['可继续补充边界情况'], nextStep: '增加一个反例。', requiredCriteria: [{ id: 't0-o', met: false, evidence: '没有给出两个路径的差异' }] };
+    const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(evaluation) })).post('/api/evaluate').send({ task: mission('t0'), evidence: '我写了较长的说明，但是没有展示两个文件的路径输出，也没有解释它们之间的差异。', verificationSource: 'ai' });
+    expect(res.status).toBe(200);
+    expect(res.body.evaluation.score).toBe(95);
+    expect(res.body.evaluation.passed).toBe(false);
+    expect(res.body.evaluation.gaps).toEqual(['可继续补充边界情况']);
+  });
+  it('rejects incomplete or mismatched required criterion IDs from the evaluator', async () => {
+    const evaluation = { passed: true, score: 95, feedback: '整体不错。', gaps: [], nextStep: '继续。', requiredCriteria: [{ id: 'other-objective', met: true, evidence: 'not tied to the task' }] };
+    const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(evaluation) })).post('/api/evaluate').send({ task: mission('t0'), evidence: '我展示了路径输出并说明了不同路径的含义，下面是对应的实际结果。', verificationSource: 'ai' });
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('INVALID_AI_CRITERIA');
   });
 });
 
@@ -209,6 +223,8 @@ describe('curriculum orchestration endpoints', () => {
         expect(payload.max_tokens).toBe(8192);
         const context = JSON.parse(payload.messages[1].content);
         expect(context.input.sourceMaterial).toBeUndefined();
+        expect(context.input.quickDiagnostic.items[0].confidence).toBe('needs-practice');
+        expect(prompt).toMatch(/initial self-report signal/i);
         expect(context.sourceMaterialExcerpt).toContain('nested list');
         expect(context.sourceMaterialExcerptInfo.includedRanges[0].start).toBe(0);
         return provider(shortOutline);
@@ -225,7 +241,7 @@ describe('curriculum orchestration endpoints', () => {
       }
       throw new Error('Unexpected model request');
     } });
-    const outlineResponse = await request(app).post('/api/generation/outline').send({ input: shortInput });
+    const outlineResponse = await request(app).post('/api/generation/outline').send({ input: { ...shortInput, quickDiagnostic: { version: 1, items: [{ id: 'diagnostic-concept', prompt: '解释核心概念', confidence: 'needs-practice' }, { id: 'diagnostic-code', prompt: '读一段代码', confidence: 'unknown' }, { id: 'diagnostic-prerequisite', prompt: '判断先修能力', confidence: 'known' }] } } });
     expect(outlineResponse.status).toBe(200);
     expect(outlineResponse.body.curriculumRulesVersion).toBe(4);
     const stageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-one', chainId: 'stage-one-main', taskIds: ['task-one','task-two'] });

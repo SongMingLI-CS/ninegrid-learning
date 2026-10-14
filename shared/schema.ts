@@ -90,6 +90,7 @@ export const goalInputSchema = z.object({
   goal: text(8000), level: text(200), days: z.number().int().min(1).max(365),
   dailyMinutes: z.number().int().min(1).max(1440), ultimateReward: text(2000),
   desiredArtifact: text(2000).optional(), language: z.enum(['en','zh','mixed']).optional(), sourceMaterial: z.string().max(20000).optional(),
+  quickDiagnostic: z.object({ version: z.literal(1), items: z.array(z.object({ id: idSchema, prompt: text(1000), confidence: z.enum(['known','needs-practice','unknown']), response: z.string().max(2000).optional() })).min(3).max(5) }).optional(),
 });
 
 export const campaignSchema = z.object({
@@ -182,6 +183,7 @@ export const campaignSchema = z.object({
 export const evaluationSchema = z.object({
   passed: z.boolean(), score: z.number().min(0).max(100), feedback: text(8000),
   gaps: z.array(text(2000)).max(30), nextStep: text(4000),
+  requiredCriteria: z.array(z.object({ id: idSchema, met: z.boolean(), evidence: text(2000) })).max(20).optional(),
 });
 
 const progressSchema = z.object({
@@ -213,12 +215,13 @@ export const learningStateSchema = z.object({
   reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)),
   content: z.record(idSchema, lessonContentSchema).optional(),
   schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(),
-  history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), attempts: z.record(idSchema, z.array(attemptSchema).max(10000)).optional(), contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(), gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(), dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(), knownTasks: z.record(idSchema, z.boolean()).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
+  history: z.array(z.object({ campaign: campaignSchema, progress: z.record(idSchema, progressSchema), reviews: z.array(reviewSchema).max(2000), notes: z.record(noteKey, z.string().max(100000)), content: z.record(idSchema, lessonContentSchema).optional(), schedules: z.record(z.string().max(10), dailyScheduleSchema).optional(), attempts: z.record(idSchema, z.array(attemptSchema).max(10000)).optional(), contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(), gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(), dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(), knownTasks: z.record(idSchema, z.boolean()).optional(), rescueLevels: z.record(idSchema, z.number().int().min(0).max(4)).optional(), lastTaskId: idSchema.optional() })).max(100).optional(),
   wallet: z.object({ currency: z.string().max(40), balance: z.number().int().min(0).max(MAX_HAFVER_COINS) }).optional(),
   inventory: z.record(idSchema, z.object({ item: rewardBundleSchema.shape.items.element, quantity: z.number().int().min(1).max(1000000), acquiredAt: dateSchema, sources: z.array(idSchema).max(10000) })).optional(),
   rewardLedger: z.array(z.object({ id: idSchema, campaignId: idSchema.default('legacy-unknown'), taskId: idSchema, at: dateSchema, reward: rewardBundleSchema, kind: z.enum(['mission','verification','chain','stage','season','review']), idempotencyKey: idSchema })).max(100000).optional(),
   gridOutcomes: z.record(idSchema, z.object({ artifact: text(100000), verifiedAt: dateSchema, taskIds: z.array(idSchema).min(1).max(100) })).optional(),
   dailyAdjustments: z.record(z.string().max(10), z.enum(['half','more','skip-known','too-hard'])).optional(),
+  rescueLevels: z.record(idSchema, z.number().int().min(0).max(4)).optional(),
   knownTasks: z.record(idSchema, z.boolean()).optional(),
   attempts: z.record(idSchema, z.array(attemptSchema).max(10000)).optional(),
   contentHistory: z.record(idSchema, z.array(lessonContentSchema).max(100)).optional(),

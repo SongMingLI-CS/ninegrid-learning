@@ -12,6 +12,10 @@ export function usesCodeExample(task: Pick<Task, 'title' | 'brief' | 'knowledgeP
   return /\b(numpy|python|array|ndarray|code|program|script|terminal|sql|function|variable|axis|dtype)\b/i.test(`${task.title} ${task.brief} ${(task.knowledgePoints ?? []).join(' ')}`);
 }
 
+export function feynmanFollowUp(task: Pick<Task, 'title' | 'brief'>): string {
+  return `如果把「${task.title}」用到不同输入或条件上，结果会怎样变化？请结合题目中的目标说明原因。`;
+}
+
 function answerTokens(value: string): Set<string> {
   const result = new Set<string>();
   for (const match of value.toLocaleLowerCase().matchAll(/[a-z0-9]+|[\u3400-\u9fff]{2,}/gu)) {

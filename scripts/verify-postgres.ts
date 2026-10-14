@@ -44,7 +44,7 @@ const bin = join(root, 'runtime', 'bin');
 const extension = process.platform === 'win32' ? '.exe' : '';
 const execute = promisify(execFile);
 const pgToolsDir = await (async () => {
-  const candidates = [process.env.PG_TOOLS_DIR, ...(process.platform === 'win32' ? ['C:\\Program Files\\PostgreSQL\\18\\bin'] : ['/usr/bin', '/usr/local/bin'])].filter((value): value is string => Boolean(value));
+  const candidates = [process.env.PG_TOOLS_DIR, ...(process.platform === 'win32' ? ['C:\\Program Files\\PostgreSQL\\18\\bin'] : ['/opt/homebrew/opt/libpq/bin', '/opt/homebrew/bin', '/usr/bin', '/usr/local/bin', '/Library/PostgreSQL/18/bin'])].filter((value): value is string => Boolean(value));
   for (const candidate of candidates) {
     try { await execute(join(candidate, `pg_dump${extension}`), ['--version']); return candidate; } catch { /* try next installed PostgreSQL client directory */ }
   }
@@ -91,7 +91,11 @@ const provider: typeof fetch = async (_url, init) => {
   const system=String(body.messages[0].content??'');
   if(system.includes('paid, optional learning challenge')&&failChallengeProvider){challengeProviderFailureCalls++;return new Response(JSON.stringify({error:{message:'simulated provider outage'}}),{status:503});}
   visualBytes = Array.isArray(content) && content.some((item: { type?: string; image_url?: { url?: string } }) => item.type === 'image_url' && item.image_url?.url?.startsWith('data:image/webp;base64,'));
-  const output=system.includes('paid, optional learning challenge')?{passed:true,score:92,feedback:'Mocked evaluation: answer explains the requested transformation and checks the resulting shape.',gaps:[],nextStep:'Try a second input.'}:system.includes('rigorous learning assessor')?{passed:true,score:92,feedback:'Mocked evidence check.',gaps:[],nextStep:'Continue.'}:{ recognizedText: '2 × 3', analysis: 'Two rows and three columns.', uncertainties: [], nextStep: 'Predict a new shape.' };
+  let parsedContent:Record<string,unknown>|undefined;
+  try { const parsed=typeof content==='string'?JSON.parse(content):content; if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))parsedContent=parsed as Record<string,unknown>; } catch { /* non-JSON model context, such as image analysis */ }
+  const taskContext=parsedContent?.task&&typeof parsedContent.task==='object'?parsedContent.task as {objectives?:Array<{id:string;text:string}>;acceptance?:string;id?:string}:undefined;
+  const criteria=(parsedContent?.requiredCriteria as Array<{id:string;text:string}>|undefined)??taskContext?.objectives?.map(item=>({id:item.id,text:item.text}))??[{id:`${taskContext?.id??'challenge'}-acceptance`,text:taskContext?.acceptance??'task acceptance'}];
+  const output=system.includes('rigorous assessor for a paid, optional learning challenge')?{passed:true,score:92,feedback:'Mocked evaluation: answer explains the requested transformation and checks the resulting shape.',gaps:[],nextStep:'Try a second input.',requiredCriteria:criteria.map(item=>({id:item.id,met:true,evidence:`Mock evidence for ${item.text}`}))}:system.includes('rigorous learning assessor')?{passed:true,score:92,feedback:'Mocked evidence check.',gaps:[],nextStep:'Continue.',requiredCriteria:criteria.map(item=>({id:item.id,met:true,evidence:`Mock evidence for ${item.text}`}))}:{ recognizedText: '2 × 3', analysis: 'Two rows and three columns.', uncertainties: [], nextStep: 'Predict a new shape.' };
   return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(output) } }] }), { status: 200 });
 };
 function newState(campaign = NUMPY_DEMO_CAMPAIGN): LearningState {
@@ -185,9 +189,11 @@ try {
   assert.equal(freshB.selectionRevision,3);
   await b.patch(`/api/seasons/${lifecycleA.id}/lifecycle`).set('x-csrf-token',await csrf(b)).send({status:'active',revision:1,selectionRevision:3}).expect(404);
   results.push('season creation/current selection revisions are atomic and monotonic; owner isolation, stale conflict, paused write/evaluation/settlement rejection, active resume, archived fallback, and empty-pointer recovery verified');
-  const draftInput = { goal: NUMPY_DEMO_CAMPAIGN.goal, level: '已学 ndarray、shape、dtype', days: 28, dailyMinutes: 30, ultimateReward: '完成可验证的数据处理作品' };
+  const draftInput = { goal: NUMPY_DEMO_CAMPAIGN.goal, level: '已学 ndarray、shape、dtype', days: 28, dailyMinutes: 30, ultimateReward: '完成可验证的数据处理作品', quickDiagnostic: { version: 1 as const, items: [{ id: 'diagnostic-concept', prompt: '解释核心概念', confidence: 'needs-practice' as const, response: '我会 shape，但索引要练习。' }, { id: 'diagnostic-code', prompt: '读取代码', confidence: 'unknown' as const }, { id: 'diagnostic-prerequisite', prompt: '判断先修', confidence: 'known' as const }] } };
   const draftResponse = await a.post('/api/generation-drafts').set('x-csrf-token', await csrf(a)).send({ input: draftInput, rulesVersion: 4 }).expect(201);
   const draftId = draftResponse.body.draft.id as string;
+  const persistedDraft = await a.get('/api/generation-drafts').expect(200);
+  assert.deepEqual(persistedDraft.body.drafts.find((item: { id: string }) => item.id === draftId)?.input.quickDiagnostic, draftInput.quickDiagnostic, 'account draft persists versioned quick diagnostic responses');
   await b.get('/api/generation-drafts').expect(200).then(response => assert.equal(response.body.drafts.some((item: { id: string }) => item.id === draftId), false));
   const draftCampaign = { ...structuredClone(NUMPY_DEMO_CAMPAIGN), id: randomUUID() };
   draftCampaign.seasonalCollectible = { id: 'model-proposal', name: '坐标校准章', story: '记录一次独立完成的坐标数据整理。', appearance: '深色金属徽章，表面刻有抽象网格线。', abilityOutcome: '交付并解释经过验证的数据处理项目。', rewardKey: '0'.repeat(64), finalTaskId: draftCampaign.stages.at(-1)!.gateTaskIds![0], displayValue: 1_600_000 };

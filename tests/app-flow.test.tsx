@@ -81,6 +81,51 @@ describe('local entry and account feature discoverability', () => {
     expect(screen.queryByRole('heading', { name: 'NumPy 数据准备行动' })).toBeNull();
     expect(requests.some(request => request.url === '/api/seasons' && request.method === 'POST')).toBe(false);
   });
+
+  it('offers optional goal-level quick diagnostics and saves the self-report before generation', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash', accounts: true, accountAvailability: 'enabled' }), { status: 200 });
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'diagnostic-user', email: 'learner@example.test', createdAt: new Date().toISOString() } }), { status: 200 });
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }), { status: 200 });
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 404 });
+    }));
+    render(<App/>);
+    await screen.findByRole('heading', { name: '创建你的第一个学习赛季' });
+    fireEvent.click(screen.getByRole('button', { name: '开始设定学习目标' }));
+    const goal = '学习 NumPy 数组索引并完成一个数据筛选小项目';
+    fireEvent.change(screen.getByPlaceholderText(/例如：我刚学 NumPy/), { target: { value: goal } });
+    fireEvent.click(screen.getByRole('button', { name: '开始快速定级' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '能解释' })[0]);
+    fireEvent.change(screen.getByRole('textbox', { name: '1 定级回答' }), { target: { value: '我知道数组用整数位置选出一行。' } });
+    expect(window.localStorage.getItem('ninegrid.quick-diagnostic.v1.diagnostic-user')).toContain(goal);
+    const saved = JSON.parse(window.localStorage.getItem('ninegrid.quick-diagnostic.v1.diagnostic-user') ?? '{}');
+    expect(saved.goal).toBe(goal);
+    expect(saved.answers['diagnostic-concept']).toMatchObject({ confidence: 'known', response: '我知道数组用整数位置选出一行。' });
+  });
+
+  it('labels a server-backed demo season and its saves as account storage', async () => {
+    const numpyState = { ...createInitialState(), campaign: structuredClone(NUMPY_DEMO_CAMPAIGN), progress: createProgressForCampaign(NUMPY_DEMO_CAMPAIGN) };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash', accounts: true, accountAvailability: 'enabled', branch: 'codex/learning-loop-fixes', commit: 'ce51c842b267' }), { status: 200 });
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'account-123', email: 'learner@example.test', createdAt: new Date().toISOString() } }), { status: 200 });
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [{ id: 'season-123', revision: 1, title: NUMPY_DEMO_CAMPAIGN.title, state: numpyState, lifecycleStatus: 'active' }], currentSeasonId: 'season-123', selectionRevision: 1 }), { status: 200 });
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }), { status: 200 });
+      if (url === '/api/wallet') return new Response(JSON.stringify({ wallets: [{ currency: 'learning-coin', balance: 0 }], ledger: [] }), { status: 200 });
+      if (url === '/api/inventory') return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 404 });
+    }));
+    render(<App/>);
+    expect(await screen.findByText('账号赛季 · 预置示例')).toBeTruthy();
+    expect(screen.getByText('可选示例')).toBeTruthy();
+    expect(screen.getAllByText('服务器已同步').length).toBeGreaterThan(0);
+    expect(screen.getByText('服务器为主存档 · 本机恢复缓存未加密')).toBeTruthy();
+    expect(screen.queryByText('只保存在此设备')).toBeNull();
+    expect(screen.queryByText('本机自动保存')).toBeNull();
+    expect(screen.queryByText('浏览器本地存储；未启用加密')).toBeNull();
+  });
 });
 function openFirstNumpyTask() {
   const row = Array.from(document.querySelectorAll<HTMLButtonElement>('.mission-row')).find(button => button.textContent?.includes('校准仪表：读懂 shape 与 axis'));

@@ -83,12 +83,19 @@ function applyReward(state: LearningState, task: Task, reward: RewardBundle, kin
 }
 
 export function switchCampaign(state: LearningState, campaign: Campaign): LearningState {
-  const snapshot: CampaignSnapshot = { campaign: state.campaign, progress: state.progress, reviews: state.reviews, notes: state.notes, content: state.content, schedules: state.schedules, attempts: state.attempts, contentHistory: state.contentHistory, gridOutcomes: state.gridOutcomes, dailyAdjustments: state.dailyAdjustments, knownTasks: state.knownTasks, lastTaskId: state.lastTaskId };
+  const snapshot: CampaignSnapshot = { campaign: state.campaign, progress: state.progress, reviews: state.reviews, notes: state.notes, content: state.content, schedules: state.schedules, attempts: state.attempts, contentHistory: state.contentHistory, gridOutcomes: state.gridOutcomes, dailyAdjustments: state.dailyAdjustments, knownTasks: state.knownTasks, rescueLevels: state.rescueLevels, lastTaskId: state.lastTaskId };
   const existing = state.history?.find(item => item.campaign.id === campaign.id);
   const history = [...(state.history ?? []).filter(item => item.campaign.id !== campaign.id && item.campaign.id !== state.campaign.id), snapshot];
-  if (existing) return { ...state, ...existing, attempts: existing.attempts ?? {}, contentHistory: existing.contentHistory ?? {}, gridOutcomes: existing.gridOutcomes ?? {}, dailyAdjustments: existing.dailyAdjustments ?? {}, knownTasks: existing.knownTasks ?? {}, version: 2, history };
+  if (existing) return { ...state, ...existing, attempts: existing.attempts ?? {}, contentHistory: existing.contentHistory ?? {}, gridOutcomes: existing.gridOutcomes ?? {}, dailyAdjustments: existing.dailyAdjustments ?? {}, knownTasks: existing.knownTasks ?? {}, rescueLevels: existing.rescueLevels ?? {}, version: 2, history };
   const seeded = Object.fromEntries(getTasks(campaign).filter(task => task.teaching).map(task => [task.id, task.teaching!]));
-  return { ...state, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, content: seeded, contentHistory: {}, attempts: {}, gridOutcomes: {}, dailyAdjustments: {}, knownTasks: {}, schedules: {}, version: 2, history };
+  return { ...state, campaign, progress: createProgressForCampaign(campaign), reviews: [], notes: {}, content: seeded, contentHistory: {}, attempts: {}, gridOutcomes: {}, dailyAdjustments: {}, rescueLevels: {}, knownTasks: {}, schedules: {}, version: 2, history };
+}
+
+export function requestTaskRescue(state: LearningState, taskId: string): LearningState {
+  const task = getTasks(state.campaign).find(item => item.id === taskId);
+  if (!task || state.progress[taskId]?.status === 'completed') return state;
+  const current = state.rescueLevels?.[taskId] ?? 0;
+  return { ...state, rescueLevels: { ...(state.rescueLevels ?? {}), [taskId]: Math.min(4, current + 1) } };
 }
 
 export function cacheLesson(state: LearningState, taskId: string, value: LessonContent, regenerate = false): LearningState {

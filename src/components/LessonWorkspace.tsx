@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LessonContent, Task, TaskProgress } from '../../shared/types';
-import { lessonExposesReferenceAnswer, taskChallengeContract } from '../../shared/learningChallenge';
+import { feynmanFollowUp, lessonExposesReferenceAnswer, taskChallengeContract } from '../../shared/learningChallenge';
 import { apiFetch } from '../lib/api';
 
 export interface LessonWorkspaceProps {
@@ -13,7 +13,7 @@ export interface LessonWorkspaceProps {
   onEvidence(value: string): void;
   onSupplementalEvidence?(value: string): void;
   onObjective?(objectiveId: string): void;
-  onEvaluate(): void;
+  onEvaluate(mode?: 'standard' | 'feynman'): void;
   onSelfCheck(): void;
   onComplete(): void;
   onCancel?(): void;
@@ -24,12 +24,17 @@ export interface LessonWorkspaceProps {
   editable?: boolean;
   diagnosticMode?: boolean;
   onDiagnosticFinish?(confidence: 'known' | 'needs-practice', answer: string): void;
+  onRescue?(): void;
+  rescueLevel?: number;
+  failedAttempts?: number;
+  feynmanAvailable?: boolean;
 }
 
-export function LessonWorkspace({ task, seasonId, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, onAnswerRevealed, onRequestTransfer, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
+export function LessonWorkspace({ task, seasonId, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, onAnswerRevealed, onRequestTransfer, onRescue, rescueLevel = 0, failedAttempts = 0, feynmanAvailable = false, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
   const [hintLevel, setHintLevel] = useState(progress.hintLevelsUsed ?? 0);
   const [answerVisible, setAnswerVisible] = useState(progress.answerRevealed ?? false);
   const [showChinese, setShowChinese] = useState(false);
+  const [feynmanMode, setFeynmanMode] = useState(false);
   const [diagnosticAnswer, setDiagnosticAnswer] = useState('');
   const [attachmentId, setAttachmentId] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
@@ -38,7 +43,7 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
   const imageRequest = useRef<AbortController | null>(null);
   const exampleContainsAnswer = Boolean(content && lessonExposesReferenceAnswer(content));
   useEffect(() => {
-    imageRequest.current?.abort(); setHintLevel(progress.hintLevelsUsed ?? 0); setAnswerVisible(progress.answerRevealed ?? false); setShowChinese(false); setDiagnosticAnswer(progress.evidence); setAttachmentId(''); setImageAnalysis(undefined); setImageError('');
+    imageRequest.current?.abort(); setHintLevel(progress.hintLevelsUsed ?? 0); setAnswerVisible(progress.answerRevealed ?? false); setShowChinese(false); setFeynmanMode(false); setDiagnosticAnswer(progress.evidence); setAttachmentId(''); setImageAnalysis(undefined); setImageError('');
     if (!seasonId) return;
     const controller = new AbortController(); imageRequest.current = controller;
     void apiFetch(`/api/seasons/${seasonId}/tasks/${task.id}/attachments`, { signal: controller.signal })
@@ -99,7 +104,8 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
     </>}
     <section className="lesson-deliverable">
       <span className="lesson-kicker">提交结果与过程证据</span><p>验收按本赛季保存的任务目标、验收标准、当前挑战版本和本次作答帮助状态执行。</p>
-      <label className="evidence-label">原始完成证据<textarea aria-label="学习答案与成果" value={progress.evidence} disabled={locked} onChange={event => onEvidence(event.target.value)} placeholder="先写自己的预测，再贴代码、输出、解释或卡住的位置。"/></label>
+      {feynmanAvailable && <div className="feynman-mode"><div><strong>费曼教给新手</strong><p>可选文字验收：用自己的话解释、举例、说明适用条件或常见误区，再回答一个追问。简洁表达即可。</p></div><button type="button" aria-pressed={feynmanMode} disabled={busy || locked} onClick={() => setFeynmanMode(value => !value)}>{feynmanMode ? '当前：费曼验收' : '切换到费曼验收'}</button>{feynmanMode && <p className="feynman-prompt">概念解释：“{task.title}”。<br/>针对性追问：{feynmanFollowUp(task)}</p>}</div>}
+      <label className="evidence-label">原始完成证据<textarea aria-label="学习答案与成果" value={progress.evidence} disabled={locked} onChange={event => onEvidence(event.target.value)} placeholder={feynmanMode ? '概念解释：…\n具体例子：…\n适用条件或常见误区：…\n追问回答：…' : '先写自己的预测，再贴代码、输出、解释或卡住的位置。'}/></label>
       {canReverify && <label className="evidence-label supplemental-evidence">补充证据（可选）<textarea aria-label="补充证据" value={progress.supplementalEvidence ?? ''} onChange={event => onSupplementalEvidence?.(event.target.value)} placeholder="补充新的运行结果、解释或修正后的作品；原始完成记录会保留。"/></label>}
       {seasonId && <section className="image-evidence">
         <strong>学习图片与过程检查</strong><p>可上传题目截图、手写过程或运行结果。图片分析用于辅助反馈，不单独证明掌握。</p>
@@ -111,7 +117,8 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
         </>}
         {imageAnalysis && <div className="lesson-feedback"><strong>识别到的内容：</strong>{imageAnalysis.recognizedText || '没有识别到清晰文字'}<p>{imageAnalysis.analysis}</p>{imageAnalysis.uncertainties.length > 0 && <p>不确定处：{imageAnalysis.uncertainties.join('；')}</p>}<p>下一步：{imageAnalysis.nextStep}</p><small>图片本身未被视为独立掌握证明。</small></div>}
       </section>}
-      <div className="lesson-actions"><button type="button" onClick={onSelfCheck} disabled={busy || locked || progress.answerRevealed}>我已独立完成 · 自评</button><button type="button" onClick={onEvaluate} disabled={busy || (progress.status === 'completed' ? !canReverify : !editable)}>{busy ? '核验中…' : canReverify ? '基于原证据请求 AI 核验' : '提交给 AI 核验'}</button><button type="button" onClick={onComplete} disabled={busy || !canSettle}>{canReverify ? '升级为 AI 验证' : '结算任务与奖励'}</button></div>
+      <div className="lesson-actions"><button type="button" onClick={onSelfCheck} disabled={busy || locked || progress.answerRevealed}>我已独立完成 · 自评</button><button type="button" onClick={() => onEvaluate(feynmanMode ? 'feynman' : 'standard')} disabled={busy || (progress.status === 'completed' ? !canReverify : !editable)}>{busy ? '核验中…' : canReverify ? '基于原证据请求 AI 核验' : feynmanMode ? '提交费曼验收' : '提交给 AI 核验'}</button><button type="button" onClick={onComplete} disabled={busy || !canSettle}>{canReverify ? '升级为 AI 验证' : '结算任务与奖励'}</button></div>
+      {(failedAttempts >= 3 || rescueLevel > 0) && progress.status !== 'completed' && <section className="rescue-panel" aria-live="polite"><span className="lesson-kicker">卡点救援 · 已保留 {failedAttempts} 次失败记录</span><h3>需要拆得更细吗？</h3>{rescueLevel === 0 ? <p>连续三次独立尝试未通过。可以逐层获得帮助；原答案和记录不会重置。</p> : rescueLevel === 1 ? <p><strong>第 1 层 · 看清要求：</strong>{task.acceptance} 前置任务：{task.prerequisites.length ? task.prerequisites.join('、') : '本任务没有声明前置任务'}。</p> : rescueLevel === 2 ? <p><strong>第 2 层 · 降低难度：</strong>从最小输入开始，只验证一个知识点。先预测结果，再记下观察及原因。</p> : rescueLevel === 3 ? <p><strong>第 3 层 · 前置短练习：</strong>先不做整项交付，只解释“{task.objectives[0]?.text ?? task.title}”，并写一个最小例子和预期结果。</p> : <div><p><strong>第 4 层 · 完整示范：</strong>示范用于学习反馈；查看后当前题不能证明独立掌握，需要新问题或新数据的变式。</p>{content?.challenge.referenceAnswer && <><p>{content.challenge.referenceAnswer}</p><button type="button" onClick={() => { setAnswerVisible(true); onAnswerRevealed?.(); }}>记录已查看示范</button></> }<button type="button" onClick={onRequestTransfer} disabled={busy || locked}>生成新的独立变式</button></div>}<button type="button" onClick={onRescue} disabled={!onRescue || rescueLevel >= 4}>{rescueLevel === 0 ? '开始分层救援' : rescueLevel < 4 ? '继续下一层帮助' : '已到最后一层'}</button></section>}
       {progress.answerRevealed && <p className="lesson-feedback" role="status">当前挑战已暴露参考答案，或你已主动查看；本次评价只提供学习反馈，不能结算为独立掌握。请生成同目标迁移题并提交新证据。</p>}
       {progress.assistedEvaluation && <div className="lesson-feedback" role="status"><strong>学习反馈：{progress.assistedEvaluation.score}/100</strong><p>{progress.assistedEvaluation.feedback}</p><small>本次作答使用了参考答案，不计入独立掌握。</small></div>}
       {progress.selfChecked && <p className="lesson-feedback" role="status">自我检查已记录；这不是 AI 掌握度或百分制评分。</p>}

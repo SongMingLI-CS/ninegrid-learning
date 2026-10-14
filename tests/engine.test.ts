@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Campaign, Evaluation, LearningState, LessonContent, Task } from '../shared/types';
 import { campaignSchema, evaluationSchema, goalInputSchema, learningStateSchema, taskSchema } from '../shared/schema';
-import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setAssistedEvaluation, setChallengeAssistance, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective } from '../src/lib/engine';
+import { activateTask, buildDailySchedule, cacheLesson, completeTask, createProgressForCampaign, getStats, getTasks, isTaskUnlocked, markSelfChecked, rateReview, recordAttempt, recordGridOutcome, setAssistedEvaluation, setChallengeAssistance, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, requestTaskRescue } from '../src/lib/engine';
 import { createInitialState, exportState, importState, loadState, loadStateSafely, saveState, saveStateSafely, setStorageScope } from '../src/lib/storage';
 import { DEMO_CAMPAIGN } from '../src/lib/demo';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
@@ -29,6 +29,20 @@ function done(state: LearningState, id: string) { return completeTask(ready(stat
 afterEach(() => { vi.unstubAllGlobals(); setStorageScope(); });
 
 describe('progression and verification', () => {
+  it('keeps rescue progress and the original attempt record without resetting a task', () => {
+    let state = fresh();
+    state = recordAttempt(state, 'a', { answer: '初次尝试，缺少运行输出和解释。', hintLevelsUsed: 0, verification: 'ai', passed: false, score: 40, feedback: '请补输出。' }, NOW);
+    state = requestTaskRescue(state, 'a');
+    expect(state.rescueLevels?.a).toBe(1);
+    expect(state.attempts?.a).toHaveLength(1);
+    expect(state.progress.a.status).toBe('idle');
+    const complete = done(state, 'a');
+    expect(requestTaskRescue(complete, 'a')).toBe(complete);
+    const second = { ...state.campaign, id: 'second', title: '第二行动线' };
+    const restored = switchCampaign(switchCampaign(state, second), state.campaign);
+    expect(restored.rescueLevels?.a).toBe(1);
+    expect(restored.attempts?.a).toHaveLength(1);
+  });
   it('requires every earlier stage and explicit prerequisites before unlocking', () => {
     let state = fresh();
     expect(getTasks(state.campaign).map(t => t.id)).toEqual(['a', 'b', 'c']);
