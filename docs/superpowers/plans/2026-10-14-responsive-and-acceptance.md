@@ -59,3 +59,20 @@
 - [x] Review the full diff and verification evidence.
 - [x] Commit all intended changes on `codex/learning-loop-fixes` and push that branch.
 - [x] Verify the resulting SHA, upstream equality, and clean worktree.
+
+---
+
+## Real browser/provider continuation (2026-10-14)
+
+This follow-up starts from the pushed SHA above and is recorded in [real-browser-and-provider-2026-10-14.md](../acceptance/real-browser-and-provider-2026-10-14.md).
+
+- [x] Confirm current HEAD, upstream and worktree before editing.
+- [x] Fix stage-generation task-kind/resource prompt ambiguity and add regression assertions.
+- [x] Fix lesson JSON-mode prompt, recover a real truncated lesson through the UI retry, and verify material-grounded output.
+- [x] Fix adaptation JSON-mode prompt and add regression assertion. The old fixture process was still serving the pre-fix module, so live provider verification of this corrected prompt remains outstanding.
+- [x] Generate two distinct real-provider learning seasons, assess correct/incorrect/uncertain NumPy evidence, settle one reward, switch seasons and reload to verify persistence.
+- [x] Re-run Vitest, typecheck, build, API tests and the fresh PostgreSQL integration suite.
+- [ ] User-confirmed browser transaction steps: purchase the small cache, open it, inspect and lock an item, then sell an eligible item and inspect the ledger/balance. Browser policy requires the user to perform the final purchase and sale actions; the test browser remains at the purchase confirmation.
+- [ ] Isolated remote HTTPS deployment remains conditional on a non-secret test hostname/site configuration and sufficient server resources; the Ubuntu host remains unchanged.
+- [ ] Physical Windows 4K scaling and local screenshot-file export remain unavailable in this environment. The previous CSS-viewport simulation remains documented separately.
+- [ ] Commit/push this follow-up to `codex/learning-loop-fixes`, without merging `main`.

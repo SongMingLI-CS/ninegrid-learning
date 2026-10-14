@@ -197,6 +197,8 @@ describe('curriculum orchestration endpoints', () => {
       }
       if (prompt.includes('exactly this batch')) {
         const context = JSON.parse(payload.messages[1].content);
+        expect(prompt).toMatch(/kind.*investigate.*recall.*practice.*boss/i);
+        expect(prompt).toMatch(/resources.*title.*url/i);
         calls.push(`chain:${context.stage.chain.id}`);
         expect(context.stage.chain.id).toBe('stage-one-main');
         expect(context.sourceMaterialExcerpt).toContain('nested list');
@@ -252,6 +254,7 @@ describe('curriculum orchestration endpoints', () => {
     expect(res.status).toBe(200);
     expect(res.body.lesson.explanation).toContain('shape');
     expect(sent.messages[0].content).toMatch(/untrusted/i);
+    expect(sent.messages[0].content).toMatch(/JSON/i);
     expect(sent.messages[1].content).toContain('调查变量与文件路径');
   });
   it('accepts a compact single-task lesson request without sending the whole campaign to the provider', async () => {
@@ -336,6 +339,7 @@ describe('curriculum orchestration endpoints', () => {
       .post('/api/adapt').send({ context: { campaign: { id: 'course', title: 'Long course', goal: 'Finish a data project', dailyMinutes: 30 }, currentTask: { id: 'current', title: 'Shape', brief: 'Explain dimensions', minutes: 10 }, availableTasks: [{ id: 'current', title: 'Shape', brief: 'Explain dimensions', minutes: 10 }, { id: 'next-index', title: 'Indexing', brief: 'Select an element', minutes: 15 }] }, currentTaskId: 'current', evidence: 'I predicted the dimensions and explained each output value.', history: [{ verification: 'ai', passed: true, score: 90, feedback: 'Clear explanation.' }], remainingMinutes: 20 });
     expect(response.status).toBe(200);
     expect(response.body.recommendation.nextTaskId).toBe('next-index');
+    expect(sent.messages[0].content.toLowerCase()).toContain('json');
     const context = JSON.parse(sent.messages[1].content);
     expect(context.availableTasks).toHaveLength(2);
     expect(context.campaign.stages).toBeUndefined();
