@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Task } from '../shared/types';
+import { buildTaskVideoQuery } from '../shared/videoSearch';
 
 export interface VerifiedVideo {
   videoId: string;
@@ -68,12 +69,11 @@ function detailsRows(payload: unknown): VideoDetails[] {
   });
 }
 
-export async function searchTaskVideos(task: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance'> & Partial<Pick<Task, 'objectives' | 'steps' | 'curiosity'>>, options: {
+export async function searchTaskVideos(task: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance'> & Partial<Pick<Task, 'objectives' | 'steps' | 'curiosity' | 'knowledgePoints'>>, options: {
   apiKey?: string; budgetMinutes: number; language?: 'en' | 'zh' | 'mixed'; fetchImpl?: typeof fetch; now?: () => Date;
 }): Promise<YouTubeSearchResult> {
   const language = options.language ?? 'mixed';
-  const knowledgeTerms = [...(task.objectives ?? []).map(item => item.text), ...(task.steps ?? []).slice(0, 2), task.curiosity ?? ''];
-  const query = [task.title, task.brief, ...knowledgeTerms, task.acceptance].filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 500);
+  const query = buildTaskVideoQuery(task, language);
   const fallbackResult = fallback(query);
   const key = options.apiKey?.trim();
   if (!key || !Number.isInteger(options.budgetMinutes) || options.budgetMinutes < 1 || options.budgetMinutes > 1440) return fallbackResult;
@@ -99,7 +99,7 @@ export async function searchTaskVideos(task: Pick<Task, 'id' | 'title' | 'brief'
       const detail = details.get(candidate.id);
       if (!detail || detail.privacy !== 'public' || !detail.embeddable) return [];
       if (detail.duration > options.budgetMinutes * 60) return [];
-      return [{ videoId: candidate.id, title: detail.title, channel: detail.channel, thumbnail: candidate.thumbnail, durationSeconds: detail.duration, language: detail.language, captionsAvailable: detail.captions, watchUrl: `https://www.youtube.com/watch?v=${candidate.id}`, verifiedAt: checkedAt, source: 'youtube-data-api-v3' as const, metadataOnly: true as const, matchReason: `标题、简介与任务「${task.title}」及目标「${task.acceptance}」由官方 YouTube 搜索索引匹配；这里只核实公开状态、可嵌入属性与时长，不代表已逐段审看或看完。` }];
+      return [{ videoId: candidate.id, title: detail.title, channel: detail.channel, thumbnail: candidate.thumbnail, durationSeconds: detail.duration, language: detail.language, captionsAvailable: detail.captions, watchUrl: `https://www.youtube.com/watch?v=${candidate.id}`, verifiedAt: checkedAt, source: 'youtube-data-api-v3' as const, metadataOnly: true as const, matchReason: `检索关键词「${query}」由官方 YouTube 搜索索引匹配；这里只核实公开状态、可嵌入属性与时长，不代表已逐段审看或看完。` }];
     }).slice(0, 3);
     const result = videos.length ? { status: 'metadata-verified' as const, query, searchUrl: fallbackResult.searchUrl, videos, notice: '元数据已核验；尚未进行逐段内容审阅，也不会自动计为已观看或掌握。' } : fallback(query, '检索结果不满足公开/可用条件或单条视频超出本次预算；已提供搜索入口，可自行选择替代内容。');
     if (cache.size >= 100) cache.delete(cache.keys().next().value!);

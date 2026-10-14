@@ -82,6 +82,28 @@ describe('local entry and account feature discoverability', () => {
     expect(requests.some(request => request.url === '/api/seasons' && request.method === 'POST')).toBe(false);
   });
 
+  it('restores a saved first-course draft after login even before any season has been activated', async () => {
+    const goal = '学习 NumPy 二维数组的 shape、dtype 与 axis 求和';
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); calls.push(url);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: true, accounts: true, model: 'deepseek-flash', accountAvailability: 'enabled' }));
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'draft-owner', email: 'draft@example.test', createdAt: new Date().toISOString() } }));
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }));
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [{ id: 'first-course', revision: 4, rulesVersion: 4, status: 'failed', input: { goal, level: '了解一些，需要补基础', days: 1, dailyMinutes: 30, ultimateReward: '解释数组的形状与轴' }, batches: {}, progress: { completedTasks: 0, totalTasks: 2 } }] }));
+      if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: null }));
+      return new Response('{}', { status: 404 });
+    }));
+    render(<App/>);
+    await screen.findByRole('heading', { name: '创建你的第一个学习赛季' });
+    fireEvent.click(await screen.findByRole('button', { name: '恢复生成草稿' }));
+    expect((screen.getByPlaceholderText(/例如：我刚学 NumPy/) as HTMLTextAreaElement).value).toBe(goal);
+    expect((screen.getByRole('spinbutton', { name: /赛季长度/ }) as HTMLInputElement).value).toBe('1');
+    expect((screen.getByRole('spinbutton', { name: /每天预算/ }) as HTMLInputElement).value).toBe('30');
+    expect(screen.getByText(/服务器草稿已恢复/)).toBeTruthy();
+    expect(calls.some(url => url.startsWith('/api/generation/'))).toBe(false);
+  });
+
   it('offers optional goal-level quick diagnostics and saves the self-report before generation', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

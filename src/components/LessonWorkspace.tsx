@@ -28,10 +28,13 @@ export interface LessonWorkspaceProps {
   rescueLevel?: number;
   failedAttempts?: number;
   latestFailedAttempt?: TaskAttempt;
+  attempts?: TaskAttempt[];
   feynmanAvailable?: boolean;
+  focusMode?: boolean;
+  onToggleFocusMode?(): void;
 }
 
-export function LessonWorkspace({ task, seasonId, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, onAnswerRevealed, onRequestTransfer, onRescue, rescueLevel = 0, failedAttempts = 0, latestFailedAttempt, feynmanAvailable = false, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
+export function LessonWorkspace({ task, seasonId, progress, content, loading = false, feedback, onEvidence, onSupplementalEvidence, onObjective, onEvaluate, onSelfCheck, onComplete, onCancel, onHintUsed, onAnswerRevealed, onRequestTransfer, onRescue, rescueLevel = 0, failedAttempts = 0, latestFailedAttempt, attempts = [], feynmanAvailable = false, focusMode = false, onToggleFocusMode, busy = false, editable = true, diagnosticMode = false, onDiagnosticFinish }: LessonWorkspaceProps) {
   const [hintLevel, setHintLevel] = useState(progress.hintLevelsUsed ?? 0);
   const [answerVisible, setAnswerVisible] = useState(progress.answerRevealed ?? false);
   const [showChinese, setShowChinese] = useState(false);
@@ -119,8 +122,8 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
     } catch(error) { setFeynmanError(error instanceof Error?error.message:'网络失败；答案仍在输入框中，可以重试。'); }
     finally { setFeynmanBusy(false); }
   };
-  return <article className="lesson-workspace" aria-label="学习工作区">
-    <header className="lesson-heading"><div><span className="micro-label">LEARNING WORKSPACE · {task.track === 'branch' ? 'OPTIONAL BRANCH' : 'MAINLINE'}</span><h2>{task.title}</h2><p>{task.brief}</p></div><span className="lesson-time">约 {task.minutes} 分钟</span></header>
+  return <article className={`lesson-workspace ${focusMode ? 'lesson-focus-mode' : ''}`} aria-label="学习工作区">
+    <header className="lesson-heading"><div><span className="micro-label">LEARNING WORKSPACE · {task.track === 'branch' ? 'OPTIONAL BRANCH' : 'MAINLINE'}</span><h2>{task.title}</h2><p>{task.brief}</p></div><div className="lesson-heading-actions"><span className="lesson-time">约 {task.minutes} 分钟</span>{onToggleFocusMode && <button type="button" className="secondary-button focus-mode-toggle" aria-pressed={focusMode} onClick={onToggleFocusMode}>{focusMode ? '退出专注' : '专注学习'}</button>}</div></header>
     {loading && <div className="lesson-loading" role="status">正在按课程蓝图编写本任务内容…{onCancel&&<button type="button" onClick={onCancel}>取消</button>}</div>}
     {diagnosticMode && <section className="lesson-diagnostic"><span className="lesson-kicker">两分钟掌握诊断</span><h3>{task.recallQuestion}</h3><label>先闭卷写下你的预测<textarea aria-label="两分钟诊断回答" value={diagnosticAnswer} onChange={event => { setDiagnosticAnswer(event.target.value); onEvidence(event.target.value); }} placeholder="写下预测结果、理由或一个简短解题步骤。"/></label><p>通关标准：{task.acceptance}</p><div className="lesson-actions"><button type="button" onClick={() => onDiagnosticFinish?.('known', diagnosticAnswer.trim())} disabled={diagnosticAnswer.trim().length < 20}>我达到标准 · 记录诊断通关</button><button type="button" onClick={() => onDiagnosticFinish?.('needs-practice', diagnosticAnswer.trim())} disabled={diagnosticAnswer.trim().length < 20}>还不确定 · 保存回答并进入补练</button></div><small>诊断通关计为自行完成；不会显示 AI 验证，也不发高价值道具。</small></section>}
     <section className="lesson-objectives"><strong>本次能力目标</strong>{task.objectives.map(objective=><label key={objective.id}><input type="checkbox" checked={progress.completedObjectives.includes(objective.id)} disabled={locked} onChange={()=>onObjective?.(objective.id)}/>{objective.text}</label>)}</section>
@@ -159,6 +162,7 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
       {progress.selfChecked && <p className="lesson-feedback" role="status">自我检查已记录；这不是 AI 掌握度或百分制评分。</p>}
       {progress.status === 'completed' && <p className="lesson-feedback" role="status">成果已保存 · {progress.verification === 'ai' ? 'AI 已核验' : '由你自行完成'} · 复习已安排</p>}
       {feedback && <p className="lesson-feedback" role="status">{feedback}</p>}
+      {attempts.length > 0 && <details className="attempt-history"><summary>查看作答历史（{attempts.length} 次）</summary><ol>{attempts.map((attempt, index) => <li key={`${attempt.at}-${index}`}><strong>版本 {attempt.lessonRevision ?? '未知'} · {attempt.passed ? '通过' : '未通过'} · {attempt.verification === 'ai' ? 'AI 核验' : attempt.verification === 'self' ? '自行完成' : '辅助反馈'}</strong><small>{new Date(attempt.at).toLocaleString('zh-CN')} · 使用提示 {attempt.hintLevelsUsed} 级{attempt.answerRevealed ? ' · 已查看示范答案' : ''}</small><pre>{attempt.answer}</pre><p>{attempt.feedback}</p>{attempt.evaluation?.gaps.map((gap, gapIndex) => <p key={`${gap}-${gapIndex}`}>待补：{gap}</p>)}</li>)}</ol></details>}
     </section>
   </article>;
 }

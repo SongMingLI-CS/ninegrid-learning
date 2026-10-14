@@ -4,6 +4,7 @@ import type { DailySchedule, Task } from '../../shared/types';
 import type { VerifiedVideo, YouTubeSearchResult } from '../../server/youtube';
 import { apiFetch } from '../lib/api';
 import { getVideoScheduleOptions, isSafeYouTubeUrl } from '../lib/videoSchedule';
+import { buildTaskVideoQuery } from '../../shared/videoSearch';
 
 function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -29,7 +30,7 @@ export function YouTubeResources({ task, budgetMinutes, schedule, language = 'mi
     return () => controller.abort();
   }, [task.id, task.title, task.brief, task.acceptance, searchBudgetMinutes, language]);
 
-  const fallbackQuery = `${task.title} ${language === 'zh' ? '中文' : language === 'en' ? 'beginner tutorial' : 'tutorial'}`;
+  const fallbackQuery = buildTaskVideoQuery(task, language);
   const fallbackUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(fallbackQuery)}`;
   return <section className="youtube-resources" aria-label="本任务视频资源">
     <header><span><Youtube size={16}/> 任务视频情报</span><small>只在本任务内检索 · 不自动播放</small></header>

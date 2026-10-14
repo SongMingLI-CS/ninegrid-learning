@@ -55,6 +55,7 @@ function restoreGenerationDraft(saved: SavedGenerationDraft): GenerationDraft {
 const defaultGoal = '';
 const LOCAL_CHOICE_KEY = 'ninegrid.local-choice';
 function readLocalChoice(): string | null { try { return window.sessionStorage.getItem(LOCAL_CHOICE_KEY); } catch { return null; } }
+function readFocusPreference(): boolean { try { return window.localStorage.getItem('ninegrid.focus-mode') === 'true'; } catch { return false; } }
 
 function createSeasonState(campaign: Campaign): LearningState {
   const independentCampaign = { ...campaign, id: `${campaign.id.slice(0, 90)}-${crypto.randomUUID()}` };
@@ -80,6 +81,7 @@ function App() {
   const [selectedStage, setSelectedStage] = useState(0);
   const [selectedTaskId, setSelectedTaskId] = useState(loaded.state.lastTaskId ?? state.campaign.stages[0]?.tasks[0]?.id ?? '');
   const [tab, setTab] = useState<Tab>(() => pathTab(window.location.pathname) ?? 'missions');
+  const [focusMode, setFocusMode] = useState(readFocusPreference);
   const [goalOpen, setGoalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -113,6 +115,7 @@ function App() {
   const [pendingCampaign, setPendingCampaign] = useState<Campaign | null>(null);
   const [generationDraft, setGenerationDraft] = useState<GenerationDraft | null>(null);
   const [savedGenerationDrafts, setSavedGenerationDrafts] = useState<SavedGenerationDraft[]>([]);
+  const [generationDraftLoadError, setGenerationDraftLoadError] = useState('');
   const [pendingDraftId, setPendingDraftId] = useState<string>();
   const [generationMessage, setGenerationMessage] = useState('');
   const [sourceMaterial, setSourceMaterial] = useState('');
@@ -197,6 +200,11 @@ function App() {
     setState(next);
   }, []);
   const flash = useCallback((value: Notification) => setNotification(value), []);
+  const toggleFocusMode = () => setFocusMode(value => {
+    const next = !value;
+    try { window.localStorage.setItem('ninegrid.focus-mode', String(next)); } catch { /* The current view remains usable when storage is unavailable. */ }
+    return next;
+  });
   const queueServerRequest = <T,>(operation: (archive: NonNullable<typeof serverArchive.current>) => Promise<T>): Promise<T> => {
     const archive = serverArchive.current;
     if (!archive || archive.userId !== accountUser?.id) return Promise.reject(new Error('账号档案尚未完成服务器载入'));
@@ -291,6 +299,20 @@ function App() {
         if (!response.ok) throw new Error('服务器档案读取失败');
         const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?:string; updatedAt?:string; lifecycleStatus?:'active'|'paused'|'archived' }>; currentSeasonId?:string|null; selectionRevision?:number };
         if (controller.signal.aborted) return;
+        // Generation drafts belong to the account, not to an activated season.
+        // Load them before the first-season early returns so onboarding can recover
+        // a partially generated course after a restart.
+        try {
+          const draftResponse = await apiFetch('/api/generation-drafts', { signal: controller.signal });
+          if (!draftResponse.ok) throw new Error('服务器生成草稿暂不可读取');
+          const draftPayload = await draftResponse.json() as { drafts: SavedGenerationDraft[] };
+          if (!controller.signal.aborted) {
+            setSavedGenerationDrafts(draftPayload.drafts.filter(draft => draft.status !== 'activated'));
+            setGenerationDraftLoadError('');
+          }
+        } catch {
+          if (!controller.signal.aborted) setGenerationDraftLoadError('账号已连接，但课程草稿暂不可读取。请重试后再继续。');
+        }
         let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived');
         if (!season && payload.seasons?.length) {
           setServerSeasons(payload.seasons); setCurrentSeasonId(''); seasonSelectionRevisionRef.current = payload.selectionRevision ?? 0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
@@ -312,13 +334,6 @@ function App() {
         setServerSeasons(payload.seasons?.length ? payload.seasons : [season]);
         setCurrentSeasonId(season.id); seasonSelectionRevisionRef.current=payload.selectionRevision??0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
         setAccountNeedsSeason(false);
-        try {
-          const draftResponse = await apiFetch('/api/generation-drafts', { signal: controller.signal });
-          if (draftResponse.ok) {
-            const draftPayload = await draftResponse.json() as { drafts: SavedGenerationDraft[] };
-            if (!controller.signal.aborted) setSavedGenerationDrafts(draftPayload.drafts.filter(draft => draft.status !== 'activated'));
-          } else if (!controller.signal.aborted) setGenerationMessage('服务器生成草稿暂不可读取；已登录状态和学习赛季已正常恢复。');
-        } catch { if (!controller.signal.aborted) setGenerationMessage('服务器生成草稿暂不可读取；可稍后重试，学习赛季已正常恢复。'); }
         await refreshServerRewards(controller.signal);
         if (controller.signal.aborted) return;
         const pending = readPendingDraft(accountUser.id, season.id);
@@ -404,6 +419,18 @@ function App() {
     setGenerationDraft(draft); setPendingDraftId(saved.id);
     setGoal(saved.input.goal); setLevel(saved.input.level); setDays(saved.input.days); setDailyMinutes(saved.input.dailyMinutes); setReward(saved.input.ultimateReward); setSourceMaterial(saved.input.sourceMaterial ?? ''); setLanguagePreference(saved.input.language ?? 'mixed');
     setPendingCampaign(saved.finalCampaign ?? null); setGenerationMessage(saved.status === 'awaiting-confirmation' ? '课程已完整生成并保存在服务器，等待你确认创建赛季。' : `服务器草稿已恢复 · ${saved.progress?.completedTasks ?? Object.values(draft.stages).flatMap(chains => Object.values(chains)).reduce((sum, tasks) => sum + tasks.length, 0)} 项任务已保存；继续时只会补缺失批次。`); setGoalOpen(true);
+  };
+
+  const retryLoadGenerationDrafts = async () => {
+    try {
+      const response = await apiFetch('/api/generation-drafts');
+      if (!response.ok) throw new Error('服务器暂不可用');
+      const payload = await response.json() as { drafts: SavedGenerationDraft[] };
+      setSavedGenerationDrafts(payload.drafts.filter(draft => draft.status !== 'activated'));
+      setGenerationDraftLoadError('');
+    } catch (error) {
+      setGenerationDraftLoadError(`课程草稿仍未读取：${error instanceof Error ? error.message : '连接失败'}`);
+    }
   };
 
   const activateBlueprint = async () => {
@@ -939,7 +966,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${tab === 'workspace' && focusMode ? 'focus-mode' : ''}`}>
       <div className="app-header"><header className="topbar">
         <button className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setMobileNav(value => !value)}><Menu size={19} /></button>
         <button className="brand" onClick={() => { setTab('missions'); setMobileNav(false); }} aria-label="九格行动主页">
@@ -971,6 +998,7 @@ function App() {
       {runtimeState === 'unavailable' && localChoice && <div className="storage-warning runtime-warning" role="status"><span>服务状态暂不可用（{runtimeError}）。当前是你明确选择的本机模式，AI、登录和服务器同步未验证。</span><button onClick={retryRuntimeStatus}>重试连接</button></div>}
 
       {saveError && <div className="storage-warning" role="alert"><span>{saveError}</span>{accountUser ? <div className="storage-actions">{syncStatus === 'conflict' ? <><button onClick={() => { const blob = new Blob([exportState(currentState.current)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'ninegrid-unsynced-draft.json'; link.click(); URL.revokeObjectURL(link.href); }}>导出本机草稿</button><button onClick={() => void recoverServerArchive('server')}>加载服务器版本（放弃本机草稿）</button></> : <button onClick={() => void recoverServerArchive('retry')}>重试同步</button>}</div> : <button onClick={() => { setAllowOverwrite(true); setSaveError(''); }}>我已备份旧存档，允许使用新存档</button>}</div>}
+      {accountUser && generationDraftLoadError && <div className="storage-warning" role="alert"><span>{generationDraftLoadError}</span><button onClick={() => void retryLoadGenerationDrafts()}>重试读取课程草稿</button></div>}
       {accountUser && savedGenerationDrafts.find(draft => draft.status !== 'activated') && <div className="storage-warning" role="status"><span>服务器有可恢复的课程草稿：{savedGenerationDrafts.find(draft => draft.status !== 'activated')?.status === 'awaiting-confirmation' ? '完整课程待确认' : '已保存部分生成结果'}。</span><button onClick={() => restoreSavedGenerationDraft(savedGenerationDrafts.find(draft => draft.status !== 'activated')!)}>恢复生成草稿</button></div>}
 
       <div className="page-wrap">
@@ -1000,7 +1028,7 @@ function App() {
 
         {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={getDailyBudgetMinutes(state, localDate)} onVideoWatched={index => setState(previous => markVideoWatched(previous, localDate, index))} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
         : tab === 'workspace' && task ? <>
-          <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.assistedEvaluation?.feedback || taskProgress?.evaluation?.feedback} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={(mode,sessionId) => void evaluateWithAI(mode,sessionId)} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => { setHintLevels(previous => ({ ...previous, [task.id]: level })); const lesson=state.content?.[task.id]??task.teaching; if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level})); }} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} rescueLevel={state.rescueLevels?.[task.id]??0} failedAttempts={(state.attempts?.[task.id]??[]).filter(attempt=>!attempt.passed).length} latestFailedAttempt={[...(state.attempts?.[task.id]??[])].reverse().find(attempt=>!attempt.passed)} feynmanAvailable={task.kind==='boss' && Boolean(accountUser)} onRescue={()=>setState(previous=>requestTaskRescue(previous,task.id))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
+          <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} attempts={state.attempts?.[task.id] ?? []} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.assistedEvaluation?.feedback || taskProgress?.evaluation?.feedback} focusMode={focusMode} onToggleFocusMode={toggleFocusMode} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={(mode,sessionId) => void evaluateWithAI(mode,sessionId)} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => { setHintLevels(previous => ({ ...previous, [task.id]: level })); const lesson=state.content?.[task.id]??task.teaching; if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level})); }} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} rescueLevel={state.rescueLevels?.[task.id]??0} failedAttempts={(state.attempts?.[task.id]??[]).filter(attempt=>!attempt.passed).length} latestFailedAttempt={[...(state.attempts?.[task.id]??[])].reverse().find(attempt=>!attempt.passed)} feynmanAvailable={task.kind==='boss' && Boolean(accountUser)} onRescue={()=>setState(previous=>requestTaskRescue(previous,task.id))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
             setDiagnosticMode(false);
             try {
               let next = setEvidence(state, task.id, answer);
@@ -1071,7 +1099,7 @@ function App() {
 
             <div className="evidence-box"><div className="evidence-head"><span><FileText size={15}/>行动记录与撤离证据</span><span>{taskProgress?.evidence?.trim().length ?? 0} 字</span></div><textarea aria-label="行动记录与撤离证据" value={taskProgress?.evidence ?? ''} disabled={taskProgress?.status === 'completed'} onChange={event => update(setEvidence(state, task.id, event.target.value))} placeholder={task.kind === 'recall' ? '先不看笔记，把答案用自己的话写下来。也可以贴上你亲手写的代码或作品路径。' : '记录你做了什么、观察到什么、还卡在哪里。也可以贴作品路径或关键代码…'} /><div className="evidence-footer"><span>提交至少 20 字的答案、过程或作品说明</span><span>{taskProgress?.status === 'completed' ? '撤离成功' : accountUser ? syncStatus === 'saved' ? '已同步到服务器' : syncStatus === 'saving' ? '正在同步…' : '服务器尚未确认保存' : '记录仅保存在此设备'}</span></div></div>
 
-            {taskProgress?.evaluation && <div className={`evaluation-card ${taskProgress.evaluation.passed ? 'evaluation-pass' : 'evaluation-retry'}`}><div className="evaluation-header"><span>{taskProgress.verification === 'ai' ? <Sparkles size={15}/> : <ShieldCheck size={15}/>} {taskProgress.verification === 'ai' ? `AI 校准 · ${taskProgress.evaluation.score} 分` : '行动员自评'}{taskProgress.status === 'completed' && <span className="verdict-chip">已撤离</span>}</span><span className="evaluation-score">{taskProgress.evaluation.passed ? <CircleCheck size={15}/> : <RotateCcw size={14}/>}</span></div><p>{taskProgress.evaluation.feedback}</p>{taskProgress.evaluation.gaps.length > 0 && <ul>{taskProgress.evaluation.gaps.map(gap => <li key={gap}>{gap}</li>)}</ul>}<small>下一步：{taskProgress.evaluation.nextStep}</small></div>}
+            {taskProgress?.evaluation && <div className={`evaluation-card ${taskProgress.evaluation.passed ? 'evaluation-pass' : 'evaluation-retry'}`}><div className="evaluation-header"><span>{taskProgress.verification === 'ai' ? <Sparkles size={15}/> : <ShieldCheck size={15}/>} {taskProgress.verification === 'ai' ? `AI 校准 · ${taskProgress.evaluation.score} 分` : '行动员自评'}{taskProgress.status === 'completed' && <span className="verdict-chip">已撤离</span>}</span><span className="evaluation-score">{taskProgress.evaluation.passed ? <CircleCheck size={15}/> : <RotateCcw size={14}/>}</span></div><p><strong>{taskProgress.evaluation.passed ? '通过' : '未通过'}</strong> · {taskProgress.evaluation.feedback}</p>{taskProgress.evaluation.requiredCriteria?.length ? <div className="required-criteria"><strong>必需项</strong><ul>{taskProgress.evaluation.requiredCriteria.map(item => <li key={item.id}>{item.met ? '已满足' : '未满足'} · {item.id}{item.evidence ? ` · 依据：${item.evidence}` : ''}</li>)}</ul></div> : null}{taskProgress.evaluation.gaps.length > 0 && <ul>{taskProgress.evaluation.gaps.map(gap => <li key={gap}>{gap}</li>)}</ul>}<small>下一步：{taskProgress.evaluation.nextStep}</small></div>}
 
             {taskProgress?.status !== 'completed' && <div className="assessment-actions"><button className="review-button" onClick={selfEvaluate} disabled={busy !== null || !taskProgress?.evidence.trim()}><ShieldCheck size={14}/>仅记录自评，不给掌握分</button><button className="ai-assessment-button" onClick={() => evaluateWithAI()} disabled={busy !== null || !taskProgress?.evidence.trim()}>{busy === 'evaluate' ? <><span className="spinner"/> 正在核验…</> : <><Sparkles size={14}/>请 AI 核验</>}</button><button className={'extract-button ' + (taskProgress?.selfChecked || taskProgress?.evaluationSource === 'ai' && taskProgress?.evaluation?.passed ? 'extract-ready' : '')} onClick={claimTask} disabled={busy !== null}><span><ArrowUpRight size={17}/></span>结算任务 · +{getTaskReward(task).xp} XP</button></div>}
             {taskProgress?.status === 'completed' && <div className="completed-banner"><CircleCheck size={16}/><span>成果已归档 <small>{taskProgress.verification === 'ai' ? 'DeepSeek 核验' : '自行完成（未视为 AI 掌握）'}</small></span><span>+{getTaskReward(task).xp} XP</span></div>}
@@ -1088,7 +1116,7 @@ function App() {
             <div className="streak-panel"><Flame size={16}/><span>今天的行动记录</span><strong>{startedAt ? '进行中' : stats.completed > 0 ? '档案已保存' : '等待部署'}<small>{startedAt ? timeLabel + ' · 该休息时就休息' : '节奏由你掌握，不靠熬时长'}</small></strong></div>
             <button className="backup-link" onClick={() => { const blob = new Blob([exportState(state)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'ninegrid-learning-backup.json'; link.click(); URL.revokeObjectURL(url); flash({ title: '档案已导出', body: '备份文件不含 API Key。', tone: 'success' }); }}><ArrowDown size={13}/>导出赛季情报档案</button>
           </aside>
-            </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'history' ? <LearningHistoryScreen state={state}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : tab === 'inventory' && accountUser ? <InventoryScreen key={accountUser.id} seasons={serverSeasons}/> : task ? <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} loading={busy==='lesson'} busy={busy==='evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign,state.progress,task.id)||taskProgress?.status==='completed'} feedback={lessonError||taskProgress?.assistedEvaluation?.feedback||taskProgress?.evaluation?.feedback} onEvidence={value=>setState(previous=>setEvidence(previous,task.id,value))} onSupplementalEvidence={value=>setState(previous=>setSupplementalEvidence(previous,task.id,value))} onEvaluate={(mode,sessionId)=>void evaluateWithAI(mode,sessionId)} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level=>{setHintLevels(previous=>({...previous,[task.id]:level}));const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level}));}} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} rescueLevel={state.rescueLevels?.[task.id]??0} failedAttempts={(state.attempts?.[task.id]??[]).filter(attempt=>!attempt.passed).length} latestFailedAttempt={[...(state.attempts?.[task.id]??[])].reverse().find(attempt=>!attempt.passed)} feynmanAvailable={task.kind==='boss' && Boolean(accountUser)} onRescue={()=>setState(previous=>requestTaskRescue(previous,task.id))}/>: null}
+            </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'history' ? <LearningHistoryScreen state={state}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : tab === 'inventory' && accountUser ? <InventoryScreen key={accountUser.id} seasons={serverSeasons}/> : task ? <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} attempts={state.attempts?.[task.id] ?? []} focusMode={focusMode} onToggleFocusMode={toggleFocusMode} loading={busy==='lesson'} busy={busy==='evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign,state.progress,task.id)||taskProgress?.status==='completed'} feedback={lessonError||taskProgress?.assistedEvaluation?.feedback||taskProgress?.evaluation?.feedback} onEvidence={value=>setState(previous=>setEvidence(previous,task.id,value))} onSupplementalEvidence={value=>setState(previous=>setSupplementalEvidence(previous,task.id,value))} onEvaluate={(mode,sessionId)=>void evaluateWithAI(mode,sessionId)} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level=>{setHintLevels(previous=>({...previous,[task.id]:level}));const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level}));}} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} rescueLevel={state.rescueLevels?.[task.id]??0} failedAttempts={(state.attempts?.[task.id]??[]).filter(attempt=>!attempt.passed).length} latestFailedAttempt={[...(state.attempts?.[task.id]??[])].reverse().find(attempt=>!attempt.passed)} feynmanAvailable={task.kind==='boss' && Boolean(accountUser)} onRescue={()=>setState(previous=>requestTaskRescue(previous,task.id))}/>: null}
 
         <footer className="global-footer"><span>九格行动 <i>·</i> 每一格，都由真正掌握解锁。</span><span>SESSION <i>—</i> {timeLabel}</span><span>休息也是行动计划的一部分。</span></footer>
         </>}

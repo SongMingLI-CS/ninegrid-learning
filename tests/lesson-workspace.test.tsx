@@ -17,6 +17,28 @@ const content: LessonContent = {
 describe('lesson challenge disclosure', () => {
   afterEach(() => cleanup());
 
+  it('provides an explicit focus-mode control without hiding the learning objective', () => {
+    const onToggleFocusMode = vi.fn();
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence: '', status: 'active' }} content={content} focusMode={false} onToggleFocusMode={onToggleFocusMode} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    fireEvent.click(screen.getByRole('button', { name: '专注学习' }));
+    expect(onToggleFocusMode).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(task.title)).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: '学习答案与成果' })).toBeTruthy();
+  });
+
+  it('keeps earlier answer attempts visible with their version and decision', () => {
+    const attempts = [
+      { at: '2026-10-14T00:00:00.000Z', answer: '第一份答案：我混淆了 axis。', hintLevelsUsed: 0, verification: 'ai' as const, passed: false, feedback: 'axis 方向需修正。', lessonRevision: 1 },
+      { at: '2026-10-15T00:00:00.000Z', answer: '第二份答案：我用 2×3 数组验证 axis=0。', hintLevelsUsed: 1, verification: 'ai' as const, passed: true, feedback: '结果和输出形状正确。', lessonRevision: 2 },
+    ];
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence: attempts[1].answer, status: 'active' }} content={{ ...content, revision: 2 }} attempts={attempts} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    fireEvent.click(screen.getByText(/查看作答历史/));
+    expect(screen.getByText(attempts[0].answer)).toBeTruthy();
+    expect(screen.getAllByText(attempts[1].answer)).toHaveLength(2);
+    expect(screen.getByText(/版本 1 · 未通过/)).toBeTruthy();
+    expect(screen.getByText(/版本 2 · 通过/)).toBeTruthy();
+  });
+
   it('keeps the answer out of the page until the learner asks, while exposing only the task rubric first', async () => {
     const onAnswerRevealed = vi.fn();
     const onHintUsed = vi.fn();
