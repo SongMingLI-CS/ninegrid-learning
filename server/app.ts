@@ -450,6 +450,92 @@ export function createApp(options: Options = {}) {
     return providerRequest({ req, res, key, model, system: `${safeDataRule}\n${system}`, prompt: JSON.stringify(data),deferredFailure,maxTokens });
   };
 
+  // Feynman sessions are server-owned and revisioned. The model may ask a finite,
+  // evidence-based follow-up, but only the regular evaluator can decide mastery.
+  if (options.auth) {
+    const feynmanOutput = z.object({ questions: z.array(z.string().trim().min(8).max(500)).max(2) });
+    const buildFollowUps = async (req: Request, res: Response, task: Task, transcript: Array<{ role: 'learner' | 'tutor'; text: string }>, deferredFailure?: {status?:number;code?:ErrorCode}) => {
+      const required = task.objectives.map(item => ({ id: item.id, text: item.text }));
+      const result = await askDeepSeek(req, res,
+        `${learningRulesPrompt('teaching')}\n\nYou are a brief Feynman tutor. Inspect the learner's explanation for concrete gaps, contradictions, or unsupported examples against the fixed required criteria. Return {questions:[...]}, with zero questions if the explanation already provides enough evidence, otherwise one or two concise, specific questions. Do not provide the answer, a model explanation, hints that reveal it, or unrelated questions. Never change the criteria.`,
+        { task: { id: task.id, title: task.title, brief: task.brief, objectives: required, acceptance: task.acceptance }, transcript, maxFollowUps: 2, learningRulesVersion: LEARNING_RULES_VERSION }, deferredFailure, 500);
+      if (result === undefined) return undefined;
+      const parsed = feynmanOutput.safeParse(result);
+      return parsed.success ? parsed.data.questions : null;
+    };
+    app.get('/api/seasons/:seasonId/tasks/:taskId/feynman-session', async (req, res) => {
+      const found = await options.auth!.pool.query('SELECT id,task_id,lesson_revision,revision,status,transcript,updated_at FROM feynman_sessions WHERE user_id=$1 AND season_id=$2 AND task_id=$3 AND expires_at>now() ORDER BY updated_at DESC LIMIT 1', [req.session.userId, req.params.seasonId, req.params.taskId]);
+      res.json({ session: found.rows[0] ?? null });
+    });
+    app.post('/api/feynman-sessions', async (req, res) => {
+      const body = req.body as { id?: unknown; seasonId?: unknown; taskId?: unknown; lessonRevision?: unknown; explanation?: unknown };
+      const parsed = z.object({ id: z.string().uuid(), seasonId: z.string().uuid(), taskId: z.string().min(1).max(160), lessonRevision: z.number().int().min(1).max(1000), explanation: z.string().trim().min(20).max(12000) }).safeParse(body);
+      if (!parsed.success) { sendError(res, 400, 'INVALID_REQUEST'); return; }
+      const { id, seasonId, taskId, lessonRevision, explanation } = parsed.data;
+      const owned = await options.auth!.pool.query<{state:LearningState;lifecycle_status:string}>('SELECT state,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2', [seasonId, req.session.userId]);
+      const season = owned.rows[0]?.state;
+      const task = season?.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === taskId);
+      const currentLessonRevision = season?.content?.[taskId]?.revision ?? task?.teaching?.revision;
+      if (!season || !task) { res.status(404).json({error:'TASK_NOT_FOUND'}); return; }
+      if (owned.rows[0].lifecycle_status !== 'active') { res.status(409).json({error:'SEASON_NOT_ACTIVE'}); return; }
+      if (currentLessonRevision !== lessonRevision) { res.status(409).json({error:'LESSON_CHALLENGE_STALE'}); return; }
+      if (taskEvidence(season, taskId) !== explanation) { res.status(409).json({error:'EVIDENCE_NOT_SYNCED'}); return; }
+      const transcript = [{ role: 'learner' as const, text: explanation }];
+      const deferredFailure:{status?:number;code?:ErrorCode}={};
+      const questions = await buildFollowUps(req, res, task, transcript, deferredFailure);
+      if (questions === undefined) { sendError(res,deferredFailure.status??502,deferredFailure.code??'PROVIDER_UNAVAILABLE'); return; }
+      if (questions === null) { sendError(res, 502, 'INVALID_AI_OUTPUT'); return; }
+      const status = questions.length ? 'active' : 'ready';
+      const client=await options.auth!.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query("UPDATE feynman_sessions SET status='assisted',revision=revision+1,updated_at=now() WHERE user_id=$1 AND season_id=$2 AND task_id=$3 AND status IN ('active','ready') AND id<>$4",[req.session.userId,seasonId,taskId,id]);
+        await client.query('INSERT INTO feynman_sessions(id,user_id,season_id,task_id,lesson_revision,status,transcript) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING', [id, req.session.userId, seasonId, taskId, lessonRevision, status, JSON.stringify({ messages: transcript, questions, rounds: 0 })]);
+        await client.query('COMMIT');
+      } catch(error) { await client.query('ROLLBACK').catch(()=>undefined); throw error; }
+      finally { client.release(); }
+      const saved = await options.auth!.pool.query('SELECT id,revision,status,transcript,lesson_revision FROM feynman_sessions WHERE id=$1 AND user_id=$2', [id, req.session.userId]);
+      if (!saved.rows[0]) { res.status(409).json({error:'FEYNMAN_SESSION_CONFLICT'}); return; }
+      res.status(201).json({ session: saved.rows[0] });
+    });
+    app.post('/api/feynman-sessions/:id/reply', async (req, res) => {
+      const parsed = z.object({ revision: z.number().int().min(1), answer: z.string().trim().min(1).max(8000) }).safeParse(req.body);
+      if (!parsed.success) { sendError(res, 400, 'INVALID_REQUEST'); return; }
+      const client = await options.auth!.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const row = await client.query<{season_id:string;task_id:string;lesson_revision:number;revision:number;status:string;transcript:any}>('SELECT season_id,task_id,lesson_revision,revision,status,transcript FROM feynman_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE', [req.params.id, req.session.userId]);
+        const sessionRow = row.rows[0];
+        if (!sessionRow) { await client.query('ROLLBACK'); res.status(404).json({error:'FEYNMAN_SESSION_NOT_FOUND'}); return; }
+        if (sessionRow.revision !== parsed.data.revision) { await client.query('ROLLBACK'); res.status(409).json({error:'FEYNMAN_REVISION_CONFLICT'}); return; }
+        if (sessionRow.status !== 'active') { await client.query('ROLLBACK'); res.status(409).json({error:'FEYNMAN_SESSION_NOT_ACTIVE'}); return; }
+        const state = sessionRow.transcript as {messages:Array<{role:'learner'|'tutor';text:string}>;questions:string[];rounds:number};
+        if (!state.questions[0]) { await client.query('ROLLBACK'); res.status(409).json({error:'FEYNMAN_ROUND_STALE'}); return; }
+        const seasonResult = await client.query<{state:LearningState;lifecycle_status:string}>('SELECT state,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2', [sessionRow.season_id, req.session.userId]);
+        const season = seasonResult.rows[0]?.state;
+        const task = season?.campaign.stages.flatMap(stage=>stage.tasks).find(item=>item.id===sessionRow.task_id);
+        if (!task || seasonResult.rows[0]?.lifecycle_status !== 'active' || (season.content?.[sessionRow.task_id]?.revision ?? task.teaching?.revision) !== sessionRow.lesson_revision) { await client.query('ROLLBACK'); res.status(409).json({error:'LESSON_CHALLENGE_STALE'}); return; }
+        const lastMessage = state.messages.at(-1);
+        const previousMessage = state.messages.at(-2);
+        const retryingSavedAnswer = lastMessage?.role === 'learner' && previousMessage?.role === 'tutor' && previousMessage.text === state.questions[state.rounds] && lastMessage.text === parsed.data.answer;
+        const messages = retryingSavedAnswer ? state.messages : [...state.messages, {role:'tutor' as const,text:state.questions[state.rounds]}, {role:'learner' as const,text:parsed.data.answer}];
+        const rounds = state.rounds + 1;
+        const deferredFailure:{status?:number;code?:ErrorCode}={};
+        const questions = rounds >= 2 ? [] : await buildFollowUps(req, res, task, messages, deferredFailure);
+        const modelFailed = questions === undefined || questions === null;
+        // Save the submitted answer before returning an AI/provider failure. The same
+        // current question stays retryable, and the client receives the new revision.
+        const nextState = modelFailed ? {messages, questions:state.questions, rounds:state.rounds} : {messages, questions, rounds};
+        const status = modelFailed ? 'active' : questions.length ? 'active' : 'ready';
+        const updated = await client.query('UPDATE feynman_sessions SET transcript=$1,status=$2,revision=revision+1,updated_at=now(),expires_at=now()+interval \'30 days\' WHERE id=$3 RETURNING id,revision,status,transcript,lesson_revision', [JSON.stringify(nextState), status, req.params.id]);
+        await client.query('COMMIT');
+        if (modelFailed) { res.status(deferredFailure.status??502).json({error:deferredFailure.code??'INVALID_AI_OUTPUT',session:updated.rows[0],answerSaved:true}); return; }
+        res.json({session:updated.rows[0]});
+      } catch (error) { await client.query('ROLLBACK').catch(()=>undefined); throw error; }
+      finally { client.release(); }
+    });
+  }
+
   const generateBlueprint = async (req: Request, res: Response) => {
     const body = req.body as { input?: unknown };
     if (!assertMaterialSize(body?.input, res)) return;
@@ -847,18 +933,22 @@ export function createApp(options: Options = {}) {
   });
 
   app.post('/api/evaluate', async (req: Request, res: Response) => {
-    const body = req.body as { task?: unknown; evidence?: unknown; verificationSource?: unknown; seasonId?: unknown; taskId?: unknown; challenge?: unknown; assessmentMode?: unknown };
+    const body = req.body as { task?: unknown; evidence?: unknown; verificationSource?: unknown; seasonId?: unknown; taskId?: unknown; challenge?: unknown; assessmentMode?: unknown; feynmanSessionId?: unknown };
+    if (body.assessmentMode === 'feynman' && !options.auth) { res.status(401).json({error:'ACCOUNT_SESSION_REQUIRED'}); return; }
     const challengeSchema = z.object({ revision: z.number().int().min(1).max(1000), prompt: z.string().min(1).max(4000), rubric: z.array(z.string().min(1).max(1000)).min(1).max(20), hintLevelsUsed: z.number().int().min(0).max(5), answerRevealed: z.boolean() });
     const parsedChallenge = body.challenge === undefined ? undefined : challengeSchema.safeParse(body.challenge);
     const parsedTask = taskSchema.safeParse(body?.task);
     if ((!options.auth && !parsedTask.success) || typeof body?.evidence !== 'string' || body.evidence.trim().length < 20 ||
       body.evidence.length > MAX_EVIDENCE_LENGTH || body.verificationSource !== 'ai' || (body.challenge !== undefined && !parsedChallenge?.success) ||
       (body.assessmentMode !== undefined && !['standard', 'feynman'].includes(String(body.assessmentMode))) ||
+      (body.feynmanSessionId !== undefined && (typeof body.feynmanSessionId !== 'string' || !z.string().uuid().safeParse(body.feynmanSessionId).success)) ||
       (options.auth && (typeof body.seasonId !== 'string' || typeof body.taskId !== 'string'))) {
       sendError(res, 400, 'INVALID_REQUEST');
       return;
     }
     let task: Task;
+    let evidence = body.evidence as string;
+    let feynmanTranscript: Array<{role:'learner'|'tutor';text:string}> | undefined;
     let storedChallenge: LessonContent['challenge'] | undefined;
     let answerWasRevealed = parsedChallenge?.success ? parsedChallenge.data.answerRevealed : false;
     let challengeRevision = parsedChallenge?.success ? parsedChallenge.data.revision : undefined;
@@ -878,21 +968,31 @@ export function createApp(options: Options = {}) {
         answerWasRevealed = answerWasRevealed || progress.answerRevealed === true;
         challengeRevision = parsedChallenge.data.revision;
       }
+      if (body.assessmentMode === 'feynman') {
+        if (typeof body.feynmanSessionId !== 'string') { res.status(400).json({error:'FEYNMAN_SESSION_REQUIRED'}); return; }
+        const feynmanRow = await options.auth.pool.query<{lesson_revision:number;status:string;transcript:any;task_id:string;season_id:string}>('SELECT lesson_revision,status,transcript,task_id,season_id FROM feynman_sessions WHERE id=$1 AND user_id=$2', [body.feynmanSessionId, req.session.userId]);
+        const savedSession = feynmanRow.rows[0];
+        if (!savedSession || savedSession.season_id !== body.seasonId || savedSession.task_id !== body.taskId) { res.status(404).json({error:'FEYNMAN_SESSION_NOT_FOUND'}); return; }
+        if (savedSession.status !== 'ready') { res.status(409).json({error:'FEYNMAN_SESSION_NOT_READY'}); return; }
+        if (savedSession.lesson_revision !== challengeRevision || taskEvidence(season, task.id) !== (savedSession.transcript as any)?.messages?.[0]?.text) { res.status(409).json({error:'FEYNMAN_SESSION_STALE'}); return; }
+        feynmanTranscript = (savedSession.transcript as any).messages;
+        evidence = feynmanTranscript!.map(message => `${message.role === 'learner' ? '学习者' : '费曼追问'}：${message.text}`).join('\n\n');
+      }
     } else task = parsedTask.data as Task;
-    const evidence = body.evidence;
     const taskRequiredCriteria = task.objectives.length
       ? task.objectives.map(objective => ({ id: objective.id, text: objective.text }))
       : [{ id: `${task.id}-acceptance`, text: task.acceptance }];
     const feynman = body.assessmentMode === 'feynman';
+    const followUpCount = feynmanTranscript?.filter(message => message.role === 'tutor').length ?? 1;
     const requiredCriteria = feynman ? [...taskRequiredCriteria,
       { id: `${task.id}-teach-accuracy`, text: '用自己的话准确解释核心概念' },
       { id: `${task.id}-teach-example`, text: '给出一个与任务目标相符的具体例子' },
       { id: `${task.id}-teach-boundary`, text: '说明适用条件或指出常见误区' },
-      { id: `${task.id}-teach-followup`, text: '回答本题最后的针对性追问' },
+      ...Array.from({length: followUpCount}, (_, index) => ({ id: `${task.id}-teach-followup-${index + 1}`, text: `基于本次解释回答第 ${index + 1} 个动态追问` })),
     ] : taskRequiredCriteria;
     const output = await askDeepSeek(req, res,
-      `${learningRulesPrompt('teaching')}\n\nYou are a rigorous learning assessor. Return one JSON Evaluation object with passed:boolean, score:integer 0..100, feedback:string, gaps:string[], nextStep:string, requiredCriteria:[{id,met,evidence}]. Required criterion IDs are fixed by the server and follow; return every ID exactly once with concrete evidence. Missing any required criterion means not passed, regardless of score. Non-empty gaps may be optional improvement suggestions and do not automatically fail a result. Judge supplied evidence against the exact task objectives, acceptance criteria, and saved lesson challenge version. Require concrete relevant evidence; do not pass vague claims or unsupported assertions. ${feynman ? `This is a Feynman teach-back. Assess conceptual accuracy, the learner's own example, applicability or a common misconception, and their answer to this exact follow-up: ${feynmanFollowUp(task)}. Concise plain language is sufficient; polished style is not a criterion.` : ''} ${answerWasRevealed ? 'The learner viewed the reference answer before submitting. Give useful corrective feedback, but treat this submission as assisted work rather than proof of independent mastery.' : 'The learner did not view the reference answer; evaluate whether this evidence demonstrates the task independently.'} Hints used: ${parsedChallenge?.success ? parsedChallenge.data.hintLevelsUsed : 0}. Output JSON only.`,
-      { task, requiredCriteria, ...(feynman ? { followUpPrompt: feynmanFollowUp(task) } : {}), challenge: storedChallenge ?? (parsedChallenge?.success ? { prompt: parsedChallenge.data.prompt, rubric: parsedChallenge.data.rubric } : undefined), evidence, verificationSource: 'ai', answerWasRevealed, assessmentMode: body.assessmentMode ?? 'standard', learningRulesVersion: LEARNING_RULES_VERSION });
+      `${learningRulesPrompt('teaching')}\n\nYou are a rigorous learning assessor. Return one JSON Evaluation object with passed:boolean, score:integer 0..100, feedback:string, gaps:string[], nextStep:string, requiredCriteria:[{id,met,evidence}]. Required criterion IDs are fixed by the server and follow; return every ID exactly once with concrete evidence. Missing any required criterion means not passed, regardless of score. Non-empty gaps may be optional improvement suggestions and do not automatically fail a result. Judge supplied evidence against the exact task objectives, acceptance criteria, and saved lesson challenge version. Require concrete relevant evidence; do not pass vague claims or unsupported assertions. ${feynman ? `This is a Feynman teach-back. Assess conceptual accuracy, the learner's own example, applicability or a common misconception, and answer evidence for each tutor question contained in the saved transcript. Concise plain language is sufficient; polished style is not a criterion.` : ''} ${answerWasRevealed ? 'The learner viewed the reference answer before submitting. Give useful corrective feedback, but treat this submission as assisted work rather than proof of independent mastery.' : 'The learner did not view the reference answer; evaluate whether this evidence demonstrates the task independently.'} Hints used: ${parsedChallenge?.success ? parsedChallenge.data.hintLevelsUsed : 0}. Output JSON only.`,
+      { task, requiredCriteria, ...(feynmanTranscript ? { feynmanTranscript } : feynman ? { followUpPrompt: feynmanFollowUp(task) } : {}), challenge: storedChallenge ?? (parsedChallenge?.success ? { prompt: parsedChallenge.data.prompt, rubric: parsedChallenge.data.rubric } : undefined), evidence, verificationSource: 'ai', answerWasRevealed, assessmentMode: body.assessmentMode ?? 'standard', learningRulesVersion: LEARNING_RULES_VERSION });
     if (output === undefined) return;
     const validated = evaluationSchema.safeParse(output);
     if (!validated.success || validated.data.passed !== (validated.data.score >= 70)) {
@@ -914,6 +1014,9 @@ export function createApp(options: Options = {}) {
         if (['EVIDENCE_STALE','REVISION_CONFLICT','SEASON_PAUSED','ARCHIVED_SEASON_READ_ONLY','LESSON_CHALLENGE_STALE','ANSWER_REVEALED'].includes(code)) { res.status(409).json({ error: code }); return; }
         throw error;
       }
+    }
+    if (options.auth && typeof body.feynmanSessionId === 'string') {
+      await options.auth.pool.query('UPDATE feynman_sessions SET status=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND user_id=$3 AND status=\'ready\'', [answerWasRevealed ? 'assisted' : 'settled', body.feynmanSessionId, req.session.userId]);
     }
     res.json({ evaluation, verification: 'ai' as const, independent: !answerWasRevealed, ...(revision ? { revision } : {}) });
   });

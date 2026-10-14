@@ -122,6 +122,11 @@ describe('DeepSeek boundary', () => {
     expect(res.body.evaluation.passed).toBe(true);
     expect(res.body.independent).toBe(false);
   });
+  it('does not permit the legacy fixed-question Feynman path without an account-backed attempt', async () => {
+    const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({}) })).post('/api/evaluate').send({ task: mission('t0'), evidence: 'I can explain the concept with an example and describe when it applies.', verificationSource: 'ai', assessmentMode: 'feynman' });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('ACCOUNT_SESSION_REQUIRED');
+  });
   it('does not pass a high-scoring assessment that misses a required criterion', async () => {
     const evaluation = { passed: true, score: 95, feedback: '整体不错。', gaps: ['可继续补充边界情况'], nextStep: '增加一个反例。', requiredCriteria: [{ id: 't0-o', met: false, evidence: '没有给出两个路径的差异' }] };
     const res = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider(evaluation) })).post('/api/evaluate').send({ task: mission('t0'), evidence: '我写了较长的说明，但是没有展示两个文件的路径输出，也没有解释它们之间的差异。', verificationSource: 'ai' });

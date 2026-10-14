@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LessonContent, Task, TaskProgress } from '../../shared/types';
-import { feynmanFollowUp, lessonExposesReferenceAnswer, taskChallengeContract } from '../../shared/learningChallenge';
+import { lessonExposesReferenceAnswer, taskChallengeContract } from '../../shared/learningChallenge';
 import { apiFetch } from '../lib/api';
 
 export interface LessonWorkspaceProps {
@@ -13,7 +13,7 @@ export interface LessonWorkspaceProps {
   onEvidence(value: string): void;
   onSupplementalEvidence?(value: string): void;
   onObjective?(objectiveId: string): void;
-  onEvaluate(mode?: 'standard' | 'feynman'): void;
+  onEvaluate(mode?: 'standard' | 'feynman', feynmanSessionId?: string): void;
   onSelfCheck(): void;
   onComplete(): void;
   onCancel?(): void;
@@ -35,6 +35,10 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
   const [answerVisible, setAnswerVisible] = useState(progress.answerRevealed ?? false);
   const [showChinese, setShowChinese] = useState(false);
   const [feynmanMode, setFeynmanMode] = useState(false);
+  const [feynmanSession, setFeynmanSession] = useState<{ id: string; revision: number; status: 'active'|'ready'|'settled'|'assisted'; transcript: { messages: Array<{role:'learner'|'tutor';text:string}>; questions: string[]; rounds: number } }>();
+  const [feynmanAnswer, setFeynmanAnswer] = useState('');
+  const [feynmanBusy, setFeynmanBusy] = useState(false);
+  const [feynmanError, setFeynmanError] = useState('');
   const [diagnosticAnswer, setDiagnosticAnswer] = useState('');
   const [attachmentId, setAttachmentId] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
@@ -52,6 +56,16 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
       .catch(error => { if (!controller.signal.aborted) setImageError(error instanceof Error ? error.message : '附件恢复失败'); });
     return () => controller.abort();
   }, [task.id, seasonId, diagnosticMode, content?.revision, progress.hintLevelsUsed, progress.answerRevealed]);
+  useEffect(() => {
+    setFeynmanSession(undefined); setFeynmanAnswer(''); setFeynmanError('');
+    if (!seasonId || task.kind !== 'boss') return;
+    const controller = new AbortController();
+    void apiFetch(`/api/seasons/${seasonId}/tasks/${task.id}/feynman-session`, {signal:controller.signal})
+      .then(async response => { if (!response.ok) throw new Error('费曼记录暂不可用'); return response.json(); })
+      .then(payload => { const value=payload.session; if(value && !controller.signal.aborted) { setFeynmanSession({id:value.id,revision:value.revision,status:value.status,transcript:value.transcript}); const messages=value.transcript.messages; const last=messages.at(-1); const previous=messages.at(-2); if(value.status==='active'&&last?.role==='learner'&&previous?.role==='tutor'&&previous.text===value.transcript.questions[value.transcript.rounds])setFeynmanAnswer(last.text); } })
+      .catch(error => { if (!controller.signal.aborted) setFeynmanError(error instanceof Error ? error.message : '费曼记录恢复失败'); });
+    return () => controller.abort();
+  }, [task.id, seasonId, content?.revision]);
   useEffect(() => {
     if (exampleContainsAnswer && !progress.answerRevealed) onAnswerRevealed?.();
   }, [task.id, seasonId, content?.revision, exampleContainsAnswer, progress.answerRevealed]);
@@ -84,6 +98,26 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
     ? !progress.answerRevealed && canReverify && progress.evaluationSource === 'ai' && Boolean(progress.evaluation?.passed && progress.evaluation.score >= 70)
     : !progress.answerRevealed && Boolean(progress.selfChecked || progress.evaluationSource === 'ai' && progress.evaluation?.passed);
   const taskChallenge = content?.challenge ?? taskChallengeContract(task);
+  const startFeynman = async () => {
+    if (!seasonId || !content || !progress.evidence.trim()) { setFeynmanError('先保存至少 20 个字的概念解释、例子和适用条件。'); return; }
+    setFeynmanBusy(true); setFeynmanError('');
+    try {
+      const response = await apiFetch('/api/feynman-sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),seasonId,taskId:task.id,lessonRevision:content.revision,explanation:progress.evidence})});
+      const payload=await response.json(); if(!response.ok) throw new Error(payload.error??'费曼追问生成失败');
+      const value=payload.session; setFeynmanSession({id:value.id,revision:value.revision,status:value.status,transcript:value.transcript});
+    } catch(error) { setFeynmanError(error instanceof Error?error.message:'请求失败；解释已保留，可以重试。'); }
+    finally { setFeynmanBusy(false); }
+  };
+  const replyFeynman = async () => {
+    if (!feynmanSession || !feynmanAnswer.trim()) return;
+    setFeynmanBusy(true); setFeynmanError('');
+    try {
+      const response=await apiFetch(`/api/feynman-sessions/${feynmanSession.id}/reply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:feynmanSession.revision,answer:feynmanAnswer})});
+      const payload=await response.json(); if(payload.session) setFeynmanSession({id:payload.session.id,revision:payload.session.revision,status:payload.session.status,transcript:payload.session.transcript}); if(!response.ok) throw new Error(payload.answerSaved?'AI 暂不可用；回答已保存，可直接重试或稍后继续。':payload.error??'追问答案保存失败');
+      const value=payload.session; setFeynmanSession({id:value.id,revision:value.revision,status:value.status,transcript:value.transcript}); setFeynmanAnswer('');
+    } catch(error) { setFeynmanError(error instanceof Error?error.message:'网络失败；答案仍在输入框中，可以重试。'); }
+    finally { setFeynmanBusy(false); }
+  };
   return <article className="lesson-workspace" aria-label="学习工作区">
     <header className="lesson-heading"><div><span className="micro-label">LEARNING WORKSPACE · {task.track === 'branch' ? 'OPTIONAL BRANCH' : 'MAINLINE'}</span><h2>{task.title}</h2><p>{task.brief}</p></div><span className="lesson-time">约 {task.minutes} 分钟</span></header>
     {loading && <div className="lesson-loading" role="status">正在按课程蓝图编写本任务内容…{onCancel&&<button type="button" onClick={onCancel}>取消</button>}</div>}
@@ -104,7 +138,7 @@ export function LessonWorkspace({ task, seasonId, progress, content, loading = f
     </>}
     <section className="lesson-deliverable">
       <span className="lesson-kicker">提交结果与过程证据</span><p>验收按本赛季保存的任务目标、验收标准、当前挑战版本和本次作答帮助状态执行。</p>
-      {feynmanAvailable && <div className="feynman-mode"><div><strong>费曼教给新手</strong><p>可选文字验收：用自己的话解释、举例、说明适用条件或常见误区，再回答一个追问。简洁表达即可。</p></div><button type="button" aria-pressed={feynmanMode} disabled={busy || locked} onClick={() => setFeynmanMode(value => !value)}>{feynmanMode ? '当前：费曼验收' : '切换到费曼验收'}</button>{feynmanMode && <p className="feynman-prompt">概念解释：“{task.title}”。<br/>针对性追问：{feynmanFollowUp(task)}</p>}</div>}
+      {feynmanAvailable && <div className="feynman-mode"><div><strong>费曼教给新手</strong><p>先用自己的话解释、举例并说明适用条件。服务端依据你的解释提出最多两轮追问；答案会保存到当前账号。</p></div><button type="button" aria-pressed={feynmanMode} disabled={busy || locked} onClick={() => setFeynmanMode(value => !value)}>{feynmanMode ? '当前：费曼验收' : '开始费曼验收'}</button>{feynmanMode && <div className="feynman-flow">{!feynmanSession ? <><p>先填写上方“原始完成证据”，然后生成针对性追问。</p><button type="button" onClick={()=>void startFeynman()} disabled={feynmanBusy || !seasonId}>{feynmanBusy?'正在分析…':'根据解释生成追问'}</button></> : <><ol>{feynmanSession.transcript.messages.map((message,index)=><li key={index}><b>{message.role==='learner'?'你的回答':'追问'}</b>：{message.text}</li>)}</ol>{feynmanSession.status==='active' && <><p className="feynman-prompt">{feynmanSession.transcript.questions[feynmanSession.transcript.rounds]}</p><label>回答追问<textarea aria-label="费曼追问回答" value={feynmanAnswer} onChange={event=>setFeynmanAnswer(event.target.value)} placeholder="回答当前问题；可以保存后稍后继续。"/></label><button type="button" onClick={()=>void replyFeynman()} disabled={feynmanBusy || !feynmanAnswer.trim()}>{feynmanBusy?'保存中…':feynmanError.includes('回答已保存')?'重试该回答':'保存回答并继续'}</button></>}{feynmanSession.status==='ready'&&<><p>追问完成。服务端将依据原任务必需标准核验整段解释和回答。</p><button type="button" onClick={()=>onEvaluate('feynman',feynmanSession.id)} disabled={busy}>提交最终费曼验收</button></>}{feynmanSession.status==='settled'&&<p role="status">这次费曼验收已完成；问答记录已恢复。</p>}{feynmanSession.status==='assisted'&&<p role="status">这次记录仅用于反馈或已由后续尝试替代，不能作为独立掌握凭证。</p>}</>}{feynmanError&&<p role="alert">{feynmanError}</p>}</div>}</div>}
       <label className="evidence-label">原始完成证据<textarea aria-label="学习答案与成果" value={progress.evidence} disabled={locked} onChange={event => onEvidence(event.target.value)} placeholder={feynmanMode ? '概念解释：…\n具体例子：…\n适用条件或常见误区：…\n追问回答：…' : '先写自己的预测，再贴代码、输出、解释或卡住的位置。'}/></label>
       {canReverify && <label className="evidence-label supplemental-evidence">补充证据（可选）<textarea aria-label="补充证据" value={progress.supplementalEvidence ?? ''} onChange={event => onSupplementalEvidence?.(event.target.value)} placeholder="补充新的运行结果、解释或修正后的作品；原始完成记录会保留。"/></label>}
       {seasonId && <section className="image-evidence">

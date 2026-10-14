@@ -83,12 +83,14 @@ describe('local entry and account feature discoverability', () => {
   });
 
   it('offers optional goal-level quick diagnostics and saves the self-report before generation', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash', accounts: true, accountAvailability: 'enabled' }), { status: 200 });
       if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'diagnostic-user', email: 'learner@example.test', createdAt: new Date().toISOString() } }), { status: 200 });
       if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }), { status: 200 });
+      if (url === '/api/generation-drafts' && init?.method === 'POST') return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: 1 } }), { status: 201 });
       if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }), { status: 200 });
+      if (url === '/api/generation-drafts/diagnostic-draft' && init?.method === 'PATCH') { const revision=JSON.parse(String(init.body)).revision; return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: revision + 1 } }), { status: 200 }); }
       return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 404 });
     }));
     render(<App/>);
@@ -96,9 +98,10 @@ describe('local entry and account feature discoverability', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始设定学习目标' }));
     const goal = '学习 NumPy 数组索引并完成一个数据筛选小项目';
     fireEvent.change(screen.getByPlaceholderText(/例如：我刚学 NumPy/), { target: { value: goal } });
-    fireEvent.click(screen.getByRole('button', { name: '开始快速定级' }));
+    fireEvent.click(screen.getByRole('button', { name: '开始基础自评' }));
+    await screen.findAllByRole('button', { name: '能解释' });
     fireEvent.click(screen.getAllByRole('button', { name: '能解释' })[0]);
-    fireEvent.change(screen.getByRole('textbox', { name: '1 定级回答' }), { target: { value: '我知道数组用整数位置选出一行。' } });
+    fireEvent.change(screen.getByRole('textbox', { name: '1 自评回答' }), { target: { value: '我知道数组用整数位置选出一行。' } });
     expect(window.localStorage.getItem('ninegrid.quick-diagnostic.v1.diagnostic-user')).toContain(goal);
     const saved = JSON.parse(window.localStorage.getItem('ninegrid.quick-diagnostic.v1.diagnostic-user') ?? '{}');
     expect(saved.goal).toBe(goal);

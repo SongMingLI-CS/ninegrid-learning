@@ -45,12 +45,12 @@ describe('lesson challenge disclosure', () => {
     const onEvaluate = vi.fn();
     const onEvidence = vi.fn();
     render(<LessonWorkspace task={{ ...task, kind: 'boss' }} progress={{ completedObjectives: [], evidence: '', status: 'active' }} content={content} feynmanAvailable onEvidence={onEvidence} onEvaluate={onEvaluate} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
-    fireEvent.click(screen.getByRole('button', { name: '切换到费曼验收' }));
-    expect(screen.getByText(/针对性追问：如果把/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('学习答案与成果'), { target: { value: '概念解释：\nshape 表示各轴长度。\n具体例子：二维数组有两行三列。\n适用条件或常见误区：元素总数不因 reshape 改变。\n追问回答：如果元素数不同，无法按给定形状重排。' } });
-    fireEvent.click(screen.getByRole('button', { name: '提交费曼验收' }));
+    fireEvent.click(screen.getByRole('button', { name: '开始费曼验收' }));
+    expect(screen.getByText(/最多两轮追问/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('学习答案与成果'), { target: { value: '概念解释：\nshape 表示各轴长度。\n具体例子：二维数组有两行三列。\n适用条件或常见误区：元素总数不因 reshape 改变。' } });
+    expect(screen.getByRole('button', { name: '根据解释生成追问' })).toBeTruthy();
     expect(onEvidence).toHaveBeenCalled();
-    expect(onEvaluate).toHaveBeenCalledWith('feynman');
+    expect(onEvaluate).not.toHaveBeenCalled();
   });
 
   it('shows staged rescue after three failed attempts without replacing saved evidence', () => {
