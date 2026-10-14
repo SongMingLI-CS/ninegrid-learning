@@ -101,6 +101,7 @@ describe('local entry and account feature discoverability', () => {
     expect((screen.getByRole('spinbutton', { name: /赛季长度/ }) as HTMLInputElement).value).toBe('1');
     expect((screen.getByRole('spinbutton', { name: /每天预算/ }) as HTMLInputElement).value).toBe('30');
     expect(screen.getByText(/服务器草稿已恢复/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /继续生成/ })).toBeTruthy();
     expect(calls.some(url => url.startsWith('/api/generation/'))).toBe(false);
   });
 

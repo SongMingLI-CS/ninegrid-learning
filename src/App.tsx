@@ -418,7 +418,9 @@ function App() {
     const draft = restoreGenerationDraft(saved);
     setGenerationDraft(draft); setPendingDraftId(saved.id);
     setGoal(saved.input.goal); setLevel(saved.input.level); setDays(saved.input.days); setDailyMinutes(saved.input.dailyMinutes); setReward(saved.input.ultimateReward); setSourceMaterial(saved.input.sourceMaterial ?? ''); setLanguagePreference(saved.input.language ?? 'mixed');
-    setPendingCampaign(saved.finalCampaign ?? null); setGenerationMessage(saved.status === 'awaiting-confirmation' ? '课程已完整生成并保存在服务器，等待你确认创建赛季。' : `服务器草稿已恢复 · ${saved.progress?.completedTasks ?? Object.values(draft.stages).flatMap(chains => Object.values(chains)).reduce((sum, tasks) => sum + tasks.length, 0)} 项任务已保存；继续时只会补缺失批次。`); setGoalOpen(true);
+    const savedTasks = saved.progress?.completedTasks ?? Object.values(draft.stages).flatMap(chains => Object.values(chains)).reduce((sum, tasks) => sum + tasks.length, 0);
+    const interrupted = ['failed', 'cancelled', 'generating'].includes(saved.status) || Boolean(saved.failure);
+    setPendingCampaign(saved.finalCampaign ?? null); setGenerationMessage(saved.status === 'awaiting-confirmation' ? '课程已完整生成并保存在服务器，等待你确认创建赛季。' : interrupted ? `服务器草稿已恢复 · 生成中断${saved.failure?.code ? `（${saved.failure.code}）` : ''}；${savedTasks} 项已保存，继续时只补缺失批次。` : `服务器草稿已恢复 · ${savedTasks} 项任务已保存；继续生成将只补缺失批次。`); setGoalOpen(true);
   };
 
   const retryLoadGenerationDrafts = async () => {
@@ -1264,7 +1266,7 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     <div className="method-callout"><Orbit size={16}/><span><strong>这条行动线会如何学习</strong><small>持续调查概念关系 → 关掉资料主动回忆 → 产出作品 → 按记忆情况安排复习。阶段梯度帮助开始和坚持，不以连续时长发奖。</small></span></div>
     {!preview && generationMessage && <p className="source-provenance" role="status" aria-live="polite">生成进度：{generationMessage}</p>}
     {preview?.seasonalCollectible&&<section className="season-collectible-preview"><span>本赛季限定红色收藏 · 预览</span><strong>{preview.seasonalCollectible.name}</strong><p>{preview.seasonalCollectible.story}</p><small>{preview.seasonalCollectible.appearance}</small><small>获得条件：完成“{preview.stages.at(-1)?.tasks.find(task=>task.id===preview.seasonalCollectible?.finalTaskId)?.title??preview.stages.at(-1)?.gateTaskIds?.[0]??'最终阶段验收'}”并通过 AI 核验；限定藏品每个学习目标仅领取一次，不可出售。</small></section>}
-    <div className="modal-actions"><span>旧赛季会保留；示例无需 API，生成真实蓝图需要 Key。</span>{busy ? <button className="text-button" onClick={onCancelGeneration}>取消生成</button> : <><button className="text-button" onClick={onLoadNumpy}>预览离线 NumPy 示例</button>{preview ? <button className="modal-submit" onClick={onAccept}><Check size={15}/>确认蓝图并开始</button> : <button className="modal-submit" onClick={()=>diagnosticMode==='quick-assessment'&&quickSession?.status==='ready'?void useQuickResult():startGeneration()} disabled={goal.trim().length < 12}><Crosshair size={16}/>{diagnosticMode==='quick-assessment'&&quickSession?.status!=='ready'?'跳过摸底并生成课程蓝图':generationMessage.includes('生成中断')||generationMessage.includes('生成已取消')?'继续生成':'生成课程蓝图'}<ArrowRight size={15}/></button>}</>}</div>
+    <div className="modal-actions"><span>旧赛季会保留；示例无需 API，生成真实蓝图需要 Key。</span>{busy ? <button className="text-button" onClick={onCancelGeneration}>取消生成</button> : <><button className="text-button" onClick={onLoadNumpy}>预览离线 NumPy 示例</button>{preview ? <button className="modal-submit" onClick={onAccept}><Check size={15}/>确认蓝图并开始</button> : <button className="modal-submit" onClick={()=>diagnosticMode==='quick-assessment'&&quickSession?.status==='ready'?void useQuickResult():startGeneration()} disabled={goal.trim().length < 12}><Crosshair size={16}/>{diagnosticMode==='quick-assessment'&&quickSession?.status!=='ready'?'跳过摸底并生成课程蓝图':generationMessage.includes('生成中断')||generationMessage.includes('生成已取消')||generationMessage.includes('服务器草稿已恢复')?'继续生成':'生成课程蓝图'}<ArrowRight size={15}/></button>}</>}</div>
   </section></div>;
 }
 
