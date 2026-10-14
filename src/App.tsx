@@ -38,7 +38,17 @@ const pathTab = (path: string): Tab | undefined => ({ '/today':'today','/season'
 type Notification = { title: string; body?: string; tone?: 'success' | 'warning' } | null;
 type Connection = { configured: boolean; model: string; accounts?: boolean; branch?: string; commit?: string; environment?: string; accountAvailability?: string; runtimeStartedAt?: string; workingTreeModified?: boolean };
 type GenerationDraft = { id?: string; revision?: number; status?: string; finalCampaign?: Campaign; input: GoalInput; outline?: CurriculumOutline; stages: Record<string, Record<string, Campaign['stages'][number]['tasks']>> };
-type SavedGenerationDraft = { id: string; input: GoalInput; rulesVersion: number; outline?: CurriculumOutline; batches: Record<string, { stageId: string; chainId: string; batchKey: string; tasks: Campaign['stages'][number]['tasks'] }>; status: string; progress?: { completedTasks?: number; totalTasks?: number; stageTitle?: string; chainTitle?: string }; failure?: { code?: string; message?: string }; finalCampaign?: Campaign; revision: number };
+type SavedGenerationDraft = { id: string; input: GoalInput; rulesVersion: number; outline?: CurriculumOutline; batches: Record<string, { stageId: string; chainId: string; batchKey: string; tasks: Campaign['stages'][number]['tasks'] }>; status: string; progress?: { completedTasks?: number; totalTasks?: number; stageTitle?: string; chainTitle?: string; basicSelfAssessment?: unknown }; failure?: { code?: string; message?: string }; finalCampaign?: Campaign; revision: number };
+
+function isRecoverableCourseDraft(draft: SavedGenerationDraft): boolean {
+  const isDiagnosticOnly = draft.status === 'cancelled'
+    && draft.progress?.basicSelfAssessment !== undefined
+    && !draft.outline
+    && !draft.finalCampaign
+    && Object.keys(draft.batches ?? {}).length === 0
+    && !draft.failure;
+  return draft.status !== 'activated' && !isDiagnosticOnly;
+}
 
 function restoreGenerationDraft(saved: SavedGenerationDraft): GenerationDraft {
   const stages: GenerationDraft['stages'] = {};
@@ -307,7 +317,7 @@ function App() {
           if (!draftResponse.ok) throw new Error('服务器生成草稿暂不可读取');
           const draftPayload = await draftResponse.json() as { drafts: SavedGenerationDraft[] };
           if (!controller.signal.aborted) {
-            setSavedGenerationDrafts(draftPayload.drafts.filter(draft => draft.status !== 'activated'));
+            setSavedGenerationDrafts(draftPayload.drafts.filter(isRecoverableCourseDraft));
             setGenerationDraftLoadError('');
           }
         } catch {
@@ -428,7 +438,7 @@ function App() {
       const response = await apiFetch('/api/generation-drafts');
       if (!response.ok) throw new Error('服务器暂不可用');
       const payload = await response.json() as { drafts: SavedGenerationDraft[] };
-      setSavedGenerationDrafts(payload.drafts.filter(draft => draft.status !== 'activated'));
+      setSavedGenerationDrafts(payload.drafts.filter(isRecoverableCourseDraft));
       setGenerationDraftLoadError('');
     } catch (error) {
       setGenerationDraftLoadError(`课程草稿仍未读取：${error instanceof Error ? error.message : '连接失败'}`);
@@ -580,7 +590,7 @@ function App() {
           if (latestResponse.ok) {
             const latestPayload = await latestResponse.json() as { drafts: SavedGenerationDraft[] };
             const latest = latestPayload.drafts.find(item => item.id === draft?.id);
-            setSavedGenerationDrafts(latestPayload.drafts.filter(item => item.status !== 'activated'));
+            setSavedGenerationDrafts(latestPayload.drafts.filter(isRecoverableCourseDraft));
             if (latest) {
               draft = restoreGenerationDraft(latest); recoverableDraft = draft; setGenerationDraft(draft); setPendingDraftId(latest.id);
               setPendingCampaign(latest.status === 'awaiting-confirmation' ? latest.finalCampaign ?? null : null);

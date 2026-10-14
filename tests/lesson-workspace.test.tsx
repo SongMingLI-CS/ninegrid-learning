@@ -63,6 +63,15 @@ describe('lesson challenge disclosure', () => {
     expect(screen.getByRole('button', { name: '参考答案已出现在示例中' })).toBeTruthy();
   });
 
+  it('requires explicit disclosure in the final rescue layer and records it before showing the answer', () => {
+    const onAnswerRevealed = vi.fn();
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence: '第一次错误答案', status: 'active', answerRevealed: false }} content={content} rescueLevel={4} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onAnswerRevealed={onAnswerRevealed} onRequestTransfer={vi.fn()}/>);
+    expect(screen.queryByText(content.challenge.referenceAnswer)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /查看示范答案/ }));
+    expect(onAnswerRevealed).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText(content.challenge.referenceAnswer).length).toBeGreaterThan(0);
+  });
+
   it('offers optional Feynman assessment and preserves the learner evidence and independent challenge context', () => {
     const onEvaluate = vi.fn();
     const onEvidence = vi.fn();

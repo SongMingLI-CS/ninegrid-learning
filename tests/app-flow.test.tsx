@@ -105,6 +105,26 @@ describe('local entry and account feature discoverability', () => {
     expect(calls.some(url => url.startsWith('/api/generation/'))).toBe(false);
   });
 
+  it('does not offer a cancelled self-assessment draft as a recoverable course', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: true, accounts: true, model: 'deepseek-flash', accountAvailability: 'enabled' }));
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'diagnostic-owner', email: 'learner@example.test', createdAt: new Date().toISOString() } }));
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }));
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [{
+        id: 'cancelled-self-assessment', revision: 2, rulesVersion: 4, status: 'cancelled',
+        input: { goal: '学习 NumPy shape', level: '了解一些，需要补基础', days: 1, dailyMinutes: 30, ultimateReward: '解释 shape' },
+        batches: {}, progress: { basicSelfAssessment: { answer: '已有 Python 基础' } },
+      }] }));
+      if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: null }));
+      return new Response('{}', { status: 404 });
+    }));
+    render(<App/>);
+    await screen.findByRole('heading', { name: '创建你的第一个学习赛季' });
+    expect(screen.queryByRole('button', { name: '恢复生成草稿' })).toBeNull();
+    expect(screen.queryByText(/服务器有可恢复的课程草稿/)).toBeNull();
+  });
+
   it('offers optional goal-level quick diagnostics and saves the self-report before generation', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
