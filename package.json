@@ -1,6 +1,6 @@
 {
   "name": "ninegrid-learning",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "九格行动：以赛季任务驱动的个人学习平台",
   "private": true,
   "type": "module",

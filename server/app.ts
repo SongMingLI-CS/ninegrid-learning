@@ -63,6 +63,7 @@ type ErrorCode =
   | 'INVALID_GENERATED_STAGE'
   | 'INVALID_GENERATED_GRAPH'
   | 'INVALID_AI_CRITERIA'
+  | 'LESSON_CHALLENGE_STALE'
   | 'PROVIDER_AUTH'
   | 'PROVIDER_RATE_LIMIT'
   | 'PROVIDER_UNAVAILABLE'
@@ -1060,6 +1061,8 @@ export function createApp(options: Options = {}) {
       task = season?.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === body.taskId)!;
       if (!season || !task) { res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
       if(owned.rows[0].lifecycle_status!=='active'){res.status(409).json({error:owned.rows[0].lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
+      const persistedLesson = season.content?.[task.id] ?? task.teaching;
+      if (persistedLesson && !preservesExplicitMatrixShapes(task, persistedLesson.challenge.prompt)) { sendError(res, 409, 'LESSON_CHALLENGE_STALE'); return; }
       if (taskEvidence(season, task.id) !== body.evidence) { res.status(409).json({ error: 'EVIDENCE_NOT_SYNCED' }); return; }
       if (parsedChallenge?.success) {
         storedChallenge = season.content?.[task.id]?.challenge ?? task.teaching?.challenge;
