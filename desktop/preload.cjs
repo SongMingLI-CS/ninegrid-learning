@@ -12,6 +12,13 @@ contextBridge.exposeInMainWorld('nineGridDesktop', Object.freeze({
   openSettings: () => ipcRenderer.invoke('ninegrid:open-settings'),
   setZoom: value => ipcRenderer.invoke('ninegrid:set-zoom', value),
   openExternal: value => ipcRenderer.invoke('ninegrid:open-external', value),
+  confirmClose: () => ipcRenderer.invoke('ninegrid:confirm-close'),
+  onRequestClose: callback => {
+    if (typeof callback !== 'function') return () => {};
+    const handler = () => callback();
+    ipcRenderer.on('ninegrid:request-close', handler);
+    return () => ipcRenderer.removeListener('ninegrid:request-close', handler);
+  },
   onStartupProgress: callback => {
     if (typeof callback !== 'function') return () => {};
     const handler = (_event, value) => callback(value);

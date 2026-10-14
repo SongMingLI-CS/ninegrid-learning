@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const policy = require('./runtime-policy.cjs');
 const { windowChromeOptions } = require('./window-chrome.cjs');
 const { decryptStoredText } = require('./secure-config.cjs');
+const { createCloseGate } = require('./close-gate.cjs');
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_DATA_ROOT = 'F:\\Projects\\NineGridData';
@@ -32,6 +33,7 @@ let settings = { dataDirectory: DEFAULT_DATA_ROOT, zoom: 1 };
 let secrets = {};
 let runtimeStatus = { service: '未启动', ai: '未检测', stage: 'idle' };
 let allowQuit = false;
+const closeGate = createCloseGate();
 let secretValues = [];
 let logRoot;
 let appRoot;
@@ -195,6 +197,11 @@ function createMainWindow() {
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   mainWindow = win;
+  win.on('close', event => {
+    if (!closeGate.shouldIntercept()) return;
+    event.preventDefault();
+    if (!win.isDestroyed()) win.webContents.send('ninegrid:request-close');
+  });
   win.webContents.setZoomFactor(settings.zoom);
   installWindowShortcuts(win);
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -263,6 +270,12 @@ function installIpc() {
     ipcMain.handle(channel, guarded);
   };
   handle('ninegrid:retry-startup', async () => { void startRuntime(); return true; });
+  handle('ninegrid:confirm-close', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    closeGate.approveOnce();
+    mainWindow.close();
+    return true;
+  });
   handle('ninegrid:choose-data-directory', async () => chooseDataDirectory());
   handle('ninegrid:import-configuration', async () => importConfiguration());
   handle('ninegrid:get-settings', async () => ({

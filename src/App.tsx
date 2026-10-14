@@ -94,6 +94,9 @@ function App() {
   const [focusMode, setFocusMode] = useState(readFocusPreference);
   const [goalOpen, setGoalOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exitDialogOpen, setExitDialogOpen] = useState(false);
+  const [exitSaving, setExitSaving] = useState(false);
+  const [exitSaveError, setExitSaveError] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('deepseek-flash');
   const [connection, setConnection] = useState<Connection>({ configured: false, model: 'deepseek-flash' });
@@ -244,6 +247,32 @@ function App() {
     }
   };
   const putServerArchive = (snapshot: LearningState): Promise<void> => queueServerRequest(archive => writeServerArchive(archive, snapshot));
+  const saveBeforeExit = async () => {
+    setExitSaving(true); setExitSaveError('');
+    try {
+      const snapshot = currentState.current;
+      const localSave = saveStateSafely(snapshot);
+      if (!localSave.ok) throw new Error(`本机恢复缓存失败：${localSave.error}`);
+      if (accountUser) {
+        const archive = serverArchive.current;
+        if (!archive || !serverHydrated.current || archive.userId !== accountUser.id) throw new Error('账号赛季尚未完成载入；请取消退出并等待同步状态恢复。');
+        if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived') throw new Error('当前赛季为只读；已保存的内容仍在本机缓存，请取消退出后核对档案状态。');
+        savePendingDraft({ userId: accountUser.id, seasonId: archive.id, revision: archive.revision, state: snapshot, updatedAt: new Date().toISOString() });
+        await putServerArchive(snapshot);
+        await archiveWriteQueue.current;
+      }
+      const confirmed = await window.nineGridDesktop?.confirmClose?.();
+      if (!confirmed) throw new Error('桌面窗口没有确认关闭；数据仍保留。');
+    } catch (error) {
+      setExitSaveError(error instanceof Error ? error.message : '保存未确认；数据仍保留在本机缓存，请重试或取消退出。');
+      setExitSaving(false);
+    }
+  };
+
+  useEffect(() => window.nineGridDesktop?.onRequestClose?.(() => {
+    setExitSaveError('');
+    setExitDialogOpen(true);
+  }), []);
   const refreshServerRewards = async (signal?: AbortSignal) => {
     const requestingUser = currentAccountId.current;
     const [walletResponse, inventoryResponse] = await Promise.all([apiFetch('/api/wallet', { signal }), apiFetch('/api/inventory', { signal })]);
@@ -1137,6 +1166,12 @@ function App() {
       {goalOpen && <GoalModal diagnosticOwner={accountUser?.id ?? 'guest'} goal={goal} level={level} days={days} minutes={dailyMinutes} reward={reward} connection={connection} model={model} busy={busy === 'generate'} apiKey={apiKey} sourceMaterial={sourceMaterial} language={languagePreference} inferred={extractedPreferences} preview={pendingCampaign} generationMessage={generationMessage} onGoal={handleGoalText} onLevel={setLevel} onDays={setDays} onMinutes={setDailyMinutes} onReward={setReward} onSourceMaterial={setSourceMaterial} onLanguage={setLanguagePreference} onModel={setModel} onApiKey={setApiKey} onLoadNumpy={loadNumpyBlueprint} onAccept={activateBlueprint} onCancelGeneration={() => activeRequest.current?.abort()} onFile={async event=>{const file=event.target.files?.[0];if(!file)return;try{if(file.size>2000000)throw new Error('文本材料不能超过 2 MB');const text=await file.text();setSourceMaterial(text);flash({title:'材料已读取',body:`已完整读取 ${file.name}，共 ${text.length} 字符。${text.length>20000?'超出 20000 字符生成上限，请在文本框中手动截取并注明范围。':'内容可作为课程资料依据。'}`,tone:text.length>20000?'warning':'success'});}catch(error){flash({title:'材料读取失败',body:error instanceof Error?error.message:'请粘贴纯文本材料。',tone:'warning'});}finally{event.target.value='';}}} onClose={() => { if(busy==='generate')activeRequest.current?.abort(); setGoalOpen(false); setApiKey(''); }} onGenerate={runGeneration}/>}
       {settingsOpen && <SettingsModal apiKey={apiKey} model={model} connection={connection} onApiKey={setApiKey} onModel={setModel} onClose={() => { setSettingsOpen(false); setApiKey(''); }} onApply={() => { setSettingsOpen(false); flash({ title: '连接设置已应用', body: '密钥仅保留在当前页面内存，刷新后需要重新输入。', tone: 'success' }); }}/ >}
       {accountNotice && <div className="modal-backdrop" role="presentation" onClick={() => setAccountNotice('')}><section className="runtime-access-modal" role="dialog" aria-modal="true" aria-labelledby="account-access-heading" onClick={event => event.stopPropagation()}><span className="modal-topline">NINEGRID · ACCOUNT FEATURE</span><h2 id="account-access-heading">{accountNotice.split('需要')[0]}需要账号存档</h2><p>{accountNotice}</p><button className="modal-submit" onClick={() => setAccountNotice('')}>返回本机课程</button></section></div>}
+      {exitDialogOpen && <div className="modal-backdrop" role="presentation"><section className="settings-modal exit-save-dialog" role="dialog" aria-modal="true" aria-labelledby="exit-save-heading" onClick={event => event.stopPropagation()}>
+        <span className="modal-topline">九格行动 · 安全退出</span><h2 id="exit-save-heading">先确认学习记录已保存</h2>
+        <p>{accountUser ? syncStatus === 'saved' ? '当前服务器存档已同步。你可以再等待一次保存确认后退出。' : '退出前会把当前答案写入恢复缓存，并等待服务器确认；失败时窗口会保持打开。' : '退出前会再写入一次本机学习档案。'}</p>
+        {exitSaveError && <p className="field-error" role="alert">保存未完成：{exitSaveError}</p>}
+        <div className="modal-actions"><button className="text-button" disabled={exitSaving} onClick={() => { setExitDialogOpen(false); setExitSaveError(''); }}>取消退出</button><button className="modal-submit" disabled={exitSaving} onClick={() => void saveBeforeExit()}>{exitSaving ? '正在保存并等待确认…' : '保存完成后退出'}</button></div>
+      </section></div>}
       {notification && <div className={`toast ${notification.tone ?? ''}`} role="status"><span className="toast-icon">{notification.tone === 'success' ? <CircleCheck size={16}/> : <Activity size={16}/>}</span><span><strong>{notification.title}</strong>{notification.body && <small>{notification.body}</small>}</span><button className="icon-button compact" onClick={() => setNotification(null)} aria-label="关闭通知"><X size={14}/></button></div>}
     </main>
   );
