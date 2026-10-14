@@ -55,9 +55,23 @@ describe('lesson challenge disclosure', () => {
 
   it('shows staged rescue after three failed attempts without replacing saved evidence', () => {
     const evidence = '原始答案仍在这里：我预测 shape 并记录了真实运行输出。';
-    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence, status: 'active' }} content={content} failedAttempts={3} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={vi.fn()}/>);
+    const latestFailedAttempt={at:'2026-10-14T00:00:00.000Z',answer:evidence,hintLevelsUsed:0,verification:'ai' as const,passed:false,errorType:'operation' as const,feedback:'索引列方向写反了。',evaluation:{passed:false,score:42,feedback:'列索引方向不正确。',gaps:['需要先写清行索引，再写列索引。'],nextStep:'用 2×3 数组测试。'}};
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence, status: 'active' }} content={content} failedAttempts={3} latestFailedAttempt={latestFailedAttempt} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={vi.fn()}/>);
     expect(screen.getByText(/连续三次独立尝试未通过/)).toBeTruthy();
+    expect(screen.getByText('索引列方向写反了。')).toBeTruthy();
+    expect(screen.getByText(/需要先写清行索引，再写列索引/)).toBeTruthy();
     expect((screen.getByLabelText('学习答案与成果') as HTMLTextAreaElement).value).toBe(evidence);
     fireEvent.click(screen.getByRole('button', { name: '开始分层救援' }));
+  });
+
+  it('stores the prerequisite rescue exercise separately from the original answer', () => {
+    const evidence='保留的原始作答证据';
+    const onSupplementalEvidence=vi.fn();
+    render(<LessonWorkspace task={task} progress={{completedObjectives:[],evidence,status:'active',supplementalEvidence:'旧补充记录'}} content={content} rescueLevel={3} onEvidence={vi.fn()} onSupplementalEvidence={onSupplementalEvidence} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()} onRescue={vi.fn()}/>);
+    const practice=screen.getByRole('textbox',{name:'救援前置练习'}) as HTMLTextAreaElement;
+    expect(practice.value).toBe('旧补充记录');
+    fireEvent.change(practice,{target:{value:'新短练习：预测并核对形状。'}});
+    expect(onSupplementalEvidence).toHaveBeenCalledWith('新短练习：预测并核对形状。');
+    expect((screen.getByLabelText('学习答案与成果') as HTMLTextAreaElement).value).toBe(evidence);
   });
 });

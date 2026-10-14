@@ -90,7 +90,7 @@ export const goalInputSchema = z.object({
   goal: text(8000), level: text(200), days: z.number().int().min(1).max(365),
   dailyMinutes: z.number().int().min(1).max(1440), ultimateReward: text(2000),
   desiredArtifact: text(2000).optional(), language: z.enum(['en','zh','mixed']).optional(), sourceMaterial: z.string().max(20000).optional(),
-  quickDiagnostic: z.object({ version: z.literal(1), items: z.array(z.object({ id: idSchema, prompt: text(1000), confidence: z.enum(['known','needs-practice','unknown']), response: z.string().max(2000).optional() })).min(3).max(5) }).optional(),
+  quickDiagnostic: z.object({ version: z.literal(1), source: z.enum(['self-report','server-assessed']).optional(), items: z.array(z.object({ id: idSchema, prompt: text(1000), confidence: z.enum(['known','needs-practice','unknown']), response: z.string().max(2000).optional() })).min(3).max(5) }).optional(),
 });
 
 export const campaignSchema = z.object({

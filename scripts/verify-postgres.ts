@@ -85,6 +85,7 @@ let testServer: Server | undefined;
 let failChallengeProvider = false;
 let challengeProviderFailureCalls=0;
 let failFeynmanProvider = false;
+let omitFeynmanCriterion = false;
 const sessionSecret = randomBytes(32).toString('hex');
 const provider: typeof fetch = async (_url, init) => {
   const body = JSON.parse(String(init?.body));
@@ -92,12 +93,17 @@ const provider: typeof fetch = async (_url, init) => {
   const system=String(body.messages[0].content??'');
   if(system.includes('paid, optional learning challenge')&&failChallengeProvider){challengeProviderFailureCalls++;return new Response(JSON.stringify({error:{message:'simulated provider outage'}}),{status:503});}
   if(system.includes('brief Feynman tutor')&&failFeynmanProvider)return new Response(JSON.stringify({error:{message:'simulated provider outage'}}),{status:503});
+  if(system.includes('Create a short, target-specific diagnostic'))return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({questions:[{prompt:'解释 ndarray.shape 在小数组里的用途。',objective:'解释数组形状',method:'explain',difficulty:'foundation',minutes:2,expectedEvidence:'解释每个轴的长度',answerKey:'shape 给出每轴的元素数'},{prompt:'给定 [[1,2],[3,4]]，说明第二行是什么并写出索引。',objective:'应用二维整数索引',method:'apply',difficulty:'working',minutes:2,expectedEvidence:'应用整数索引取行',answerKey:'第二行为 [3,4]，索引为 a[1]'},{prompt:'把一个小数组转成三行两列前要先检查什么？',objective:'迁移元素数量与 reshape',method:'transfer',difficulty:'transfer',minutes:2,expectedEvidence:'检查总元素数是否匹配',answerKey:'元素总数必须为六且可重塑'}]})}}]}),{status:200});
+  if(system.includes('Grade the short diagnostic answers')){
+    const context=JSON.parse(String(content));const items=(context.questions as Array<{id:string}>).map(q=>({id:q.id,status:(context.answers as Record<string,{unknown:boolean}>)[q.id].unknown?'uncertain':'supported',evidence:(context.answers as Record<string,{unknown:boolean}>)[q.id].unknown?'学习者选择暂时不知道。':'作答展示了相关推理证据。'}));
+    return new Response(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify({items,summary:'这几题显示了有限的起点证据；未抽查到的能力仍需在课程中验证。'})}}]}),{status:200});
+  }
   visualBytes = Array.isArray(content) && content.some((item: { type?: string; image_url?: { url?: string } }) => item.type === 'image_url' && item.image_url?.url?.startsWith('data:image/webp;base64,'));
   let parsedContent:Record<string,unknown>|undefined;
   try { const parsed=typeof content==='string'?JSON.parse(content):content; if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))parsedContent=parsed as Record<string,unknown>; } catch { /* non-JSON model context, such as image analysis */ }
   const taskContext=parsedContent?.task&&typeof parsedContent.task==='object'?parsedContent.task as {objectives?:Array<{id:string;text:string}>;acceptance?:string;id?:string}:undefined;
   const criteria=(parsedContent?.requiredCriteria as Array<{id:string;text:string}>|undefined)??taskContext?.objectives?.map(item=>({id:item.id,text:item.text}))??[{id:`${taskContext?.id??'challenge'}-acceptance`,text:taskContext?.acceptance??'task acceptance'}];
-  const output=system.includes('brief Feynman tutor')?{questions:['如果输入数组变为三行两列，你会怎样解释 shape？']}:system.includes('rigorous assessor for a paid, optional learning challenge')?{passed:true,score:92,feedback:'Mocked evaluation: answer explains the requested transformation and checks the resulting shape.',gaps:[],nextStep:'Try a second input.',requiredCriteria:criteria.map(item=>({id:item.id,met:true,evidence:`Mock evidence for ${item.text}`}))}:system.includes('rigorous learning assessor')?{passed:true,score:92,feedback:'Mocked evidence check.',gaps:[],nextStep:'Continue.',requiredCriteria:criteria.map(item=>({id:item.id,met:true,evidence:`Mock evidence for ${item.text}`}))}:{ recognizedText: '2 × 3', analysis: 'Two rows and three columns.', uncertainties: [], nextStep: 'Predict a new shape.' };
+  const output=system.includes('brief Feynman tutor')?{questions:['如果输入数组变为三行两列，你会怎样解释 shape？']}:system.includes('rigorous assessor for a paid, optional learning challenge')?{passed:true,score:92,feedback:'Mocked evaluation: answer explains the requested transformation and checks the resulting shape.',gaps:[],nextStep:'Try a second input.',requiredCriteria:criteria.map(item=>({id:item.id,met:true,evidence:`Mock evidence for ${item.text}`}))}:system.includes('rigorous learning assessor')?{passed:true,score:92,feedback:'Mocked evidence check.',gaps:[],nextStep:'Continue.',requiredCriteria:criteria.filter((_,index)=>!(omitFeynmanCriterion&&system.includes('This is a Feynman')&&index===0)).map(item=>({id:item.id,met:true,evidence:`Mock evidence for ${item.text}`}))}:{ recognizedText: '2 × 3', analysis: 'Two rows and three columns.', uncertainties: [], nextStep: 'Predict a new shape.' };
   return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(output) } }] }), { status: 200 });
 };
 function newState(campaign = NUMPY_DEMO_CAMPAIGN): LearningState {
@@ -146,6 +152,27 @@ try {
   const csrf = async (agent: typeof a) => (await agent.get('/api/auth/csrf').expect(200)).body.token as string;
   const register = async (agent: typeof a, email: string) => { const token = await csrf(agent); return (await agent.post('/api/auth/register').set('x-csrf-token', token).send({ email, password: 'independent-test-passphrase-2026' }).expect(201)).body.user; };
   const userA = await register(a, 'integration-a@example.com'); const userB=await register(b, 'integration-b@example.com');
+  const diagnosticKey=randomUUID();
+  const diagnosticInput={goal:'学习 NumPy 整数索引与筛选，完成一页可复用数据清洗说明。',level:'已有 ndarray、shape 和 dtype 基础',days:14,dailyMinutes:30,desiredArtifact:'数据清洗说明'};
+  const diagnosticCreate=await a.post('/api/diagnostics').set('x-csrf-token',await csrf(a)).send({idempotencyKey:diagnosticKey,input:diagnosticInput}).expect(201);
+  const diagnostic=diagnosticCreate.body.session;
+  assert.equal(diagnostic.questions.length,3);
+  assert.equal(JSON.stringify(diagnostic).includes('answerKey'),false,'public diagnostic question payload must not leak hidden answer keys');
+  const diagnosticReplay=await a.post('/api/diagnostics').set('x-csrf-token',await csrf(a)).send({idempotencyKey:diagnosticKey,input:diagnosticInput}).expect(200);
+  assert.equal(diagnosticReplay.body.session.id,diagnostic.id,'same idempotency key restores the same diagnostic');
+  await a.get(`/api/diagnostics?goal=${encodeURIComponent(diagnosticInput.goal)}`).expect(200).then(response=>assert.equal(response.body.session.id,diagnostic.id,'diagnostic survives reload'));
+  await b.get(`/api/diagnostics?goal=${encodeURIComponent(diagnosticInput.goal)}`).expect(200).then(response=>assert.equal(response.body.session,null,'diagnostics are private to each account'));
+  let diagnosticRevision=diagnostic.revision;
+  for(const q of diagnostic.questions){
+    const answer=await a.post(`/api/diagnostics/${diagnostic.id}/answers`).set('x-csrf-token',await csrf(a)).send({revision:diagnosticRevision,questionId:q.id,response:q.id==='q3'?'':'答题并说明判断依据。',unknown:q.id==='q3'}).expect(200);
+    diagnosticRevision=answer.body.session.revision;
+  }
+  const gradedDiagnostic=await a.post(`/api/diagnostics/${diagnostic.id}/finish`).set('x-csrf-token',await csrf(a)).send({revision:diagnosticRevision}).expect(200);
+  assert.equal(gradedDiagnostic.body.session.result.items.find((item:{id:string})=>item.id==='q3').status,'uncertain');
+  await a.post(`/api/diagnostics/${diagnostic.id}/finish`).set('x-csrf-token',await csrf(a)).send({revision:diagnosticRevision}).expect(409);
+  const corrected=await a.patch(`/api/diagnostics/${diagnostic.id}/correction`).set('x-csrf-token',await csrf(a)).send({revision:gradedDiagnostic.body.session.revision,questionId:'q3',status:'needs_practice',reason:'我重新看后认为仍不会判断元素数量。'}).expect(200);
+  assert.equal(corrected.body.session.result.items.find((item:{id:string})=>item.id==='q3').confidence,'needs-practice');
+  results.push('PostgreSQL target-specific diagnostic hides answer keys, restores by owner and goal, saves unknown answers, supports correction, and deduplicates creation');
   const economyAudit=validateEconomy(); assert(economyAudit.boxes['small-safe'].expectedRecovery<economyAudit.boxes['small-safe'].price); assert.equal(economyAudit.boxes['small-safe'].poolTotal,1); results.push('exact catalog-based expected recovery and probability validation passes before any economy route');
   const created = await a.post('/api/seasons').set('x-csrf-token', await csrf(a)).send({ state: newState() }).expect(201);
   assert.equal(created.body.selectionRevision, 1, 'season creation returns the current-selection revision from the same transaction');
@@ -181,6 +208,11 @@ try {
   await a.post(`/api/feynman-sessions/${feynmanId}/reply`).set('x-csrf-token',await csrf(a)).send({revision:1,answer:'旧标签页提交'}).expect(409);
   const feynmanReady=await a.post(`/api/feynman-sessions/${feynmanId}/reply`).set('x-csrf-token',await csrf(a)).send({revision:3,answer:'我会先数每个轴的元素个数，再验证结果是三行两列。'}).expect(200);
   assert.equal(feynmanReady.body.session.status,'ready');
+  omitFeynmanCriterion=true;
+  const incompleteFeynman=await a.post('/api/evaluate').set('x-csrf-token',await csrf(a)).send({seasonId:feynmanSeason.id,taskId:feynmanTask.id,evidence:explanation,verificationSource:'ai',assessmentMode:'feynman',feynmanSessionId:feynmanId,challenge:{revision:1,prompt:'解释 shape 并举例',rubric:feynmanTask.objectives.map(item=>item.text),hintLevelsUsed:0,answerRevealed:false}}).expect(502);
+  omitFeynmanCriterion=false;
+  assert.equal(incompleteFeynman.body.code,'INVALID_AI_CRITERIA','the server must reject an assessor response that omits a required criterion');
+  assert.equal((await pool.query('SELECT status FROM feynman_sessions WHERE id=$1',[feynmanId])).rows[0].status,'ready','incomplete criteria cannot settle or overwrite the Feynman attempt');
   const feynmanEvaluation=await a.post('/api/evaluate').set('x-csrf-token',await csrf(a)).send({seasonId:feynmanSeason.id,taskId:feynmanTask.id,evidence:explanation,verificationSource:'ai',assessmentMode:'feynman',feynmanSessionId:feynmanId,challenge:{revision:1,prompt:'解释 shape 并举例',rubric:feynmanTask.objectives.map(item=>item.text),hintLevelsUsed:0,answerRevealed:false}}).expect(200);
   assert.equal(feynmanEvaluation.body.evaluation.passed,true);
   assert.equal(feynmanEvaluation.body.independent,true);
@@ -188,7 +220,7 @@ try {
   assert.equal(restoredSettledFeynman.id,feynmanId,'refresh restores the completed Feynman transcript for review');
   assert.equal(restoredSettledFeynman.status,'settled');
   await a.post('/api/evaluate').set('x-csrf-token',await csrf(a)).send({seasonId:feynmanSeason.id,taskId:feynmanTask.id,evidence:explanation,verificationSource:'ai',assessmentMode:'feynman',feynmanSessionId:feynmanId,challenge:{revision:1,prompt:'解释 shape 并举例',rubric:feynmanTask.objectives.map(item=>item.text),hintLevelsUsed:0,answerRevealed:false}}).expect(409);
-  results.push('account-scoped PostgreSQL Feynman attempts survive refresh, enforce revision and season ownership, cap follow-ups at two, and cannot be replayed after evaluation');
+  results.push('account-scoped PostgreSQL Feynman attempts survive refresh, reject omitted required criteria without settling, recover on retry, enforce revision and season ownership, cap follow-ups at two, and cannot be replayed after evaluation');
   const feynmanFresh=(await a.get(`/api/seasons/${feynmanSeason.id}`).expect(200)).body.season;
   const feynmanPaused=await a.patch(`/api/seasons/${feynmanSeason.id}/lifecycle`).set('x-csrf-token',await csrf(a)).send({status:'paused',revision:feynmanFresh.revision,selectionRevision:feynmanSeasonResponse.body.selectionRevision}).expect(200);
   const feynmanArchived=await a.patch(`/api/seasons/${feynmanSeason.id}/lifecycle`).set('x-csrf-token',await csrf(a)).send({status:'archived',revision:feynmanPaused.body.season.revision,selectionRevision:feynmanPaused.body.selectionRevision}).expect(200);

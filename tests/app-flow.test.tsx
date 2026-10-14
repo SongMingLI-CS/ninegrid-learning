@@ -88,6 +88,7 @@ describe('local entry and account feature discoverability', () => {
       if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash', accounts: true, accountAvailability: 'enabled' }), { status: 200 });
       if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'diagnostic-user', email: 'learner@example.test', createdAt: new Date().toISOString() } }), { status: 200 });
       if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }), { status: 200 });
+      if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: null }), { status: 200 });
       if (url === '/api/generation-drafts' && init?.method === 'POST') return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: 1 } }), { status: 201 });
       if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }), { status: 200 });
       if (url === '/api/generation-drafts/diagnostic-draft' && init?.method === 'PATCH') { const revision=JSON.parse(String(init.body)).revision; return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: revision + 1 } }), { status: 200 }); }

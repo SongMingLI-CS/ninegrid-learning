@@ -229,7 +229,7 @@ describe('curriculum orchestration endpoints', () => {
         const context = JSON.parse(payload.messages[1].content);
         expect(context.input.sourceMaterial).toBeUndefined();
         expect(context.input.quickDiagnostic.items[0].confidence).toBe('needs-practice');
-        expect(prompt).toMatch(/initial self-report signal/i);
+        expect(prompt).toMatch(/When source is server-assessed/i);
         expect(context.sourceMaterialExcerpt).toContain('nested list');
         expect(context.sourceMaterialExcerptInfo.includedRanges[0].start).toBe(0);
         return provider(shortOutline);
@@ -246,7 +246,7 @@ describe('curriculum orchestration endpoints', () => {
       }
       throw new Error('Unexpected model request');
     } });
-    const outlineResponse = await request(app).post('/api/generation/outline').send({ input: { ...shortInput, quickDiagnostic: { version: 1, items: [{ id: 'diagnostic-concept', prompt: '解释核心概念', confidence: 'needs-practice' }, { id: 'diagnostic-code', prompt: '读一段代码', confidence: 'unknown' }, { id: 'diagnostic-prerequisite', prompt: '判断先修能力', confidence: 'known' }] } } });
+    const outlineResponse = await request(app).post('/api/generation/outline').send({ input: { ...shortInput, quickDiagnostic: { version: 1, source: 'server-assessed', items: [{ id: 'diagnostic-concept', prompt: '解释核心概念', confidence: 'needs-practice' }, { id: 'diagnostic-code', prompt: '读一段代码', confidence: 'unknown' }, { id: 'diagnostic-prerequisite', prompt: '判断先修能力', confidence: 'known' }] } } });
     expect(outlineResponse.status).toBe(200);
     expect(outlineResponse.body.curriculumRulesVersion).toBe(4);
     const stageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-one', chainId: 'stage-one-main', taskIds: ['task-one','task-two'] });

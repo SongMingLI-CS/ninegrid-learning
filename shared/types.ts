@@ -77,5 +77,5 @@ export interface LearningState {
 export interface GoalInput {
   goal: string; level: string; days: number; dailyMinutes: number; ultimateReward: string;
   desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
-  quickDiagnostic?: { version: 1; items: Array<{ id: string; prompt: string; confidence: 'known' | 'needs-practice' | 'unknown'; response?: string }> };
+  quickDiagnostic?: { version: 1; source?: 'self-report' | 'server-assessed'; items: Array<{ id: string; prompt: string; confidence: 'known' | 'needs-practice' | 'unknown'; response?: string }> };
 }
