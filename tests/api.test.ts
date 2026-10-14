@@ -393,6 +393,16 @@ describe('curriculum orchestration endpoints', () => {
     expect(response.body.lesson.revision).toBe(7);
     expect(response.body.lesson.challenge.rubric).toEqual(task.objectives.map(objective => objective.text));
   });
+  it('uses the task contract before validating a model rubric that is not learner-facing', async () => {
+    const task = generated.stages[0].tasks[0];
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({
+      ...lesson,
+      challenge: { ...lesson.challenge, rubric: [{ criterion: 'deliverable', required: true }, { criterion: 'explanation', required: true }] },
+    }) }))
+      .post('/api/lesson').send({ campaign: generated, taskId: task.id, language: 'mixed' });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.lesson.challenge.rubric).toEqual(task.objectives.map(objective => objective.text));
+  });
   it('creates a versioned transfer prompt while keeping the exact original task rubric', async () => {
     const task = generated.stages[0].tasks[0];
     const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async () => provider({ ...lesson, challenge: { ...lesson.challenge, prompt: '新短文：一项城市交通研究。写出作者的主张，引用一句证据，并说明支持关系。' } }) }))

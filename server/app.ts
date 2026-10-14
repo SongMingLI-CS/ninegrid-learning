@@ -865,14 +865,17 @@ export function createApp(options: Options = {}) {
       { campaign: compactCampaignContext, task, language, learningRulesVersion: LEARNING_RULES_VERSION });
     if (output === undefined) return;
     const modelLesson = output && typeof output === 'object' ? output as Record<string, unknown> : output;
+    const contract = taskChallengeContract(task);
+    const lessonCandidate = modelLesson && typeof modelLesson === 'object'
+      ? { ...modelLesson, challenge: { ...(modelLesson as Record<string, any>).challenge, rubric: contract.rubric } }
+      : {};
     const validated = lessonContentSchema.safeParse({
-      ...((modelLesson && typeof modelLesson === 'object') ? modelLesson : {}),
+      ...lessonCandidate,
       generatedAt: new Date().toISOString(),
       revision: (body.revision as number | undefined) ?? 1,
     });
     if (!validated.success) { sendError(res, 502, 'INVALID_AI_OUTPUT'); return; }
     if (!output || typeof output !== 'object' || typeof (output as any).example?.content !== 'string' || !['code','text'].includes((output as any).example?.kind) || typeof (output as any).challenge?.referenceAnswer !== 'string' || !Array.isArray((output as any).challenge?.hints)) { sendError(res, 502, 'INVALID_AI_OUTPUT'); return; }
-    const contract = taskChallengeContract(task);
     const transferPrompt = validated.data.challenge.prompt.trim();
     if (body.transferChallenge === true && transferPrompt === contract.prompt) { sendError(res, 502, 'INVALID_AI_OUTPUT'); return; }
     const learnerChallenge = {
