@@ -2,3 +2,34 @@
 @media(max-width:1450px){.wh-workbench{grid-template-columns:minmax(0,1fr) 275px}.wh-grid{grid-template-columns:repeat(5,minmax(0,1fr))}.wh-controls{flex-wrap:wrap}.wh-controls>label{flex:1}.wh-search{min-width:200px!important}}
 @media(max-width:950px){.warehouse-page{padding:0 18px 24px}.wh-workbench{grid-template-columns:minmax(0,1fr)}.wh-detail{position:relative;top:auto;min-height:0}.wh-detail-empty{min-height:180px}.wh-detail-art .wh-art{height:155px}.wh-grid{grid-template-columns:repeat(5,minmax(0,1fr))}.wh-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.wh-total{overflow:auto;max-width:60vw}}
 @media(max-width:600px){.warehouse-page{padding:0 11px 18px}.wh-topbar{height:53px;gap:12px}.wh-brand{font-size:11px}.wh-breadcrumb{font-size:8px}.wh-account{gap:7px;font-size:0}.wh-account button{font-size:9px;padding:5px 7px}.wh-intro{align-items:flex-start;padding:20px 0 14px}.wh-intro h1{font-size:24px}.wh-intro p{max-width:290px;font-size:10px;line-height:1.6}.wh-back{flex:none;padding:7px;font-size:0}.wh-back svg{width:17px}.wh-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.wh-metrics article{min-height:78px;padding:9px}.wh-metrics article:last-child{grid-column:1/-1}.wh-metrics strong{font-size:19px}.wh-metrics small,.wh-metrics span{font-size:9px}.wh-subbar{align-items:flex-start;flex-direction:column;gap:0}.wh-tabs button{padding:10px 8px;font-size:10px}.wh-total{width:100%;max-width:none;gap:8px;padding:0 0 8px;font-size:8px}.wh-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:9px}.wh-controls>label{min-width:0}.wh-search{grid-column:1/-1;min-width:0!important}.wh-controls select,.wh-search input{height:36px;font-size:10px}.wh-grid-heading{align-items:flex-start;flex-direction:column}.wh-grid-heading>div:first-child{font-size:10px}.wh-bulk{width:100%;gap:5px}.wh-bulk button{flex:1;padding:0 5px;font-size:8px}.wh-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.wh-card-open{min-height:181px;padding:6px}.wh-art{height:101px}.wh-card-name{font-size:10px}.wh-card-foot{font-size:8px}.wh-pagination{flex-wrap:wrap}.wh-pagination span{width:100%;margin:0 0 2px}.wh-pagination button{flex:1;justify-content:center;min-height:36px}.wh-detail{padding:9px}.wh-detail-art .wh-art{height:160px}.wh-detail-title h2{font-size:16px}.wh-detail-values dd{font-size:10px}.wh-detail-actions button{min-height:42px}.wh-sales{grid-template-columns:1fr;gap:8px;padding:11px}.wh-sales li{font-size:8px}.wh-footer{font-size:7px;letter-spacing:.04em}.wh-modal{padding:17px}.wh-modal-actions button{min-height:42px}}
+
+@media (min-width: 1101px) {
+  .warehouse-page { width: min(2880px, calc(100% - clamp(56px, 7vw, 180px))); margin-inline: auto; }
+  .wh-workbench { grid-template-columns: minmax(0,1fr) clamp(340px,22vw,440px); gap: clamp(16px,1vw,28px); }
+  .wh-grid { grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: clamp(10px,.7vw,18px); }
+  .wh-card-open { min-height: 260px; padding: 11px; }
+  .wh-art { height: clamp(145px,8vw,190px); }
+  .wh-art img { width:100%; height:100%; object-fit:contain; padding:10px; }
+  .wh-card-name { font-size: 14px; }
+  .wh-card-meta,.wh-card-foot { font-size: 12px; }
+  .wh-detail-art .wh-art { height: clamp(240px,14vw,330px); }
+  .wh-detail { padding: clamp(14px,1vw,24px); }
+  .wh-detail-desc,.wh-detail-values { font-size: 14px; }
+  .wh-controls select,.wh-search input { min-height: 42px; font-size: 13px; }
+}
+@media (min-width: 1800px) {
+  .wh-grid { grid-template-columns: repeat(auto-fill,minmax(240px,1fr)); }
+  .wh-modal { width:min(640px,100%); padding:30px; font-size:15px; }
+}
+@media (min-width: 851px) and (max-width: 1100px) {
+  .wh-workbench { grid-template-columns:minmax(0,1fr); }
+  .wh-detail { position:relative; top:auto; min-height:0; }
+  .wh-grid { grid-template-columns: repeat(auto-fill,minmax(190px,1fr)); }
+  .wh-art { height:140px; }
+}
+@media (min-width: 601px) and (max-width: 850px) {
+  .wh-grid { grid-template-columns:repeat(auto-fill,minmax(158px,1fr)); }
+  .wh-card-open { min-height:220px; }
+  .wh-art { height:128px; }
+  .wh-card-name { font-size:12px; }
+}

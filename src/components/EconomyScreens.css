@@ -3,3 +3,61 @@
 @media(max-width:600px){.economy-page{padding:0 12px 28px}.econ-header{height:58px;gap:8px}.econ-header>button{padding:7px;font-size:0}.econ-header>button svg{width:17px}.econ-header h1{font-size:17px}.econ-header>div:nth-child(2)>span{font-size:7px}.econ-user{font-size:0;gap:5px}.econ-user button{font-size:9px;padding:5px}.econ-balance{margin:17px 0;padding:12px;grid-template-columns:24px auto 1fr}.econ-balance strong{font-size:22px}.econ-intro{padding:18px 0 13px}.econ-intro h2,.challenge-hero h2{font-size:21px}.shop-products{padding:12px 0;gap:10px}.shop-box{grid-template-columns:1fr}.shop-box-art{min-height:92px;border-right:0;border-bottom:1px solid #36423a;flex-direction:row}.shop-box-content{padding:13px}.shop-box-content h3{font-size:19px}.shop-box-content>p{min-height:0}.shop-pool>div{grid-template-columns:41px 52px minmax(0,1fr);font-size:9px}.shop-results article{width:calc(50% - 5px)}.challenge-hero{align-items:flex-start;flex-direction:column;padding:17px 0}.challenge-hero>strong{align-self:stretch}.challenge-selectors,.challenge-tiers{grid-template-columns:1fr}.challenge-task{padding:10px}.challenge-tiers>button{padding:11px}.challenge-fee{align-items:stretch;flex-direction:column}.challenge-fee>.econ-primary{width:100%}.active-challenge{padding:13px;margin:12px 0}.active-challenge h2{font-size:17px}.active-challenge textarea{min-height:155px}.challenge-actions button{flex:1}.profile-hero{grid-template-columns:56px minmax(0,1fr);gap:10px;padding:17px 0}.profile-avatar{width:52px;height:52px;font-size:25px}.profile-hero h2{font-size:20px}.profile-hero p{font-size:11px}.profile-hero small{font-size:9px}.profile-hero-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.profile-hero-stats span{min-width:0;padding:8px;font-size:9px}.profile-hero-stats strong{font-size:11px}.profile-editor{grid-template-columns:1fr;padding:12px;gap:6px}.profile-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.profile-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.profile-grid article{grid-template-columns:18px 1fr;padding:5px}.profile-grid article b{font-size:8px}.profile-grid article small{font-size:7px}.profile-seasons>article{padding:10px}.profile-seasons header{align-items:flex-start;flex-direction:column}.profile-showcase article{width:calc(50% - 5px)}.econ-log,.challenge-history,.profile-showcase,.profile-challenges{padding:11px}.econ-log p,.profile-challenges>p{align-items:flex-start;flex-direction:column}}
 .shop-modal-backdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;padding:16px;background:#050908d9}.shop-modal{width:min(520px,100%);padding:22px;background:#151d1b;border:1px solid #69755e;box-shadow:0 24px 80px #000b}.shop-modal h2{margin:8px 0;font-size:22px}.shop-modal>p{color:#aab4aa}.shop-modal dl{display:grid;gap:0;margin:18px 0;border:1px solid #36423c}.shop-modal dl>div{display:flex;justify-content:space-between;gap:12px;padding:11px 13px;border-bottom:1px solid #303b35}.shop-modal dl>div:last-child{border:0}.shop-modal dt{color:#9aa69c}.shop-modal dd{margin:0;color:#e0ddb2;font-weight:700}.shop-modal>div:last-child{display:flex;justify-content:flex-end;gap:8px}.shop-modal button{min-height:40px;padding:8px 12px}
 .profile-final-artifact{display:grid;gap:5px;margin:12px 0;padding:10px;border-left:2px solid #c3b878;background:#101616;color:#b9c3b7}.profile-final-artifact>strong{font-size:10px;color:#d5d2a0}.profile-final-artifact>span,.profile-final-artifact p{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}.profile-final-artifact details summary{color:#a6b99c;font-size:10px;cursor:pointer}
+
+/* Keep economy screens readable on wide monitors without stretching every card. */
+.economy-page { width:100%; max-width:2880px; margin-inline:auto; }
+.shop-products { width:min(100%,2280px); margin-inline:auto; }
+.challenge-entry,.active-challenge { margin-inline:auto; }
+.challenge-tiers>button { min-height:150px; }
+.shop-modal-backdrop { padding:clamp(24px,5vh,88px); }
+.shop-modal { width:min(680px,100%); padding:clamp(22px,2vw,36px); }
+.shop-modal p,.shop-modal dl,.shop-modal button { font-size:15px; line-height:1.6; }
+.profile-hero,.profile-editor,.profile-seasons,.profile-metrics,.profile-showcase,.profile-challenges { max-width:100%; }
+.profile-seasons>article { min-width:0; }
+.profile-grid article { min-width:0; }
+@media (min-width: 1800px) {
+  .economy-page { padding-inline:clamp(40px,3vw,96px); }
+  .econ-header h1 { font-size:28px; }
+  .econ-intro h2,.challenge-hero h2,.profile-hero h2 { font-size:32px; }
+  .econ-intro p,.challenge-hero p,.profile-hero p { font-size:15px; line-height:1.7; }
+  .econ-intro label,.challenge-selectors label,.profile-fields label { font-size:14px; }
+  .shop-products { gap:clamp(18px,1.2vw,32px); }
+  .shop-box { grid-template-columns:minmax(220px,.65fr) minmax(0,1fr); min-height:430px; }
+  .shop-box-content { padding:clamp(22px,1.5vw,38px); }
+  .shop-box-content>p,.shop-pool>div,.shop-math,.shop-pool>strong { font-size:13px; }
+  .shop-pool b { font-size:14px; }
+  .shop-price strong { font-size:30px; }
+  .challenge-hero,.challenge-entry,.active-challenge { max-width:1780px; }
+  .challenge-entry,.active-challenge { padding-inline:24px; }
+  .challenge-tiers { gap:16px; }
+  .challenge-tiers>button { padding:20px; }
+  .challenge-tiers>button>span,.challenge-tiers>button>small,.challenge-tiers>button>div span { font-size:13px; }
+  .profile-hero { grid-template-columns:112px minmax(0,1fr) auto; gap:28px; }
+  .profile-avatar { width:96px; height:96px; }
+  .profile-hero-stats span { min-width:130px; padding:14px; font-size:13px; }
+  .profile-hero-stats strong { font-size:19px; }
+  .profile-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+  .profile-metrics article { min-height:92px; padding:16px; }
+  .profile-metrics article span { font-size:13px; }
+  .profile-metrics strong { font-size:18px; }
+  .profile-seasons:has(>article) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+  .profile-seasons>h2,.profile-seasons>.econ-kicker,.profile-seasons>p,.profile-seasons>.profile-filters { grid-column:1/-1; }
+  .profile-seasons>article { margin:0; padding:clamp(18px,1.2vw,30px); }
+  .profile-seasons header { font-size:15px; }
+  .profile-seasons header span { font-size:13px; }
+  .profile-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .profile-grid article { grid-template-columns:28px minmax(0,1fr); padding:11px; }
+  .profile-grid article b { font-size:13px; }
+  .profile-grid article small,.profile-grid article span { font-size:11px; }
+  .profile-showcase { max-width:2200px; }
+  .profile-showcase article { width:clamp(180px,12vw,240px); }
+  .profile-showcase b,.profile-showcase small { font-size:13px; }
+}
+@media (max-width: 850px) {
+  .shop-products { width:100%; }
+  .challenge-entry,.active-challenge { margin-inline:0; }
+}
+@media (max-width: 560px) {
+  .shop-modal-backdrop { padding:10px; }
+  .shop-modal { max-height:calc(100dvh - 20px); overflow:auto; padding:16px; }
+}

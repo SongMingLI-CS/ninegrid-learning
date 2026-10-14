@@ -24,7 +24,7 @@ await cp(native,join(root,'runtime'),{recursive:true,dereference:true});
 const bin=join(root,'runtime','bin'),ext=process.platform==='win32'?'.exe':'';
 const execute=promisify(execFile),dbPassword=randomBytes(24).toString('hex');
 async function freePort(){const probe=createServer();await new Promise<void>(done=>probe.listen(0,'127.0.0.1',done));const port=(probe.address() as {port:number}).port;await new Promise<void>(done=>probe.close(()=>done()));return port;}
-const pgPort=await freePort(),webPort=await freePort();
+const pgPort=await freePort(),webPort=Number(process.env.NINEGRID_BROWSER_PORT)||await freePort();
 const secretFile=join(root,'test-password');await writeFile(secretFile,dbPassword,{mode:0o600});
 try{await execute(join(bin,`initdb${ext}`),['-D',join(root,'cluster'),'-U','postgres','--auth=scram-sha-256','--pwfile',secretFile,'--encoding=UTF8','--locale=C'],{cwd:root});}finally{await unlink(secretFile);}
 const processPg=spawn(join(bin,`postgres${ext}`),['-D',join(root,'cluster'),'-p',String(pgPort),'-c','listen_addresses=127.0.0.1','-c','shared_buffers=32MB'],{cwd:root,windowsHide:true,stdio:'ignore'});
@@ -47,9 +47,9 @@ for(const [index,email] of ['browser-a@example.test','browser-b@example.test'].e
   for(const item of COLLECTION_CATALOG.slice(0,5))await pool.query('INSERT INTO inventory_items(user_id,item_id,definition,quantity) VALUES($1,$2,$3,1)',[userId,item.id,JSON.stringify(item)]);
 }
 process.env.NODE_ENV='production';process.env.UPLOAD_DIR=join(root,'uploads');
-const origin=`http://127.0.0.1:${webPort}`;
-const app=createApp({apiKey:'',auth:{pool,sessionSecret:randomBytes(32).toString('hex'),secureCookie:false,appOrigin:origin}});
-const server=app.listen(webPort,'127.0.0.1',()=>console.log(JSON.stringify({origin,account:'browser-a@example.test',secondAccount:'browser-b@example.test',testPassword,directory:root,externalAI:'not configured'})));
+const apiOrigin=`http://127.0.0.1:${webPort}`,appOrigin=process.env.NINEGRID_BROWSER_APP_ORIGIN??apiOrigin;
+const app=createApp({apiKey:'',auth:{pool,sessionSecret:randomBytes(32).toString('hex'),secureCookie:false,appOrigin}});
+const server=app.listen(webPort,'127.0.0.1',()=>console.log(JSON.stringify({apiOrigin,appOrigin,account:'browser-a@example.test',secondAccount:'browser-b@example.test',testPassword,directory:root,externalAI:'not configured'})));
 let closing=false;
 async function close(){if(closing)return;closing=true;await new Promise<void>(done=>server.close(()=>done()));await pool.end();await execute(join(bin,`pg_ctl${ext}`),['-D',join(root,'cluster'),'-m','fast','-w','stop'],{cwd:root}).catch(()=>processPg.kill());process.exit(0);}
 process.once('SIGINT',()=>void close());process.once('SIGTERM',()=>void close());

@@ -37,7 +37,9 @@ describe('independent warehouse page', () => {
     wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
     const { container } = render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} />);
     expect(await screen.findByText('行动仓库')).toBeTruthy();
-    expect(container.querySelector('.wh-art img')?.getAttribute('src')).toBe('/assets/catalog/items/small-purple-01.webp');
+    expect(container.querySelector('.wh-art img')?.getAttribute('src')).toBe('/assets/catalog/thumbs/small-purple-01.webp');
+    fireEvent.click(screen.getByRole('button', { name: `查看${item.name}详情` }));
+    expect(container.querySelector('.wh-detail-art .wh-art img')?.getAttribute('src')).toBe('/assets/catalog/items/small-purple-01.webp');
     expect(screen.getByLabelText('仓库统计').textContent).toContain('1 / 155');
     expect(screen.getByText('1 种不同物品')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /完整图鉴/ }));
