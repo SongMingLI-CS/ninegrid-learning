@@ -95,6 +95,16 @@ describe('versioned NumPy curriculum', () => {
     expect(curriculumOutlineSchema.safeParse(normalized).success).toBe(true);
   });
 
+  it('keeps natural-language prerequisites at course level instead of rejecting them as broken task IDs', () => {
+    const input = outlineFixture() as unknown as Record<string, any>;
+    input.prerequisites = ['能用 Python 嵌套列表表示矩阵'];
+    input.stages[0].mainline[0].prerequisites = ['Python 嵌套列表表示矩阵'];
+    const normalized = normalizeGeneratedCurriculumOutline(input) as any;
+    expect(normalized.stages[0].mainline[0].prerequisites).toEqual([]);
+    expect(curriculumOutlineSchema.safeParse(normalized).success).toBe(true);
+    expect(validateCurriculumOutline(normalized, { days: 28, dailyMinutes: 60 })).toBe(true);
+  });
+
   it('checks actual mainline, review, and in-cycle branch minutes as one budget', () => {
     const outline = outlineFixture();
     for (const stage of outline.stages) {

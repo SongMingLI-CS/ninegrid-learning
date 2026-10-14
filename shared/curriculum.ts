@@ -23,9 +23,46 @@ export type OutlineTask = z.infer<typeof outlineTaskSchema> & { track: 'main' | 
 export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const candidate = value as Record<string, unknown>;
-  if (typeof candidate.prerequisites !== 'string') return value;
-  const prerequisites = candidate.prerequisites.split(/[;；\n]+/u).map(item => item.trim()).filter(Boolean);
-  return { ...candidate, prerequisites };
+  const prerequisites = typeof candidate.prerequisites === 'string'
+    ? candidate.prerequisites.split(/[;；\n]+/u).map(item => item.trim()).filter(Boolean)
+    : candidate.prerequisites;
+  if (!Array.isArray(candidate.stages)) return { ...candidate, prerequisites };
+  const normalizePhrase = (phrase: string) => phrase.normalize('NFKC').toLocaleLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+  const externalPrerequisites = Array.isArray(prerequisites) ? prerequisites.filter((item): item is string => typeof item === 'string').map(normalizePhrase) : [];
+  const stages = candidate.stages as Array<Record<string, unknown>>;
+  const tasks = stages.flatMap(stage => [
+    ...(Array.isArray(stage.mainline) ? stage.mainline as Array<Record<string, unknown>> : []),
+    ...(Array.isArray(stage.branches) ? (stage.branches as Array<Record<string, unknown>>).flatMap(branch => Array.isArray(branch.tasks) ? branch.tasks as Array<Record<string, unknown>> : []) : []),
+  ]);
+  const byPhrase = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const task of tasks) {
+    if (typeof task.id !== 'string') continue;
+    for (const label of [task.title, task.knowledgePoint]) {
+      if (typeof label !== 'string') continue;
+      const key = normalizePhrase(label);
+      if (byPhrase.has(key) && byPhrase.get(key) !== task.id) ambiguous.add(key);
+      else byPhrase.set(key, task.id);
+    }
+  }
+  for (const key of ambiguous) byPhrase.delete(key);
+  const normalizeTask = (task: Record<string, unknown>) => {
+    if (!Array.isArray(task.prerequisites)) return task;
+    const next = task.prerequisites.flatMap((dependency): string[] => {
+      if (typeof dependency !== 'string') return [dependency as string];
+      const key = normalizePhrase(dependency);
+      if (byPhrase.has(key)) return [byPhrase.get(key)!];
+      if (dependency.length >= 5 && externalPrerequisites.some(item => item.length >= 5 && (item.includes(key) || key.includes(item)))) return [];
+      return [dependency];
+    });
+    return { ...task, prerequisites: next };
+  };
+  const normalizedStages = stages.map(stage => ({
+    ...stage,
+    ...(Array.isArray(stage.mainline) ? { mainline: (stage.mainline as Array<Record<string, unknown>>).map(normalizeTask) } : {}),
+    ...(Array.isArray(stage.branches) ? { branches: (stage.branches as Array<Record<string, unknown>>).map(branch => ({ ...branch, ...(Array.isArray(branch.tasks) ? { tasks: (branch.tasks as Array<Record<string, unknown>>).map(normalizeTask) } : {}) })) } : {}),
+  }));
+  return { ...candidate, prerequisites, stages: normalizedStages };
 }
 
 /** Repair a hallucinated standalone gate ID only when its actual final mainline task is explicitly a synthesis or assessment. */
