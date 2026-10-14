@@ -2,6 +2,12 @@
 :root{font-size:16px}
 body{min-width:0;font-size:16px;line-height:1.65;overflow-x:hidden}
 .app-shell{min-width:0}
+html.ninegrid-desktop .app-header .brand,html.ninegrid-desktop .app-header .topbar-divider,html.ninegrid-desktop .app-header .topbar-season,html.ninegrid-desktop .app-header .settings-trigger,html.ninegrid-desktop .runtime-version{display:none}
+html.ninegrid-desktop .app-header .topbar{height:44px;padding-inline:clamp(12px,2vw,28px);justify-content:flex-end}
+html.ninegrid-desktop .app-header .topbar-actions{margin-left:0}
+html.ninegrid-desktop .app-header{top:env(titlebar-area-height,44px)}
+html.ninegrid-desktop .main-nav{flex-wrap:nowrap}
+html.ninegrid-desktop .main-nav .nav-link{min-height:42px}
 .app-header{position:sticky;top:0;z-index:30;background:#0d1519f2;backdrop-filter:blur(18px);border-bottom:1px solid #334147aa}
 .topbar{height:58px;position:static;padding-inline:max(calc((100vw - 3000px)/2),clamp(16px,3vw,72px));border:0;background:transparent;backdrop-filter:none}
 .topbar-season{font:13px 'DM Mono',monospace;letter-spacing:.15px}.topbar-actions{gap:10px}

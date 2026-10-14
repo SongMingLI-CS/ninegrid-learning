@@ -52,7 +52,7 @@ describe('DeepSeek boundary', () => {
   it('exposes safe runtime mode and source version without disclosing configuration values', async () => {
     const response = await request(createApp({ apiKey: '' })).get('/api/status');
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ application: 'ninegrid-learning', version: '0.1.0', runtimeMode: 'local', aiMode: 'unconfigured' });
+    expect(response.body).toMatchObject({ application: 'ninegrid-learning', version: process.env.npm_package_version ?? '0.1.0', runtimeMode: 'local', aiMode: 'unconfigured' });
     expect(response.body.commit).toMatch(/^[0-9a-f]{12}$|^unknown$/);
     expect(typeof response.body.branch).toBe('string');
     expect(response.body).not.toHaveProperty('DATABASE_URL');

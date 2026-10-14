@@ -7,6 +7,7 @@ const path = require('node:path');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const policy = require('./runtime-policy.cjs');
+const { windowChromeOptions } = require('./window-chrome.cjs');
 const { decryptStoredText } = require('./secure-config.cjs');
 
 const execFileAsync = promisify(execFile);
@@ -165,10 +166,11 @@ function createStartupWindow() {
   if (startupWindow && !startupWindow.isDestroyed()) { startupWindow.focus(); return startupWindow; }
   startupWindow = new BrowserWindow({
     width: 760, height: 590, minWidth: 620, minHeight: 460, show: false,
-    title: '九格行动 NineGrid', backgroundColor: '#07111e', autoHideMenuBar: true,
+    ...windowChromeOptions(), title: '九格行动',
     icon: path.join(appRoot, 'desktop', 'assets', 'ninegrid.png'),
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
+  installWindowShortcuts(startupWindow);
   startupWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   const startupPage = path.resolve(appRoot, 'desktop', 'startup.html').toLowerCase();
   startupWindow.webContents.on('will-navigate', (event, url) => {
@@ -188,21 +190,13 @@ function createMainWindow() {
   const geometry = policy.computeWindowGeometry(screen.getPrimaryDisplay().workAreaSize);
   const win = new BrowserWindow({
     ...geometry, show: false,
-    title: '九格行动 NineGrid', backgroundColor: '#07111e',
+    ...windowChromeOptions(), title: '九格行动',
     icon: path.join(appRoot, 'desktop', 'assets', 'ninegrid.png'),
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   mainWindow = win;
   win.webContents.setZoomFactor(settings.zoom);
-  win.webContents.on('before-input-event', (event, input) => {
-    if (!input.control || input.type !== 'keyDown') return;
-    const key = input.key.toLowerCase();
-    if (!['0', '+', '=', 'add', '-', 'subtract'].includes(key)) return;
-    event.preventDefault();
-    if (key === '0') { void setZoom(1); return; }
-    if (key === '+' || key === '=' || key === 'add') { void setZoom(Math.min(1.6, settings.zoom + 0.1)); return; }
-    void setZoom(Math.max(0.7, settings.zoom - 0.1));
-  });
+  installWindowShortcuts(win);
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (policy.validateExternalUrl(url)) void shell.openExternal(url);
     return { action: 'deny' };
@@ -229,21 +223,20 @@ function createMainWindow() {
 }
 
 function installMenu() {
-  const menu = Menu.buildFromTemplate([
-    { label: '九格行动', submenu: [
-      { label: '设置与数据', accelerator: 'CmdOrCtrl+,', click: () => openSettings() },
-      { type: 'separator' },
-      { label: '退出九格行动', role: 'quit' },
-    ] },
-    { label: '视图', submenu: [
-      { label: '放大', accelerator: 'CmdOrCtrl+=', click: () => void setZoom(Math.min(1.6, settings.zoom + 0.1)) },
-      { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => void setZoom(Math.max(0.7, settings.zoom - 0.1)) },
-      { label: '恢复默认缩放', accelerator: 'CmdOrCtrl+0', click: () => void setZoom(1) },
-      { type: 'separator' },
-      { role: 'toggleDevTools' },
-    ] },
-  ]);
-  Menu.setApplicationMenu(menu);
+  Menu.setApplicationMenu(null);
+}
+
+function installWindowShortcuts(win) {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (!(input.control || input.meta) || input.type !== 'keyDown') return;
+    const key = input.key.toLowerCase();
+    if (key === ',') { event.preventDefault(); openSettings(); return; }
+    if (!['0', '+', '=', 'add', '-', 'subtract'].includes(key)) return;
+    event.preventDefault();
+    if (key === '0') { void setZoom(1); return; }
+    if (key === '+' || key === '=' || key === 'add') { void setZoom(Math.min(1.6, settings.zoom + 0.1)); return; }
+    void setZoom(Math.max(0.7, settings.zoom - 0.1));
+  });
 }
 
 function isTrustedIpc(event) {
@@ -286,6 +279,7 @@ function installIpc() {
   });
   handle('ninegrid:open-logs', async () => openLocalDirectory(getDataPaths().logs));
   handle('ninegrid:open-backups', async () => openLocalDirectory(getDataPaths().backups));
+  handle('ninegrid:open-settings', async () => { openSettings(); return true; });
   handle('ninegrid:create-backup', async () => createBackupBundle());
   handle('ninegrid:set-zoom', async value => {
     if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('缩放值无效。');
@@ -300,7 +294,9 @@ function installIpc() {
 
 function setZoom(value) {
   settings.zoom = Math.max(0.7, Math.min(1.6, Math.round(value * 10) / 10));
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomFactor(settings.zoom);
+  for (const win of [mainWindow, startupWindow, settingsWindow]) {
+    if (win && !win.isDestroyed()) win.webContents.setZoomFactor(settings.zoom);
+  }
   return saveSettings().then(() => settings.zoom);
 }
 
@@ -310,11 +306,12 @@ function openSettings() {
   const width = Math.min(720, Math.max(520, available.width - 40));
   const height = Math.min(720, Math.max(520, available.height - 48));
   settingsWindow = new BrowserWindow({
-    width, height, minWidth: Math.min(600, width), minHeight: Math.min(580, height), parent: mainWindow, modal: false,
-    title: '九格行动 · 设置', backgroundColor: '#07111e', autoHideMenuBar: true,
+    width, height, minWidth: Math.min(600, width), minHeight: Math.min(580, height), parent: mainWindow ?? startupWindow, modal: false,
+    ...windowChromeOptions(), title: '九格行动 · 设置',
     icon: path.join(appRoot, 'desktop', 'assets', 'ninegrid.png'),
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
+  installWindowShortcuts(settingsWindow);
   settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   settingsWindow.webContents.on('will-navigate', event => event.preventDefault());
   void settingsWindow.loadFile(path.join(appRoot, 'desktop', 'settings.html'));

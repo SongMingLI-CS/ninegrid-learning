@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('nineGridDesktop', Object.freeze({
   openLogs: () => ipcRenderer.invoke('ninegrid:open-logs'),
   openBackups: () => ipcRenderer.invoke('ninegrid:open-backups'),
   createBackup: () => ipcRenderer.invoke('ninegrid:create-backup'),
+  openSettings: () => ipcRenderer.invoke('ninegrid:open-settings'),
   setZoom: value => ipcRenderer.invoke('ninegrid:set-zoom', value),
   openExternal: value => ipcRenderer.invoke('ninegrid:open-external', value),
   onStartupProgress: callback => {

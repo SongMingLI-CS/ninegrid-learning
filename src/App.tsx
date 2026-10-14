@@ -174,6 +174,12 @@ function App() {
   const nextMission = recommendationTasks.find(item => (item.track ?? 'main') === 'main') ?? recommendationTasks[0];
 
   useEffect(() => {
+    const openConnectionSettings = () => setSettingsOpen(true);
+    window.addEventListener('ninegrid:open-app-settings', openConnectionSettings);
+    return () => window.removeEventListener('ninegrid:open-app-settings', openConnectionSettings);
+  }, []);
+
+  useEffect(() => {
     if (tab !== 'missions') return;
     const frame = requestAnimationFrame(() => {
       const list = document.querySelector<HTMLElement>('.mission-scroll');
