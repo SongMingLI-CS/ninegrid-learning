@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
-import { createApp } from '../server/app';
+import { createApp, normalizeDiagnosticGradeOutput } from '../server/app';
 
 const input = { goal: '从零学习 Python，四周内做出可预览、可撤销的文件整理工具。', level: '零基础', days: 28, dailyMinutes: 45, ultimateReward: '独立完成一个能真正用上的工具' };
 const generated = {
@@ -30,6 +30,25 @@ function missionBase(id: string, prerequisites: string[] = []) {
 const provider = (value: unknown, finishReason = 'stop') => new Response(JSON.stringify({ choices: [{ finish_reason: finishReason, message: { content: typeof value === 'string' ? value : JSON.stringify(value) } }] }), { status: 200 });
 
 describe('DeepSeek boundary', () => {
+  it('normalizes a keyed diagnostic grade into the required stable item list', () => {
+    const grade = normalizeDiagnosticGradeOutput({
+      q1: { status: 'supported', evidence: '回答展示了正确索引。' },
+      q2: { status: 'supported', evidence: '回答正确解释了轴方向。' },
+      q3: { status: 'needs_practice', evidence: '回答混淆了 axis=0 和 axis=1。' },
+      q4: { status: 'uncertain', evidence: '回答为不知道。' },
+      summary: '本次样本只用于调整先修练习。',
+    });
+    expect(grade).toEqual({
+      items: [
+        { id: 'q1', status: 'supported', evidence: '回答展示了正确索引。' },
+        { id: 'q2', status: 'supported', evidence: '回答正确解释了轴方向。' },
+        { id: 'q3', status: 'needs_practice', evidence: '回答混淆了 axis=0 和 axis=1。' },
+        { id: 'q4', status: 'uncertain', evidence: '回答为不知道。' },
+      ],
+      summary: '本次样本只用于调整先修练习。',
+    });
+  });
+
   it('exposes safe runtime mode and source version without disclosing configuration values', async () => {
     const response = await request(createApp({ apiKey: '' })).get('/api/status');
     expect(response.status).toBe(200);

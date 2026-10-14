@@ -109,6 +109,42 @@ describe('local entry and account feature discoverability', () => {
     expect(saved.answers['diagnostic-concept']).toMatchObject({ confidence: 'known', response: '我知道数组用整数位置选出一行。' });
   });
 
+  it('starts a new diagnostic idempotency attempt when retry settings differ from the failed attempt', async () => {
+    const goal = '学习 NumPy 布尔索引并完成测量数据汇总函数';
+    const failedInput = { goal, level: '零基础', days: 28, dailyMinutes: 45, desiredArtifact: '旧交付目标', language: 'mixed' };
+    let submitted: { idempotencyKey: string; input: typeof failedInput } | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: true, model: 'deepseek-flash', accounts: true, accountAvailability: 'enabled' }), { status: 200 });
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'retry-user', email: 'retry@example.test', createdAt: new Date().toISOString() } }), { status: 200 });
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }), { status: 200 });
+      if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: { id: 'failed-session', idempotencyKey: 'failed-idempotency-key', revision: 3, rulesVersion: 'learning-loop-1', status: 'failed', input: failedInput, questions: [], answers: {}, result: null } }), { status: 200 });
+      if (url === '/api/diagnostics' && init?.method === 'POST') {
+        const requestBody = JSON.parse(String(init.body)) as NonNullable<typeof submitted>;
+        submitted = requestBody;
+        return new Response(JSON.stringify({ session: { id: 'new-session', idempotencyKey: requestBody.idempotencyKey, revision: 1, rulesVersion: 'learning-loop-1', status: 'answering', input: requestBody.input, questions: [], answers: {}, result: null } }), { status: 201 });
+      }
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }), { status: 200 });
+      if (url === '/api/wallet') return new Response(JSON.stringify({ wallets: [], ledger: [] }), { status: 200 });
+      if (url === '/api/inventory') return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 404 });
+    }));
+    render(<App/>);
+    await screen.findByRole('heading', { name: '创建你的第一个学习赛季' });
+    fireEvent.click(screen.getByRole('button', { name: '开始设定学习目标' }));
+    fireEvent.change(screen.getByPlaceholderText(/例如：我刚学 NumPy/), { target: { value: goal } });
+    await screen.findByText('上次请求失败；失败记录保留。');
+    fireEvent.change(screen.getByRole('combobox', { name: /当前基础/ }), { target: { value: '已有基础，想进阶' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: /赛季长度/ }), { target: { value: '7' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: /每天预算/ }), { target: { value: '30' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /最终交付成果/ }), { target: { value: '一个可测试的 NumPy 筛选与汇总函数' } });
+    fireEvent.click(screen.getByRole('button', { name: '快速摸底' }));
+    fireEvent.click(screen.getByRole('button', { name: '重试快速摸底' }));
+    await waitFor(() => expect(submitted).toBeDefined());
+    expect(submitted!.idempotencyKey).not.toBe('failed-idempotency-key');
+    expect(submitted!.input).toMatchObject({ goal, level: '已有基础，想进阶', days: 7, dailyMinutes: 30, desiredArtifact: '一个可测试的 NumPy 筛选与汇总函数' });
+  });
+
   it('labels a server-backed demo season and its saves as account storage', async () => {
     const numpyState = { ...createInitialState(), campaign: structuredClone(NUMPY_DEMO_CAMPAIGN), progress: createProgressForCampaign(NUMPY_DEMO_CAMPAIGN) };
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

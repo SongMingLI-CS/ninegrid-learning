@@ -71,7 +71,8 @@ describe('independent warehouse page', () => {
     inventory = { items: [{ item_id: item.id, definition: item, quantity: 2, acquired_at: '2026-10-10T08:00:00Z', sources: [], is_locked: true, is_showcased: false }], sales: [] };
     wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
     render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} onNavigate={() => {}} />);
-    await screen.findByRole('checkbox', { name: `选择${item.name}出售` });
+    const lockedCheckbox = await screen.findByRole('checkbox', { name: `选择${item.name}出售` });
+    expect(lockedCheckbox.hasAttribute('disabled')).toBe(true);
     const saleTotal = screen.getByRole('button', { name: /出售已选 · 0/ });
     expect(saleTotal.hasAttribute('disabled')).toBe(true);
     expect(screen.getByLabelText('仓库统计').textContent).toContain('可出售回收0');

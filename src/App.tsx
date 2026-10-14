@@ -1186,7 +1186,10 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     if(!connection.configured){setQuickError('快速摸底需要服务器配置 DeepSeek；当前不可用。基础自评仍可使用。');return;}
     setQuickBusy(true);setQuickError('');
     try{
-      const response=await apiFetch('/api/diagnostics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idempotencyKey:quickKey.current,input:{goal:goal.trim(),level,days,dailyMinutes:minutes,desiredArtifact:reward.trim()||'完成一项可验证的成果',language}})});
+      const input={goal:goal.trim(),level,days,dailyMinutes:minutes,desiredArtifact:reward.trim()||'完成一项可验证的成果',language};
+      const retryable=quickSession?.status==='failed'||quickSession?.status==='generating';
+      if(retryable&&JSON.stringify(quickSession.input)!==JSON.stringify(input))quickKey.current=crypto.randomUUID();
+      const response=await apiFetch('/api/diagnostics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idempotencyKey:quickKey.current,input})});
       const payload=await response.json();if(!response.ok)throw new Error(payload.error??'快速摸底生成失败');setQuickSession(payload.session);setDiagnosticMode('quick-assessment');if(payload.session.status==='generating')setQuickError('摸底生成正在服务端继续；刷新或重试即可恢复。');
     }catch(error){setQuickError(error instanceof Error?error.message:'摸底未完成；可以重试，已保存记录不会丢失。');}finally{setQuickBusy(false);}
   };
