@@ -467,7 +467,7 @@ async function ensureApi(db, paths) {
   const busy = await tcpPortInUse(8787);
   if (busy) {
     const status = await expectedApiStatus(db);
-    const decision = policy.classifyApiListener(true, status, { host: db.host, port: db.port, database: db.database }, paths.root);
+    const decision = policy.classifyApiListener(true, status, { host: db.host, port: db.port, database: db.database }, paths.root, { version: app.getVersion(), commit: buildInfo.commit });
     if (decision.action !== 'reuse') throw new Error('8787 端口已被占用，但该服务没有提供兼容的 NineGrid 生产账号和数据库身份。没有接管或结束该进程。');
     backendOwned = false;
     runtimeStatus.service = '复用已核实的 NineGrid 账号服务';
@@ -476,6 +476,7 @@ async function ensureApi(db, paths) {
     return status;
   }
   report('正在启动 NineGrid 独立后端…', 56);
+  const expectedRuntime = { version: app.getVersion(), commit: buildInfo.commit };
   const pendingMigrations = await getPendingMigrations(db);
   if (pendingMigrations.length) {
     report(`发现 ${pendingMigrations.length} 个待应用数据库迁移，先创建数据库与附件备份…`, 50);
@@ -489,7 +490,7 @@ async function ensureApi(db, paths) {
   }
   runtimeEnv = appBackendEnv(db, paths);
   backendChild = spawn(nodeRuntime, [tsx, entry], {
-    cwd: appRoot, env: { ...process.env, ...runtimeEnv }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    cwd: appRoot, env: { ...process.env, ...runtimeEnv }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], windowsHide: true,
   });
   backendOwned = true;
   backendChild.stdout.setEncoding('utf8').on('data', data => data.split(/\r?\n/).filter(Boolean).forEach(line => log('info', `api: ${line}`)));
@@ -507,12 +508,12 @@ async function ensureApi(db, paths) {
   while (Date.now() < deadline) {
     if (backendChild.exitCode !== null) throw new Error('后端在启动期间退出。请打开日志查看错误原因。');
     status = await expectedApiStatus(db);
-    const decision = policy.classifyApiListener(Boolean(status), status, { host: db.host, port: db.port, database: db.database }, paths.root);
+    const decision = policy.classifyApiListener(Boolean(status), status, { host: db.host, port: db.port, database: db.database }, paths.root, expectedRuntime);
     if (status && decision.action === 'reuse') break;
     report('等待数据库迁移与账号服务健康检查…', 68);
     await new Promise(resolve => setTimeout(resolve, 600));
   }
-  if (!status || policy.classifyApiListener(true, status, { host: db.host, port: db.port, database: db.database }, paths.root).action !== 'reuse') {
+  if (!status || policy.classifyApiListener(true, status, { host: db.host, port: db.port, database: db.database }, paths.root, expectedRuntime).action !== 'reuse') {
     throw new Error('本机账号服务在 45 秒内未通过身份和健康检查；请查看 NineGrid 日志后重试。');
   }
   runtimeStatus.service = 'NineGrid 账号服务已就绪';
@@ -633,7 +634,7 @@ async function stopOwnedServices() {
   if (backendChild && backendChild.exitCode === null && policy.mayStopOwnedProcess({ owned: backendOwned, pid: backendChild.pid })) {
     const child = backendChild;
     log('info', `Stopping owned API child PID ${child.pid}.`);
-    child.kill('SIGTERM');
+    try { child.send({ type: 'ninegrid-shutdown' }); } catch { /* The owned child may already be closing. */ }
     await Promise.race([
       new Promise(resolve => child.once('exit', resolve)),
       new Promise(resolve => setTimeout(resolve, 20000)),

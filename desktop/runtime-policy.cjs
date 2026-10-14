@@ -24,13 +24,14 @@ function classifyDatabaseListener(inUse, probe, expectedDataDirectory) {
     : { action: 'refuse', ownsProcess: false, reason: 'database_listener_not_matching_ninegrid_cluster' };
 }
 
-function classifyApiListener(inUse, status, expectedDatabase, expectedDataDirectory) {
+function classifyApiListener(inUse, status, expectedDatabase, expectedDataDirectory, expectedRuntime) {
   if (!inUse) return { action: 'start', ownsProcess: true };
   const actual = status?.databaseIdentity;
   const matches = status?.application === 'ninegrid-learning' && status.environment === 'production' &&
     status.runtimeMode === 'accounts' && status.accounts === true &&
     actual?.host === expectedDatabase?.host && Number(actual?.port) === Number(expectedDatabase?.port) &&
     actual?.database === expectedDatabase?.database &&
+    (!expectedRuntime || (status.version === expectedRuntime.version && status.commit === expectedRuntime.commit && status.workingTreeModified === false)) &&
     (!expectedDataDirectory || normalizeWindowsPath(status?.dataDirectory ?? '') === normalizeWindowsPath(expectedDataDirectory));
   return matches
     ? { action: 'reuse', ownsProcess: false }

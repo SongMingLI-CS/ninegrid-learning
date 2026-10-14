@@ -34,11 +34,17 @@ describe('desktop runtime safety policy', () => {
 
   it('reuses an API listener only when it identifies a compatible NineGrid runtime', () => {
     const expected = { host: '127.0.0.1', port: 5433, database: 'ninegrid_dev' };
-    expect(classifyApiListener(true, {
-      application: 'ninegrid-learning', environment: 'production', runtimeMode: 'accounts', accounts: true,
+    const status = {
+      application: 'ninegrid-learning', version: '0.1.0', commit: 'abc123', workingTreeModified: false,
+      environment: 'production', runtimeMode: 'accounts', accounts: true,
       databaseIdentity: expected, dataDirectory: 'F:/Projects/NineGridData',
-    }, expected, 'F:/Projects/NineGridData'))
+    };
+    expect(classifyApiListener(true, status, expected, 'F:/Projects/NineGridData', { version: '0.1.0', commit: 'abc123' }))
       .toEqual({ action: 'reuse', ownsProcess: false });
+    expect(classifyApiListener(true, { ...status, commit: 'old123' }, expected, 'F:/Projects/NineGridData', { version: '0.1.0', commit: 'abc123' }).action)
+      .toBe('refuse');
+    expect(classifyApiListener(true, { ...status, workingTreeModified: true }, expected, 'F:/Projects/NineGridData', { version: '0.1.0', commit: 'abc123' }).action)
+      .toBe('refuse');
     expect(classifyApiListener(true, { application: 'other-project' }, expected, 'F:/Projects/NineGridData').action)
       .toBe('refuse');
   });

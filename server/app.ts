@@ -300,7 +300,7 @@ export function createApp(options: Options = {}) {
     };
     const commit = process.env.NINEGRID_COMMIT?.trim() || gitValue(['rev-parse', '--short=12', 'HEAD']) || 'unknown';
     const branch = process.env.NINEGRID_BRANCH?.trim() || gitValue(['branch', '--show-current']) || 'detached';
-    const workingTreeModified = process.env.NINEGRID_BUILD_DIRTY === 'true' || Boolean(gitValue(['status', '--porcelain']));
+    const workingTreeModified = process.env.NINEGRID_BUILD_DIRTY === 'true' || Boolean(gitValue(['status', '--porcelain', '--untracked-files=no']));
     const accounts = Boolean(options.auth);
     res.json({
       configured: Boolean(configuredKey?.trim()), model: configuredModel, accounts,

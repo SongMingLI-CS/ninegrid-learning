@@ -1,6 +1,6 @@
 export function resolveDataPaths(root: string): { root: string; postgres: string; uploads: string; backups: string; logs: string };
 export function classifyDatabaseListener(inUse: boolean, probe: { running: boolean; dataDirectory: string; major: string } | null, expectedDataDirectory: string): { action: 'start' | 'reuse' | 'refuse'; ownsProcess: boolean; reason?: string };
-export function classifyApiListener(inUse: boolean, status: Record<string, unknown> | null, expectedDatabase: { host: string; port: number; database: string }, expectedDataDirectory?: string): { action: 'start' | 'reuse' | 'refuse'; ownsProcess: boolean; reason?: string };
+export function classifyApiListener(inUse: boolean, status: Record<string, unknown> | null, expectedDatabase: { host: string; port: number; database: string }, expectedDataDirectory?: string, expectedRuntime?: { version: string; commit: string }): { action: 'start' | 'reuse' | 'refuse'; ownsProcess: boolean; reason?: string };
 export function mayStopOwnedProcess(processHandle: { owned?: boolean; pid?: number } | null): boolean;
 export function validateExternalUrl(value: string): boolean;
 export function isLoopbackOnly(value: string): boolean;

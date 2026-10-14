@@ -35,9 +35,17 @@ async function start() {
   if (trustProxy === '1') app.set('trust proxy', 1);
   else if (trustProxy && trustProxy !== '0') throw new Error('TRUST_PROXY accepts only 0 or 1; configure the exact proxy hop count');
   const server = createServer(app).listen(port, host, () => console.log(`NineGrid API listening on ${host}:${port}`));
-  const close = () => server.close(() => { void pool?.end(); });
+  let closePromise: Promise<void> | undefined;
+  const close = () => {
+    if (closePromise) return closePromise;
+    closePromise = new Promise(resolve => server.close(() => { void pool?.end().finally(resolve); }));
+    return closePromise;
+  };
   process.once('SIGTERM', close);
   process.once('SIGINT', close);
+  process.on('message', message => {
+    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'ninegrid-shutdown') void close();
+  });
 }
 
 void start().catch(error => {
