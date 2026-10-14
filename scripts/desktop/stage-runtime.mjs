@@ -28,7 +28,7 @@ const get = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', win
 const info = {
   commit: get(['rev-parse', '--short=12', 'HEAD']),
   branch: get(['branch', '--show-current']),
-  workingTreeModified: Boolean(get(['status', '--porcelain'])),
+  workingTreeModified: Boolean(get(['status', '--porcelain', '--untracked-files=no'])),
   nodeVersion: stagedNodeVersion,
   postgresRuntime: pgVersion,
   builtAt: new Date().toISOString(),
