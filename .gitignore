@@ -11,4 +11,7 @@ test-results/
 .playwright-cli/
 *.log
 .DS_Store
+/desktop-runtime/
+/desktop-build-info.json
+/release/
 

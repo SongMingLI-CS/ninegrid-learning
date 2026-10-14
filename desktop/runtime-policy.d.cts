@@ -1,0 +1,10 @@
+export function resolveDataPaths(root: string): { root: string; postgres: string; uploads: string; backups: string; logs: string };
+export function classifyDatabaseListener(inUse: boolean, probe: { running: boolean; dataDirectory: string; major: string } | null, expectedDataDirectory: string): { action: 'start' | 'reuse' | 'refuse'; ownsProcess: boolean; reason?: string };
+export function classifyApiListener(inUse: boolean, status: Record<string, unknown> | null, expectedDatabase: { host: string; port: number; database: string }, expectedDataDirectory?: string): { action: 'start' | 'reuse' | 'refuse'; ownsProcess: boolean; reason?: string };
+export function mayStopOwnedProcess(processHandle: { owned?: boolean; pid?: number } | null): boolean;
+export function validateExternalUrl(value: string): boolean;
+export function isLoopbackOnly(value: string): boolean;
+export function computeWindowGeometry(available: { width: number; height: number }): { width: number; height: number; minWidth: number; minHeight: number };
+export function validateExistingCluster(input: { rootExists: boolean; pgVersion: string | null }): { ok: boolean; code?: 'cluster_missing' | 'version_mismatch' };
+export function parseEnvironmentText(text: string): Record<string, string>;
+export function validateDesktopConfig(values: Record<string, string>): { ok: boolean; code?: 'invalid_required_config' };

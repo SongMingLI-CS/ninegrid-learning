@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>九格行动 · 设置</title>
+  <link rel="stylesheet" href="startup.css">
+  <script defer src="settings.js"></script>
+</head>
+<body>
+  <main class="panel">
+    <img src="assets/ninegrid.png" alt="">
+    <p class="eyebrow">NINEGRID · 本机设置</p>
+    <h1>运行与数据</h1>
+    <dl>
+      <dt>版本 / 构建</dt><dd id="version">读取中</dd>
+      <dt>服务</dt><dd id="service">读取中</dd>
+      <dt>AI</dt><dd id="ai">读取中</dd>
+      <dt>数据目录</dt><dd id="data">读取中</dd>
+      <dt>安装包签名</dt><dd>未签名（发布者信息由 Windows 提示；不要关闭系统安全保护）</dd>
+      <dt>本机密钥保护</dt><dd>Windows DPAPI（当前 Windows 用户）</dd>
+    </dl>
+    <div class="actions">
+      <button id="import">替换安全配置</button>
+      <button id="logs">打开日志目录</button>
+      <button id="backup">立即备份数据库与附件</button>
+      <button id="backups">打开备份目录</button>
+    </div>
+    <p id="result" role="status" aria-live="polite" class="footnote"></p>
+    <p class="footnote">恢复说明：备份包含 database.dump、uploads.tar.gz 和带校验值的 manifest.json。先退出应用，在 PostgreSQL 18 中恢复到一个新的隔离数据库，并解压到独立附件目录；核对清单后再切换配置。不要覆盖正在使用的数据库。应用不会自动删除旧备份。</p>
+    <p class="footnote">卸载程序不会删除 F 盘数据库、附件、配置或备份。DPAPI 可保护同一用户目录中的配置文件，但不能防止本机管理员访问。</p>
+  </main>
+</body>
+</html>

@@ -42,7 +42,7 @@ const log = line => {
 
 const child = spawn(process.execPath, [path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'server/index.ts'], {
   cwd: repoRoot,
-  env: { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: process.env.PORT || '8787' },
+  env: { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: process.env.PORT || '8787', NINEGRID_APP_ROOT: repoRoot, NINEGRID_DATA_DIRECTORY: dataRoot },
   stdio: ['ignore', 'pipe', 'pipe'],
   windowsHide: true,
 });

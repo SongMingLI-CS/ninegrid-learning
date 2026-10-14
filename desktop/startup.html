@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>九格行动 NineGrid</title>
+  <link rel="stylesheet" href="startup.css">
+  <script defer src="startup.js"></script>
+</head>
+<body>
+  <main class="panel">
+    <img src="assets/ninegrid.png" alt="">
+    <p class="eyebrow">NINEGRID · 本机账号模式</p>
+    <h1>正在准备学习空间</h1>
+    <p id="detail" role="status" aria-live="polite">正在读取本机配置…</p>
+    <div class="track"><span id="progress"></span></div>
+    <p id="error" class="error" hidden></p>
+    <div id="actions" class="actions" hidden>
+      <button id="retry" class="primary">重试</button>
+      <button id="chooseData">选择现有数据目录</button>
+      <button id="importConfig">导入现有配置文件</button>
+    </div>
+    <p class="footnote">应用只会复用已经核实为 NineGrid 的本机服务；已有数据无法确认时不会新建空档案。</p>
+  </main>
+</body>
+</html>

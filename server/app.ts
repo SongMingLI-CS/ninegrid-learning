@@ -27,6 +27,7 @@ import { CHALLENGES, ECONOMY_VERSION, isStandardPoolEligible, type ChallengeTier
 import { COLLECTION_CATALOG } from '../shared/catalog';
 import { allRequiredCriteriaMet, hasCompleteRequiredCriteria, LEARNING_RULES_VERSION, learningRulesPrompt } from '../shared/learningRules';
 import { BRANCH_CHAIN_COMPLETION_COINS, LEARNING_COIN_RATE_PER_MINUTE, MAIN_CHAIN_COMPLETION_COINS, STAGE_COMPLETION_COINS } from '../shared/economy';
+import { publicDatabaseIdentity } from './runtimeInfo';
 
 // Campaign schema already carries these input preferences; augment the current
 // shared interface until the matching source type declaration lands.
@@ -299,13 +300,15 @@ export function createApp(options: Options = {}) {
     };
     const commit = process.env.NINEGRID_COMMIT?.trim() || gitValue(['rev-parse', '--short=12', 'HEAD']) || 'unknown';
     const branch = process.env.NINEGRID_BRANCH?.trim() || gitValue(['branch', '--show-current']) || 'detached';
-    const workingTreeModified = Boolean(gitValue(['status', '--porcelain']));
+    const workingTreeModified = process.env.NINEGRID_BUILD_DIRTY === 'true' || Boolean(gitValue(['status', '--porcelain']));
     const accounts = Boolean(options.auth);
     res.json({
       configured: Boolean(configuredKey?.trim()), model: configuredModel, accounts,
       youtubeConfigured: Boolean((options.youtubeApiKey ?? process.env.YOUTUBE_API_KEY)?.trim()),
-      application: 'ninegrid-learning', version: '0.1.0', commit, branch,
+      application: 'ninegrid-learning', version: process.env.npm_package_version ?? '0.1.0', commit, branch,
       environment: process.env.NODE_ENV ?? 'development', runtimeMode: accounts ? 'accounts' : 'local', runtimeStartedAt, workingTreeModified,
+      databaseIdentity: publicDatabaseIdentity(process.env.DATABASE_URL),
+      dataDirectory: process.env.NINEGRID_DATA_DIRECTORY ?? null,
       accountAvailability: accounts ? 'enabled' : options.accountUnavailableReason ?? 'not_configured',
       aiMode: configuredKey?.trim() ? 'ready' : 'unconfigured',
     });
@@ -1121,8 +1124,9 @@ export function createApp(options: Options = {}) {
   });
 
   if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(resolve(process.cwd(), 'dist'), { index: false, fallthrough: true }));
-    app.get(/^\/(?!api(?:\/|$)).*/, (_req, res, next) => res.sendFile(resolve(process.cwd(), 'dist', 'index.html'), error => { if (error) next(error); }));
+    const staticRoot = resolve(process.env.NINEGRID_APP_ROOT ?? process.cwd(), 'dist');
+    app.use(express.static(staticRoot, { index: false, fallthrough: true }));
+    app.get(/^\/(?!api(?:\/|$)).*/, (_req, res, next) => res.sendFile(resolve(staticRoot, 'index.html'), error => { if (error) next(error); }));
   }
   app.use((_req, res) => sendError(res, 404, 'INVALID_REQUEST'));
   return app;
