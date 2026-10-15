@@ -1012,7 +1012,7 @@ function App() {
         <button className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setMobileNav(value => !value)}><Menu size={19} /></button>
         <button className="brand" onClick={() => { setTab('missions'); setMobileNav(false); }} aria-label="九格行动主页">
           <span className="brand-mark"><span /><span /><span /><span /><span /><span /><span /><span /><span /></span>
-          <span className="brand-copy"><strong>NINEGRID</strong><small>九格行动</small></span>
+          <span className="brand-copy"><strong>NINEGRID</strong><small>九格行动1.0测试版</small></span>
         </button>
         <div className="topbar-divider" />
         <div className="topbar-season"><span className="status-light" /> SEASON 01 <span className="muted">/</span> 个人成长计划</div>

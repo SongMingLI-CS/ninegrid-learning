@@ -4,7 +4,7 @@ import { createDesktopBuildInfo } from '../desktop/build-metadata.cjs';
 describe('desktop build metadata', () => {
   it('records the package version and exact source commit used for the build', () => {
     const info = createDesktopBuildInfo({
-      version: '0.1.14',
+      version: '1.0.0-beta.1',
       commit: '1234567890abcdef1234567890abcdef12345678',
       branch: 'codex/learning-loop-fixes',
       dirty: false,
@@ -14,7 +14,7 @@ describe('desktop build metadata', () => {
     });
 
     expect(info).toEqual({
-      version: '0.1.14',
+      version: '1.0.0-beta.1',
       commit: '1234567890ab',
       sourceCommit: '1234567890abcdef1234567890abcdef12345678',
       branch: 'codex/learning-loop-fixes',

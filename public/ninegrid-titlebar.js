@@ -26,7 +26,7 @@
               <rect x="1" y="21" width="8" height="8" rx="1"/><rect x="11" y="21" width="8" height="8" rx="1"/>
               <rect x="21" y="21" width="8" height="8" rx="1"/>
             </svg>
-            <strong>九格行动</strong>
+            <strong>九格行动1.0测试版</strong>
           </div>
           <div class="drag-space" data-drag-region aria-hidden="true"></div>
           <div class="actions" data-no-drag>

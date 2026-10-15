@@ -181,7 +181,7 @@ function createStartupWindow() {
   if (startupWindow && !startupWindow.isDestroyed()) { startupWindow.focus(); return startupWindow; }
   startupWindow = new BrowserWindow({
     width: 760, height: 590, minWidth: 620, minHeight: 460, show: false,
-    ...windowChromeOptions(), title: '九格行动',
+    ...windowChromeOptions(), title: '九格行动1.0测试版',
     icon: path.join(appRoot, 'desktop', 'assets', 'ninegrid.png'),
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
@@ -205,7 +205,7 @@ function createMainWindow() {
   const geometry = policy.computeWindowGeometry(screen.getPrimaryDisplay().workAreaSize);
   const win = new BrowserWindow({
     ...geometry, show: false,
-    ...windowChromeOptions(), title: '九格行动',
+    ...windowChromeOptions(), title: '九格行动1.0测试版',
     icon: path.join(appRoot, 'desktop', 'assets', 'ninegrid.png'),
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
@@ -334,7 +334,7 @@ function openSettings() {
   const height = Math.min(720, Math.max(520, available.height - 48));
   settingsWindow = new BrowserWindow({
     width, height, minWidth: Math.min(600, width), minHeight: Math.min(580, height), parent: mainWindow ?? startupWindow, modal: false,
-    ...windowChromeOptions(), title: '九格行动 · 设置',
+    ...windowChromeOptions(), title: '九格行动1.0测试版 · 设置',
     icon: path.join(appRoot, 'desktop', 'assets', 'ninegrid.png'),
     webPreferences: { preload: path.join(appRoot, 'desktop', 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
