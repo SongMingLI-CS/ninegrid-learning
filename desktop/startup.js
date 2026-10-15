@@ -3,6 +3,8 @@ const detail = document.querySelector('#detail');
 const error = document.querySelector('#error');
 const progress = document.querySelector('#progress');
 const actions = document.querySelector('#actions');
+const retryButton = document.querySelector('#retry');
+let retryInProgress = false;
 
 api.onStartupProgress(event => {
   detail.textContent = event.message;
@@ -11,7 +13,24 @@ api.onStartupProgress(event => {
   error.textContent = event.error || '';
   actions.hidden = !event.error;
 });
-document.querySelector('#retry').addEventListener('click', () => api.retryStartup());
+retryButton.addEventListener('click', async () => {
+  if (retryInProgress) return;
+  retryInProgress = true;
+  retryButton.disabled = true;
+  const label = retryButton.textContent;
+  retryButton.textContent = '正在重试…';
+  try { await api.retryStartup(); }
+  catch (reason) {
+    error.textContent = reason instanceof Error ? reason.message : '启动重试失败。';
+    error.hidden = false;
+    actions.hidden = false;
+  }
+  finally {
+    retryInProgress = false;
+    retryButton.disabled = false;
+    retryButton.textContent = label;
+  }
+});
 async function runAction(action) {
   try { await action(); }
   catch (reason) {

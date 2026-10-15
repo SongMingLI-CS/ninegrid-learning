@@ -15,7 +15,7 @@ function dependencies(decryptedText: string) {
     isEncryptionAvailable: vi.fn(async () => true),
     decrypt: vi.fn(async () => decryptedText),
     validate: vi.fn((value: Record<string, string>) => ({ ok: Boolean(value.DATABASE_URL && value.DATABASE_ADMIN_URL && value.SESSION_SECRET?.length >= 32) })),
-    onStage: (stage: string) => stages.push(stage),
+    onStage: (stage: string, _details?: unknown) => stages.push(stage),
   };
 }
 
@@ -28,6 +28,22 @@ describe('desktop secure configuration loading', () => {
 
     expect(result).toEqual({ ok: false, reason: 'missing' });
     expect(deps.stages).toEqual(['file-missing']);
+  });
+
+  it('does not report a missing file when the same path still exists after ENOENT', async () => {
+    const deps = dependencies(JSON.stringify(validConfig));
+    const stages: Array<[string, unknown]> = [];
+    deps.readFile.mockRejectedValue(Object.assign(new Error('transient path race'), { code: 'ENOENT', syscall: 'open', path: 'C:/profile/NineGrid/secure-config.bin' }));
+
+    const result = await readSecureConfiguration({
+      filePath: 'C:/profile/NineGrid/secure-config.bin',
+      ...deps,
+      fileExists: async () => true,
+      onStage: (stage: string, details: unknown) => stages.push([stage, details]),
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'read-failed' });
+    expect(stages).toEqual([['file-read-failed', { code: 'ENOENT', syscall: 'open', path: 'C:/profile/NineGrid/secure-config.bin', fileStillExists: true }]]);
   });
 
   it('reports each successful load phase without recording decrypted values', async () => {

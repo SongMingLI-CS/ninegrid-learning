@@ -10,6 +10,7 @@ const policy = require('./runtime-policy.cjs');
 const { windowChromeOptions } = require('./window-chrome.cjs');
 const { decryptStoredText } = require('./secure-config.cjs');
 const { readSecureConfiguration } = require('./secure-config-loader.cjs');
+const { persistSecureConfiguration } = require('./secure-config-store.cjs');
 const { createCloseGate } = require('./close-gate.cjs');
 
 const execFileAsync = promisify(execFile);
@@ -25,6 +26,7 @@ let startupWindow;
 let mainWindow;
 let settingsWindow;
 let startPromise;
+let startupAttemptCounter = 0;
 let backendChild;
 let backendOwned = false;
 let databaseOwned = false;
@@ -110,13 +112,16 @@ async function saveSettings() {
 
 async function saveSecrets(values) {
   if (!await safeStorage.isAsyncEncryptionAvailable()) throw new Error('Windows 安全存储暂不可用，密钥没有保存。');
-  const bytes = await safeStorage.encryptStringAsync(JSON.stringify(values));
   const target = encryptedConfigPath();
-  const temp = `${target}.tmp`;
-  await fsp.mkdir(path.dirname(target), { recursive: true });
-  await fsp.writeFile(temp, bytes);
-  await fsp.rename(temp, target);
-  secrets = values;
+  const persisted = await persistSecureConfiguration({
+    filePath: target,
+    values,
+    encrypt: text => safeStorage.encryptStringAsync(text),
+    decrypt: bytes => decryptStoredText(bytes, safeStorage),
+    validate: config => policy.validateDesktopConfig(config),
+    onStage: (stage, details = {}) => log(stage === 'persist-failed' || stage === 'rollback-failed' ? 'error' : 'info', `startup.config.persist.${stage} path=${target}${details.phase ? ` phase=${details.phase}` : ''}${details.code ? ` code=${details.code}` : ''}`),
+  });
+  secrets = persisted.values;
   secretValues = Object.values(secrets).filter(value => typeof value === 'string');
 }
 
@@ -128,7 +133,15 @@ async function loadSecrets() {
     isEncryptionAvailable: () => safeStorage.isAsyncEncryptionAvailable(),
     decrypt: encrypted => decryptStoredText(encrypted, safeStorage),
     validate: values => policy.validateDesktopConfig(values),
-    onStage: stage => log(stage === 'file-missing' ? 'warn' : 'info', `startup.config.${stage} path=${configPath}`),
+    fileExists: async file => {
+      try { await fsp.stat(file); return true; }
+      catch (error) { return error?.code === 'ENOENT' ? false : undefined; }
+    },
+    onStage: (stage, details = {}) => {
+      const diagnostic = details.code ? ` code=${details.code}${details.syscall ? ` syscall=${details.syscall}` : ''} fileStillExists=${details.fileStillExists ?? 'not-checked'}` : '';
+      const errorPath = typeof details.path === 'string' ? details.path : configPath;
+      log(stage === 'file-missing' || stage === 'file-read-failed' ? 'warn' : 'info', `startup.config.${stage} path=${errorPath}${diagnostic}`);
+    },
   });
   if (!loaded.ok) {
     if (loaded.reason === 'missing') return false;
@@ -283,7 +296,7 @@ function installIpc() {
     handlers.set(channel, guarded);
     ipcMain.handle(channel, guarded);
   };
-  handle('ninegrid:retry-startup', async () => { void startRuntime(); return true; });
+  handle('ninegrid:retry-startup', async () => startRuntime());
   handle('ninegrid:confirm-close', async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     closeGate.approveOnce();
@@ -548,16 +561,29 @@ async function ensureApi(db, paths) {
 
 async function startRuntime() {
   if (startPromise) return startPromise;
-  startPromise = startRuntimeInternal().catch(error => {
+  const attemptId = `${Date.now().toString(36)}-${(++startupAttemptCounter).toString(36)}`;
+  const startedAt = Date.now();
+  log('info', `startup.attempt.begin id=${attemptId}`);
+  startPromise = startRuntimeInternal(attemptId, startedAt).then(() => {
+    log('info', `startup.attempt.ready id=${attemptId} elapsedMs=${Date.now() - startedAt}`);
+    return true;
+  }).catch(error => {
     const message = redact(error.message || 'NineGrid 启动失败。');
     runtimeStatus.service = '启动失败';
-    log('error', message);
+    const errorCode = typeof error?.code === 'string' ? error.code : error?.name ?? 'Error';
+    log('error', `startup.attempt.failed id=${attemptId} elapsedMs=${Date.now() - startedAt} errorCode=${errorCode} error=${message}`);
     report('启动未完成；服务错误不会切换成演示档案。', 100, message);
+    return false;
   }).finally(() => { startPromise = undefined; });
   return startPromise;
 }
 
-async function startRuntimeInternal() {
+function logStartupStage(attemptId, startedAt, stage) {
+  log('info', `startup.attempt.stage id=${attemptId} stage=${stage} elapsedMs=${Date.now() - startedAt}`);
+}
+
+async function startRuntimeInternal(attemptId, startedAt) {
+  logStartupStage(attemptId, startedAt, 'load-configuration');
   report('读取本机配置与运行版本…', 5);
   await readSettings();
   await readBuildInfo();
@@ -573,13 +599,17 @@ async function startRuntimeInternal() {
   if (!configured) throw new Error('未找到本机加密配置文件。请从启动页导入现有 .env；不会自动创建空数据库或重置会话密钥。');
   const paths = getDataPaths();
   const db = getDatabaseConfig();
+  logStartupStage(attemptId, startedAt, 'database-check');
   log('info', `startup.stage=database-check path=${paths.postgres}`);
   await ensureDatabase(db, paths);
+  logStartupStage(attemptId, startedAt, 'database-ready');
   log('info', 'startup.stage=database-ready');
   report('确认现有数据附件目录…', 38);
   for (const directory of [paths.uploads, paths.backups, paths.logs]) await fsp.mkdir(directory, { recursive: true });
+  logStartupStage(attemptId, startedAt, 'api-start');
   log('info', 'startup.stage=api-start');
   const status = await ensureApi(db, paths);
+  logStartupStage(attemptId, startedAt, 'api-ready');
   log('info', 'startup.stage=api-ready');
   runtimeStatus.service = status.accounts ? '账号服务在线' : '账号服务不可用';
   runtimeStatus.ai = status.aiMode === 'ready' ? '已配置' : '未配置';

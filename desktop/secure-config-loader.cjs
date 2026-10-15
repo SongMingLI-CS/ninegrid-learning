@@ -1,13 +1,32 @@
-async function readSecureConfiguration({ filePath, readFile, isEncryptionAvailable, decrypt, validate, onStage = () => {} }) {
+async function readSecureConfiguration({ filePath, readFile, isEncryptionAvailable, decrypt, validate, fileExists, onStage = () => {} }) {
   let encrypted;
   try {
     encrypted = await readFile(filePath);
   } catch (error) {
-    if (error?.code === 'ENOENT') {
-      onStage('file-missing');
+    const details = {
+      code: typeof error?.code === 'string' ? error.code : 'UNKNOWN',
+      syscall: typeof error?.syscall === 'string' ? error.syscall : undefined,
+      path: typeof error?.path === 'string' ? error.path : filePath,
+    };
+    if (error?.code === 'ENOENT' && fileExists) {
+      let stillExists;
+      try { stillExists = await fileExists(filePath); } catch { stillExists = undefined; }
+      if (stillExists === true) {
+        onStage('file-read-failed', { ...details, fileStillExists: true });
+        return { ok: false, reason: 'read-failed' };
+      }
+      if (stillExists !== false) {
+        onStage('file-read-failed', { ...details, fileStillExists: 'unknown' });
+        return { ok: false, reason: 'read-failed' };
+      }
+      onStage('file-missing', { ...details, fileStillExists: false });
       return { ok: false, reason: 'missing' };
     }
-    onStage('file-read-failed');
+    if (error?.code === 'ENOENT') {
+      onStage('file-missing', details);
+      return { ok: false, reason: 'missing' };
+    }
+    onStage('file-read-failed', details);
     return { ok: false, reason: 'read-failed' };
   }
   onStage('file-present');

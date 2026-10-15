@@ -8,5 +8,6 @@ export function readSecureConfiguration(options: {
   isEncryptionAvailable: () => Promise<boolean>;
   decrypt: (encrypted: Uint8Array) => Promise<string>;
   validate: (values: Record<string, string>) => { ok: boolean };
-  onStage?: (stage: string) => void;
+  fileExists?: (filePath: string) => Promise<boolean | undefined>;
+  onStage?: (stage: string, details?: Record<string, unknown>) => void;
 }): Promise<SecureConfigLoadResult>;
