@@ -17,6 +17,7 @@ import { DEMO_CAMPAIGN } from '../src/lib/demo';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { createProgressForCampaign } from '../src/lib/engine';
 import { completeTask, markSelfChecked, setEvidence, setEvaluation } from '../src/lib/engine';
+import { curriculumOutlineSchema } from '../shared/curriculum';
 import type { LearningState } from '../shared/types';
 
 async function fixture() {
@@ -121,6 +122,36 @@ describe('server-owned learning archives', () => {
     expect(again.body.idempotent).toBe(true);
     expect(again.body.season.id).toBe(first.body.season.id);
     expect((await pool.query('SELECT id FROM seasons WHERE owner_user_id=$1', [owner])).rows).toHaveLength(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('repairs mixed optional-branch evidence when saving a resumable legacy course outline', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const input = { goal: 'Prepare for IELTS reading', level: 'Intermediate', days: 28, dailyMinutes: 80, ultimateReward: 'Complete a reading set' };
+    const stages = Array.from({ length: 4 }, (_, stageIndex) => {
+      const mainline = Array.from({ length: 15 }, (_, taskIndex) => ({
+        id: `s${stageIndex}-m${taskIndex}`, title: `主线任务 ${stageIndex}-${taskIndex}`, knowledgePoint: `阅读能力 ${stageIndex}-${taskIndex}`,
+        minutes: 12, prerequisites: taskIndex > 0 ? [`s${stageIndex}-m${taskIndex - 1}`] : stageIndex > 0 ? [`s${stageIndex - 1}-m14`] : [],
+      }));
+      const branches = Array.from({ length: 3 }, (_, branchIndex) => ({
+        id: `s${stageIndex}-b${branchIndex}`, title: `支线 ${stageIndex}-${branchIndex}`,
+        tasks: Array.from({ length: 3 }, (_, taskIndex) => ({ id: `s${stageIndex}-b${branchIndex}-t${taskIndex}`, title: `支线练习 ${taskIndex}`, knowledgePoint: `补充练习 ${taskIndex}`, minutes: 15, prerequisites: [] })),
+      }));
+      return { id: `s${stageIndex}`, title: `阶段 ${stageIndex}`, description: '通过主线任务建立可独立验证的阅读能力。', gateTaskId: `s${stageIndex}-m14`, mainline, branches };
+    });
+    const outline = {
+      title: 'IELTS reading plan', subtitle: 'A staged reading course', prerequisites: [], densityRationale: 'The schedule reserves review time and optional practice.', stages,
+      seasonalCollectible: { name: '阅读成果章', story: '完成阅读成果。', appearance: '深色圆章。', abilityOutcome: '独立完成阅读任务。' },
+      nineGrid: Array.from({ length: 9 }, (_, index) => ({ id: `outcome-${index}`, title: `能力格 ${index}`, ability: '定位阅读证据', value: '准确回答并解释', taskIds: [`s${index % 4}-m0`] })),
+    };
+    outline.nineGrid[0].taskIds.push('s0-b0-t0');
+    expect(curriculumOutlineSchema.safeParse(outline).success).toBe(true);
+    const created = await request(app).post('/api/generation-drafts').set('x-test-user', owner).send({ input, rulesVersion: 4 }).expect(201);
+    const saved = await request(app).patch(`/api/generation-drafts/${created.body.draft.id}`).set('x-test-user', owner).send({ revision: created.body.draft.revision, outline, status: 'partial' }).expect(200);
+    expect(saved.body.draft.outline.nineGrid[0].taskIds).toEqual(['s0-m0']);
+    const persisted = await pool.query('SELECT outline FROM generation_drafts WHERE id=$1', [created.body.draft.id]);
+    expect(persisted.rows[0].outline.nineGrid[0].taskIds).toEqual(['s0-m0']);
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 

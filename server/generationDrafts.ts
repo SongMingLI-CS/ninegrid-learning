@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Express, Request } from 'express';
 import type { Pool } from 'pg';
 import { campaignSchema, goalInputSchema } from '../shared/schema';
-import { curriculumOutlineSchema } from '../shared/curriculum';
+import { curriculumOutlineSchema, normalizeGeneratedCurriculumOutline } from '../shared/curriculum';
 import type { Campaign, LearningState } from '../shared/types';
 
 type DraftRow = {
@@ -65,7 +65,7 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       if (!old) { await client.query('ROLLBACK'); res.status(404).json({ code: 'DRAFT_NOT_FOUND' }); return; }
       if (old.status === 'activated') { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_ALREADY_ACTIVATED' }); return; }
       if (req.body.revision !== old.revision) { await client.query('ROLLBACK'); res.status(409).json({ code: 'DRAFT_REVISION_CONFLICT', revision: old.revision, error: '草稿已在另一设备更新。请重新读取后恢复，当前提交未覆盖服务器内容。' }); return; }
-      const outline = req.body?.outline ?? old.outline;
+      const outline = normalizeGeneratedCurriculumOutline(req.body?.outline ?? old.outline);
       if (outline && !curriculumOutlineSchema.safeParse(outline).success) { await client.query('ROLLBACK'); res.status(400).json({ code: 'INVALID_DRAFT_OUTLINE' }); return; }
       const batches = { ...(old.batches ?? {}) } as Record<string, Record<string, unknown>>;
       if (req.body?.batch) {

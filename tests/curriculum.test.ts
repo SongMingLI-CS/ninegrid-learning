@@ -67,6 +67,14 @@ describe('versioned NumPy curriculum', () => {
     const branchOnlyGrid = structuredClone(outline);
     branchOnlyGrid.nineGrid[0].taskIds = [branchOnlyGrid.stages[0].branches[0].tasks[0].id];
     expect(validateCurriculumOutline(branchOnlyGrid, { days:28, dailyMinutes:60 })).toBe(false);
+    const mixedGrid = structuredClone(outline);
+    mixedGrid.nineGrid[0].taskIds = [mixedGrid.stages[0].mainline[0].id, mixedGrid.stages[0].branches[0].tasks[0].id];
+    expect(validateCurriculumOutline(mixedGrid, { days:28, dailyMinutes:60 })).toBe(false);
+    const recoveredMixedGrid = normalizeGeneratedCurriculumOutline(mixedGrid) as typeof outline;
+    expect(recoveredMixedGrid.nineGrid[0].taskIds).toEqual([mixedGrid.stages[0].mainline[0].id]);
+    expect(validateCurriculumOutline(recoveredMixedGrid, { days:28, dailyMinutes:60 })).toBe(true);
+    const recoveredBranchOnlyGrid = normalizeGeneratedCurriculumOutline(branchOnlyGrid) as typeof outline;
+    expect(curriculumOutlineSchema.safeParse(recoveredBranchOnlyGrid).success).toBe(false);
     const shortGoal = { ...underfilled, stages: [{ ...underfilled.stages[0], mainline: [underfilled.stages[0].mainline[0]], gateTaskId: underfilled.stages[0].mainline[0].id, branches: [] }], nineGrid: outline.nineGrid.map(grid => ({ ...grid, taskIds: [`s0-m0`] })), densityRationale:'仅有两天预算，本路线只保留最关键主线能力。' };
     expect(validateCurriculumOutline(shortGoal, { days:2, dailyMinutes:15 })).toBe(false);
   });

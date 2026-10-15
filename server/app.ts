@@ -725,7 +725,7 @@ export function createApp(options: Options = {}) {
     const body = req.body as { input?: unknown; outline?: unknown; stageId?: unknown; chainId?: unknown; taskIds?: unknown };
     if (!assertMaterialSize(body.input, res)) return;
     const parsedInput = goalInputSchema.safeParse(body.input);
-    const parsedOutline = curriculumOutlineSchema.safeParse(body.outline);
+    const parsedOutline = curriculumOutlineSchema.safeParse(normalizeGeneratedCurriculumOutline(body.outline));
     if (!parsedInput.success || !parsedOutline.success || !validateCurriculumOutline(parsedOutline.data, parsedInput.data) || typeof body.stageId !== 'string' || typeof body.chainId !== 'string') { sendError(res, 400, 'INVALID_REQUEST'); return; }
     const stagePlan = parsedOutline.data.stages.find(stage => stage.id === body.stageId);
     if (!stagePlan) { sendError(res, 400, 'INVALID_REQUEST'); return; }
@@ -782,7 +782,7 @@ export function createApp(options: Options = {}) {
     const body = req.body as { input?: unknown; outline?: unknown; stages?: unknown };
     if (!assertMaterialSize(body.input, res)) return;
     const parsedInput = goalInputSchema.safeParse(body.input);
-    const parsedOutline = curriculumOutlineSchema.safeParse(body.outline);
+    const parsedOutline = curriculumOutlineSchema.safeParse(normalizeGeneratedCurriculumOutline(body.outline));
     if (!parsedInput.success || !parsedOutline.success || !validateCurriculumOutline(parsedOutline.data, parsedInput.data)) { sendError(res, 400, 'INVALID_REQUEST'); return; }
     if (!Array.isArray(body.stages) || body.stages.length !== parsedOutline.data.stages.length || body.stages.some(stage => !stage || typeof stage !== 'object')) { sendError(res, 400, 'INCOMPLETE_GENERATION'); return; }
     const input = parsedInput.data;

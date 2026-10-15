@@ -70,7 +70,24 @@ export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
     ...(Array.isArray(stage.mainline) ? { mainline: (stage.mainline as Array<Record<string, unknown>>).map(normalizeTask) } : {}),
     ...(Array.isArray(stage.branches) ? { branches: (stage.branches as Array<Record<string, unknown>>).map(branch => ({ ...branch, ...(Array.isArray(branch.tasks) ? { tasks: (branch.tasks as Array<Record<string, unknown>>).map(normalizeTask) } : {}) })) } : {}),
   }));
-  return { ...candidate, prerequisites: coursePrerequisites, stages: normalizedStages };
+  // Nine-grid outcomes are certified by the required path. Optional branch
+  // work may reinforce an outcome, but it must not be an unlock requirement.
+  // Older generated drafts can contain both kinds of task IDs; retain their
+  // valid mainline evidence so they can be finalized without regenerating tasks.
+  const mainlineTaskIds = new Set(normalizedStages.flatMap(stage =>
+    Array.isArray(stage.mainline)
+      ? (stage.mainline as Array<Record<string, unknown>>).flatMap(task => typeof task.id === 'string' ? [task.id] : [])
+      : [],
+  ));
+  const nineGrid = Array.isArray(candidate.nineGrid)
+    ? candidate.nineGrid.map(value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const grid = value as Record<string, unknown>;
+      if (!Array.isArray(grid.taskIds)) return grid;
+      return { ...grid, taskIds: grid.taskIds.filter((taskId): taskId is string => typeof taskId === 'string' && mainlineTaskIds.has(taskId)) };
+    })
+    : candidate.nineGrid;
+  return { ...candidate, prerequisites: coursePrerequisites, stages: normalizedStages, nineGrid };
 }
 
 /** Repair a hallucinated standalone gate ID only when its actual final mainline task is explicitly a synthesis or assessment. */
@@ -156,7 +173,7 @@ export function validateCurriculumOutline(outline: CurriculumOutline, input: { d
   if (outline.stages.some((stage, index) => stage.branches.length !== budget.branchChainsPerStage[index] || stage.branches.some(branch => branch.tasks.length !== 3))) return false;
   const canonicalDensity = budget.stageCount === 4 && budget.mainlineTaskCounts.every(count => count === 15) && budget.branchChainsPerStage.every(count => count === 3);
   if (!canonicalDensity && !outline.densityRationale?.trim()) return false;
-  if (outline.nineGrid.some(grid => new Set(grid.taskIds).size !== grid.taskIds.length || grid.taskIds.some(taskId => !byId.has(taskId)) || !grid.taskIds.some(taskId => byId.get(taskId)?.track === 'main'))) return false;
+  if (outline.nineGrid.some(grid => new Set(grid.taskIds).size !== grid.taskIds.length || grid.taskIds.some(taskId => byId.get(taskId)?.track !== 'main'))) return false;
   const stageOrder = new Map(outline.stages.map((stage, index) => [stage.id, index]));
   const taskOrder = new Map<string, number>();
   for (const stage of outline.stages) {
