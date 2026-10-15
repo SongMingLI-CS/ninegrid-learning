@@ -113,6 +113,39 @@ describe('local entry and account feature discoverability', () => {
     delete (window as Window & { nineGridDesktop?: unknown }).nineGridDesktop;
   });
 
+  it('does not block safe exit when the season is loaded but optional wallet hydration fails', async () => {
+    let requestClose: (() => void) | undefined;
+    const confirmClose = vi.fn(async () => true);
+    Object.defineProperty(window, 'nineGridDesktop', {
+      configurable: true,
+      value: {
+        onRequestClose: (handler: () => void) => { requestClose = handler; return () => undefined; },
+        confirmClose,
+      },
+    });
+    const state = createInitialState();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: true, accounts: true, model: 'deepseek-flash', accountAvailability: 'enabled' }));
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'wallet-down-user', email: 'wallet@example.test', createdAt: new Date().toISOString() } }));
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [{ id: 'season-1', revision: 3, title: state.campaign.title, state, lifecycleStatus: 'active' }], currentSeasonId: 'season-1', selectionRevision: 1 }));
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }));
+      if (url === '/api/wallet' || url === '/api/inventory') return new Response(JSON.stringify({ error: 'temporarily unavailable' }), { status: 503 });
+      if (url === '/api/seasons/season-1') return new Response(JSON.stringify({ season: { id: 'season-1', revision: 4, state } }));
+      if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: null }));
+      return new Response('{}', { status: 404 });
+    }));
+
+    render(<App/>);
+    expect(await screen.findByRole('heading', { name: '情报归档行动' })).toBeTruthy();
+    await waitFor(() => expect(requestClose).toBeTypeOf('function'));
+    requestClose!();
+    fireEvent.click(await screen.findByRole('button', { name: '保存完成后退出' }));
+
+    await waitFor(() => expect(confirmClose).toHaveBeenCalledTimes(1));
+    delete (window as Window & { nineGridDesktop?: unknown }).nineGridDesktop;
+  });
+
   it('restores a saved first-course draft after login even before any season has been activated', async () => {
     const goal = '学习 NumPy 二维数组的 shape、dtype 与 axis 求和';
     const calls: string[] = [];

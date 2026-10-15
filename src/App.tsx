@@ -379,8 +379,6 @@ function App() {
         setServerSeasons(payload.seasons?.length ? payload.seasons : [season]);
         setCurrentSeasonId(season.id); seasonSelectionRevisionRef.current=payload.selectionRevision??0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
         setAccountNeedsSeason(false);
-        await refreshServerRewards(controller.signal);
-        if (controller.signal.aborted) return;
         const pending = readPendingDraft(accountUser.id, season.id);
         let restored = season.state; let conflicted = false;
         if (pending) {
@@ -393,6 +391,15 @@ function App() {
         setSelectedStage(0); if (!pathTab(window.location.pathname)) setTab('missions'); else setTab(pathTab(window.location.pathname)!); serverHydrated.current = true;
         accountArchiveLoaded.current = true;
         setSaveError(conflicted ? '服务器已有较新版本，已恢复本机未发送草稿；请导出草稿或明确选择服务器版本，当前不会覆盖服务器。' : ''); setSyncStatus(conflicted ? 'conflict' : pending ? 'saving' : 'saved'); setScopedUserId(accountUser.id);
+        // The learning archive is authoritative for safe exit. Wallet/inventory are
+        // auxiliary views; their outage must not leave the whole account unhydrated
+        // and trap the learner in the close guard.
+        try {
+          await refreshServerRewards(controller.signal);
+          if (controller.signal.aborted) return;
+        } catch (error) {
+          if (!controller.signal.aborted) setSaveError(`学习记录已恢复，但钱包与仓库暂未同步：${error instanceof Error ? error.message : '连接失败'}。退出仍会先保存学习记录。`);
+        }
       } catch (error) {
         if (controller.signal.aborted) return;
         setSaveError(`服务器档案尚未同步：${error instanceof Error ? error.message : '连接失败'}。请检查连接后重试。`);
