@@ -150,6 +150,7 @@ function App() {
   const seasonSelectionRevisionRef = useRef(0);
   const settlementInFlight = useRef(false);
   const serverHydrated = useRef(false);
+  const accountArchiveLoaded = useRef(false);
   const [notification, setNotification] = useState<Notification>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [seconds, setSeconds] = useState(0);
@@ -255,11 +256,14 @@ function App() {
       if (!localSave.ok) throw new Error(`本机恢复缓存失败：${localSave.error}`);
       if (accountUser) {
         const archive = serverArchive.current;
-        if (!archive || !serverHydrated.current || archive.userId !== accountUser.id) throw new Error('账号赛季尚未完成载入；请取消退出并等待同步状态恢复。');
-        if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived') throw new Error('当前赛季为只读；已保存的内容仍在本机缓存，请取消退出后核对档案状态。');
-        savePendingDraft({ userId: accountUser.id, seasonId: archive.id, revision: archive.revision, state: snapshot, updatedAt: new Date().toISOString() });
-        await putServerArchive(snapshot);
-        await archiveWriteQueue.current;
+        if (!accountArchiveLoaded.current || scopedUserId !== accountUser.id) throw new Error('账号档案尚未完成载入；请取消退出并等待同步状态恢复。');
+        if (archive) {
+          if (!serverHydrated.current || archive.userId !== accountUser.id) throw new Error('账号赛季尚未完成载入；请取消退出并等待同步状态恢复。');
+          if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived') throw new Error('当前赛季为只读；已保存的内容仍在本机缓存，请取消退出后核对档案状态。');
+          savePendingDraft({ userId: accountUser.id, seasonId: archive.id, revision: archive.revision, state: snapshot, updatedAt: new Date().toISOString() });
+          await putServerArchive(snapshot);
+          await archiveWriteQueue.current;
+        }
       }
       const confirmed = await window.nineGridDesktop?.confirmClose?.();
       if (!confirmed) throw new Error('桌面窗口没有确认关闭；数据仍保留。');
@@ -325,11 +329,11 @@ function App() {
     return () => { cancelled = true; };
   }, [statusRetry, localChoice]);
   useEffect(() => {
-    if (!accountUser) { archiveRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false; setSavedGenerationDrafts([]); setPendingDraftId(undefined); setScopedUserId(undefined); setStorageScope(); return; }
+    if (!accountUser) { archiveRequest.current?.abort(); serverArchive.current = null; serverHydrated.current = false; accountArchiveLoaded.current = false; setSavedGenerationDrafts([]); setPendingDraftId(undefined); setScopedUserId(undefined); setStorageScope(); return; }
     setAccountNeedsSeason(false);
     const controller = new AbortController(); archiveRequest.current?.abort(); archiveRequest.current = controller;
     seasonSwitchSequence.current += 1; seasonSelectionQueue.current = Promise.resolve(); seasonSelectionRevisionRef.current = 0; setSeasonSelectionRevision(0);
-    serverHydrated.current = false; serverArchive.current = null; setScopedUserId(undefined);
+    serverHydrated.current = false; accountArchiveLoaded.current = false; serverArchive.current = null; setScopedUserId(undefined);
     setServerSeasons([]); setServerWallet(0); setServerInventory([]); setServerLedger([]); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null);
     setStorageScope(accountUser.id);
     const restore = async () => {
@@ -355,17 +359,19 @@ function App() {
         let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived');
         if (!season && payload.seasons?.length) {
           setServerSeasons(payload.seasons); setCurrentSeasonId(''); seasonSelectionRevisionRef.current = payload.selectionRevision ?? 0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
-          setAccountNeedsSeason(true); setScopedUserId(accountUser.id); setSyncStatus('saved'); setSaveError(''); setTab('today');
+          setAccountNeedsSeason(true); accountArchiveLoaded.current = true; setScopedUserId(accountUser.id); setSyncStatus('saved'); setSaveError(''); setTab('today');
           return;
         }
         if (!season) {
           if (!loaded.isNew) {
             setLegacyImportPending(localArchiveCandidates(loaded.state));
+            accountArchiveLoaded.current = true;
+            setScopedUserId(accountUser.id);
             setSaveError('发现浏览器中的旧学习档案。请先预览并确认迁移；原档案会保留，旧奖励和 AI 标记不会成为服务器可信记录。');
             return;
           }
           setServerSeasons([]); setCurrentSeasonId(''); seasonSelectionRevisionRef.current = payload.selectionRevision ?? 0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
-          setAccountNeedsSeason(true); setScopedUserId(accountUser.id); setSyncStatus('saved'); setSaveError(''); setTab('today');
+          setAccountNeedsSeason(true); accountArchiveLoaded.current = true; setScopedUserId(accountUser.id); setSyncStatus('saved'); setSaveError(''); setTab('today');
           return;
         }
         if (controller.signal.aborted) return;
@@ -385,6 +391,7 @@ function App() {
         serverArchive.current = { id: season.id, revision: season.revision, userId: accountUser.id, conflicted, lifecycleStatus: season.lifecycleStatus ?? 'active' };
         setState(restored); setSelectedTaskId(restored.lastTaskId ?? restored.campaign.stages[0]?.tasks[0]?.id ?? '');
         setSelectedStage(0); if (!pathTab(window.location.pathname)) setTab('missions'); else setTab(pathTab(window.location.pathname)!); serverHydrated.current = true;
+        accountArchiveLoaded.current = true;
         setSaveError(conflicted ? '服务器已有较新版本，已恢复本机未发送草稿；请导出草稿或明确选择服务器版本，当前不会覆盖服务器。' : ''); setSyncStatus(conflicted ? 'conflict' : pending ? 'saving' : 'saved'); setScopedUserId(accountUser.id);
       } catch (error) {
         if (controller.signal.aborted) return;

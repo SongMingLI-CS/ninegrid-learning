@@ -15,7 +15,7 @@ function stubOfflineApi() {
 
 describe('local entry and account feature discoverability', () => {
   beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (window as Window & { nineGridDesktop?: unknown }).nineGridDesktop; });
 
   it('lets a new learner choose their own goal before any sample campaign is opened', async () => {
     stubOfflineApi();
@@ -80,6 +80,37 @@ describe('local entry and account feature discoverability', () => {
     expect(screen.getByRole('button', { name: '开始设定学习目标' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'NumPy 数据准备行动' })).toBeNull();
     expect(requests.some(request => request.url === '/api/seasons' && request.method === 'POST')).toBe(false);
+  });
+
+  it('allows a fully loaded account with no season to complete the safe desktop exit', async () => {
+    let requestClose: (() => void) | undefined;
+    const confirmClose = vi.fn(async () => true);
+    Object.defineProperty(window, 'nineGridDesktop', {
+      configurable: true,
+      value: {
+        onRequestClose: (handler: () => void) => { requestClose = handler; return () => undefined; },
+        confirmClose,
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: true, accounts: true, model: 'deepseek-flash', accountAvailability: 'enabled' }));
+      if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'empty-account', email: 'empty@example.test', createdAt: new Date().toISOString() } }));
+      if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }));
+      if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }));
+      if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: null }));
+      return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 404 });
+    }));
+
+    render(<App/>);
+    expect(await screen.findByRole('heading', { name: '创建你的第一个学习赛季' })).toBeTruthy();
+    await waitFor(() => expect(requestClose).toBeTypeOf('function'));
+    requestClose!();
+    fireEvent.click(await screen.findByRole('button', { name: '保存完成后退出' }));
+
+    await waitFor(() => expect(confirmClose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+    delete (window as Window & { nineGridDesktop?: unknown }).nineGridDesktop;
   });
 
   it('restores a saved first-course draft after login even before any season has been activated', async () => {
