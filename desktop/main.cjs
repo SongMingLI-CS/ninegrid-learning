@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const policy = require('./runtime-policy.cjs');
 const { windowChromeOptions } = require('./window-chrome.cjs');
 const { decryptStoredText } = require('./secure-config.cjs');
+const { readSecureConfiguration } = require('./secure-config-loader.cjs');
 const { createCloseGate } = require('./close-gate.cjs');
 
 const execFileAsync = promisify(execFile);
@@ -120,19 +121,29 @@ async function saveSecrets(values) {
 }
 
 async function loadSecrets() {
-  if (!await safeStorage.isAsyncEncryptionAvailable()) throw new Error('Windows DPAPI 安全存储不可用；请检查当前 Windows 用户配置。');
-  try {
-    const encrypted = await fsp.readFile(encryptedConfigPath());
-    const decrypted = await decryptStoredText(encrypted, safeStorage);
-    const parsed = JSON.parse(decrypted);
-    if (!policy.validateDesktopConfig(parsed).ok) throw new Error('配置文件缺少有效的本机数据库连接或会话密钥。');
-    secrets = parsed;
-    secretValues = Object.values(secrets).filter(value => typeof value === 'string');
-    return true;
-  } catch (error) {
-    if (error.code === 'ENOENT') return false;
-    throw error;
+  const configPath = encryptedConfigPath();
+  const loaded = await readSecureConfiguration({
+    filePath: configPath,
+    readFile: file => fsp.readFile(file),
+    isEncryptionAvailable: () => safeStorage.isAsyncEncryptionAvailable(),
+    decrypt: encrypted => decryptStoredText(encrypted, safeStorage),
+    validate: values => policy.validateDesktopConfig(values),
+    onStage: stage => log(stage === 'file-missing' ? 'warn' : 'info', `startup.config.${stage} path=${configPath}`),
+  });
+  if (!loaded.ok) {
+    if (loaded.reason === 'missing') return false;
+    const messages = {
+      'read-failed': '本机加密配置文件存在，但无法读取；原文件已保留。请检查当前 Windows 用户对配置目录的访问权限。',
+      'encryption-unavailable': '本机加密配置文件存在，但当前 Windows 用户的 DPAPI 安全存储不可用；原文件已保留。',
+      'decrypt-failed': '本机加密配置文件无法由当前 Windows 用户解密；原文件已保留。请使用原 Windows 用户或导入现有 .env 配置。',
+      'parse-failed': '本机配置已解密，但内容格式无效；原文件已保留。请导入现有 .env 配置。',
+      'invalid-fields': '本机配置格式可读，但数据库连接或会话密钥字段不符合要求；原文件已保留。请导入现有 .env 配置。',
+    };
+    throw new Error(messages[loaded.reason] ?? '本机配置加载失败；原文件已保留。');
   }
+  secrets = loaded.values;
+  secretValues = Object.values(secrets).filter(value => typeof value === 'string');
+  return true;
 }
 
 async function importConfiguration() {
@@ -145,9 +156,11 @@ async function importConfiguration() {
   const selectedPath = result.filePaths[0];
   if ((await fsp.stat(selectedPath)).size > 1024 * 1024) throw new Error('配置文件超过 1 MiB；没有读取或保存。');
   const parsed = policy.parseEnvironmentText(await fsp.readFile(selectedPath, 'utf8'));
-  if (!policy.validateDesktopConfig(parsed).ok) throw new Error('所选文件缺少有效的 DATABASE_URL、DATABASE_ADMIN_URL、SESSION_SECRET，或数据库不是本机 5433 实例。');
+  log('info', 'startup.config.import-parsed');
+  if (!policy.validateDesktopConfig(parsed).ok) throw new Error('所选文件中的 DATABASE_URL、DATABASE_ADMIN_URL 或 SESSION_SECRET 缺失或不符合本机配置要求；原加密配置未更改。');
+  log('info', 'startup.config.import-validated');
   await saveSecrets(parsed);
-  log('info', 'Secure application configuration was imported and encrypted with Windows DPAPI.');
+  log('info', 'startup.config.import-saved-and-memory-updated; encrypted with Windows DPAPI.');
   return true;
 }
 
@@ -280,7 +293,7 @@ function installIpc() {
   handle('ninegrid:choose-data-directory', async () => chooseDataDirectory());
   handle('ninegrid:import-configuration', async () => importConfiguration());
   handle('ninegrid:get-settings', async () => ({
-    version: app.getVersion(), commit: buildInfo.commit, branch: buildInfo.branch,
+    version: app.getVersion(), commit: buildInfo.commit, sourceCommit: buildInfo.sourceCommit ?? buildInfo.commit, branch: buildInfo.branch,
     dataDirectory: settings.dataDirectory, zoom: settings.zoom,
   }));
   handle('ninegrid:get-runtime-status', async () => {
@@ -548,6 +561,7 @@ async function startRuntimeInternal() {
   report('读取本机配置与运行版本…', 5);
   await readSettings();
   await readBuildInfo();
+  log('info', `startup.build-info version=${app.getVersion()} commit=${buildInfo.commit} branch=${buildInfo.branch} dirty=${buildInfo.workingTreeModified}`);
   let configured = await loadSecrets();
   if (!configured && !app.isPackaged) {
     const devEnvPath = path.join(appRoot, '.env');
@@ -556,13 +570,17 @@ async function startRuntimeInternal() {
       if (policy.validateDesktopConfig(parsed).ok) { await saveSecrets(parsed); configured = true; }
     } catch (error) { if (error.code !== 'ENOENT') log('warn', 'Development environment file was not imported.'); }
   }
-  if (!configured) throw new Error('尚未导入本机账号配置。需要 DATABASE_URL、DATABASE_ADMIN_URL（只用于只读核验集群位置）和至少 32 字符的 SESSION_SECRET。密钥将使用当前 Windows 用户的 DPAPI 加密保存。');
+  if (!configured) throw new Error('未找到本机加密配置文件。请从启动页导入现有 .env；不会自动创建空数据库或重置会话密钥。');
   const paths = getDataPaths();
   const db = getDatabaseConfig();
+  log('info', `startup.stage=database-check path=${paths.postgres}`);
   await ensureDatabase(db, paths);
+  log('info', 'startup.stage=database-ready');
   report('确认现有数据附件目录…', 38);
   for (const directory of [paths.uploads, paths.backups, paths.logs]) await fsp.mkdir(directory, { recursive: true });
+  log('info', 'startup.stage=api-start');
   const status = await ensureApi(db, paths);
+  log('info', 'startup.stage=api-ready');
   runtimeStatus.service = status.accounts ? '账号服务在线' : '账号服务不可用';
   runtimeStatus.ai = status.aiMode === 'ready' ? '已配置' : '未配置';
   if (!status.accounts || status.environment !== 'production') throw new Error('服务没有进入生产账号模式；为保护存档，桌面端不会继续加载页面。');

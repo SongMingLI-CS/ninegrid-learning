@@ -1,9 +1,12 @@
-import { cp, mkdir, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const require = createRequire(import.meta.url);
+const { createDesktopBuildInfo } = require('../../desktop/build-metadata.cjs');
 const staged = path.join(root, 'desktop-runtime');
 const expectedNodeVersion = 'v24.11.1';
 const nodeSource = path.join(root, 'node_modules', 'node', 'bin', 'node.exe');
@@ -25,14 +28,16 @@ for (const directory of ['bin', 'lib', 'share']) {
   await cp(path.join(pgSource, directory), path.join(staged, 'postgresql18', directory), { recursive: true, force: true });
 }
 const get = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
-const info = {
-  commit: get(['rev-parse', '--short=12', 'HEAD']),
+const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+const info = createDesktopBuildInfo({
+  version: packageJson.version,
+  commit: get(['rev-parse', 'HEAD']),
   branch: get(['branch', '--show-current']),
-  workingTreeModified: Boolean(get(['status', '--porcelain', '--untracked-files=no'])),
+  dirty: Boolean(get(['status', '--porcelain', '--untracked-files=no'])),
   nodeVersion: stagedNodeVersion,
   postgresRuntime: pgVersion,
   builtAt: new Date().toISOString(),
-};
+});
 await writeFile(path.join(root, 'desktop-build-info.json'), `${JSON.stringify(info, null, 2)}\n`, { encoding: 'utf8' });
 const [node, pgBin, pgLib, pgShare] = await Promise.all([
   stat(path.join(staged, 'node.exe')),

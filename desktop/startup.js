@@ -21,4 +21,6 @@ async function runAction(action) {
   }
 }
 document.querySelector('#chooseData').addEventListener('click', () => runAction(() => api.chooseDataDirectory()));
-document.querySelector('#importConfig').addEventListener('click', () => runAction(() => api.importConfiguration()));
+document.querySelector('#importConfig').addEventListener('click', () => runAction(async () => {
+  if (await api.importConfiguration()) await api.retryStartup();
+}));

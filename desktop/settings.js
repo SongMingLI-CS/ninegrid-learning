@@ -3,7 +3,7 @@ const result = document.querySelector('#result');
 
 async function refresh() {
   const [settings, runtime] = await Promise.all([api.getSettings(), api.getRuntimeStatus()]);
-  document.querySelector('#version').textContent = `${settings.version} · ${settings.commit} · ${settings.branch}`;
+  document.querySelector('#version').textContent = `${settings.version} · ${settings.sourceCommit ?? settings.commit} · ${settings.branch}`;
   document.querySelector('#service').textContent = runtime.service;
   document.querySelector('#ai').textContent = runtime.ai;
   document.querySelector('#data').textContent = settings.dataDirectory;
