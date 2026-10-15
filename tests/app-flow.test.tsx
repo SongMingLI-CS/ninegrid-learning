@@ -216,6 +216,23 @@ describe('local entry and account feature discoverability', () => {
     expect(saved.answers['diagnostic-concept']).toMatchObject({ confidence: 'known', response: '我知道数组用整数位置选出一行。' });
   });
 
+  it('starts course generation when the learner chooses to skip the optional self-assessment', async () => {
+    const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input); requests.push(url);
+      if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash' }), { status: 200 });
+      return new Response(JSON.stringify({ error: 'API_KEY_MISSING' }), { status: 503 });
+    }));
+    render(<App/>);
+    expect(await screen.findByRole('heading', { name: '先设定你自己的学习目标' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '开始创建我的目标' }));
+    fireEvent.change(screen.getByPlaceholderText(/例如：我刚学 NumPy/), { target: { value: '学习雅思阅读并完成一套定位证据练习' } });
+    fireEvent.click(screen.getByRole('button', { name: '开始基础自评' }));
+    expect(await screen.findByRole('button', { name: '跳过基础自评，按当前基础生成' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '跳过基础自评，按当前基础生成' }));
+    await waitFor(() => expect(requests).toContain('/api/generation/outline'));
+  });
+
   it('starts a new diagnostic idempotency attempt when retry settings differ from the failed attempt', async () => {
     const goal = '学习 NumPy 布尔索引并完成测量数据汇总函数';
     const failedInput = { goal, level: '零基础', days: 28, dailyMinutes: 45, desiredArtifact: '旧交付目标', language: 'mixed' };

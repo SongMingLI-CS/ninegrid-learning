@@ -1257,6 +1257,7 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     await diagnosticSaveChain.current;
     if(diagnosticDraft.current){const draft=diagnosticDraft.current;try{const response=await apiFetch(`/api/generation-drafts/${draft.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:draft.revision,status:'cancelled'})});if(!response.ok)throw new Error('跳过状态未保存，请重新读取草稿。');diagnosticDraft.current={id:draft.id,revision:(await response.json()).draft.revision};}catch(error){setDiagnosticError(error instanceof Error?error.message:'未能保存跳过状态。');return;}}
     setDiagnosticOpen(false);setDiagnosticError('');setDiagnosticAnswers({});try{window.localStorage.removeItem(diagnosticKey);}catch{}
+    onGenerate();
   };
   const updateDiagnostic = (id: string, change: Partial<{ confidence: 'known'|'needs-practice'|'unknown'; response: string }>) => {
     const previous = diagnosticAnswers[id];
