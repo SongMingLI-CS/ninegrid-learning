@@ -192,6 +192,7 @@ const progressSchema = z.object({
   supplementalEvidence: z.string().max(100000).optional(),
   evaluation: evaluationSchema.optional(), assistedEvaluation: evaluationSchema.optional(), verification: z.enum(['self', 'ai']).optional(), completedAt: dateSchema.optional(),
   selfChecked: z.boolean().optional(),
+  selfCheckEvidence: z.string().max(200000).optional(), selfCheckLessonRevision: z.number().int().min(1).max(1000).optional(),
   evaluationSource: z.enum(['self','ai']).optional(), evaluationEvidence: z.string().max(200000).optional(),
   lessonRevision: z.number().int().min(1).max(1000).optional(), hintLevelsUsed: z.number().int().min(0).max(5).optional(),
   answerRevealed: z.boolean().optional(), evaluationLessonRevision: z.number().int().min(1).max(1000).optional(),

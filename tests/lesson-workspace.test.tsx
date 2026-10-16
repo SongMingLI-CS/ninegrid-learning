@@ -26,6 +26,30 @@ describe('lesson challenge disclosure', () => {
     expect(screen.getByRole('textbox', { name: '学习答案与成果' })).toBeTruthy();
   });
 
+  it('does not enable settlement for an empty or stale self-check record', () => {
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence: '', status: 'active', selfChecked: true }} content={content} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    expect((screen.getByRole('button', { name: /结算任务/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /自评/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('does not enable settlement with a passing evaluation for older evidence or lesson revision', () => {
+    const answer = '我用自己的话回答了当前任务，并附上可核对的具体证据。';
+    render(<LessonWorkspace task={task} progress={{ completedObjectives: [], evidence: answer, status: 'active', evaluationSource: 'ai', evaluation: { passed: true, score: 88, feedback: '通过', gaps: [], nextStep: '继续练习' }, evaluationEvidence: '旧版本的另一份答案。', lessonRevision: 2, evaluationLessonRevision: 1 }} content={{ ...content, revision: 2 }} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    expect((screen.getByRole('button', { name: /结算任务/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('enables self-settlement only when the current answer and lesson revision were checked', () => {
+    const answer = '我先判断文章主旨，再引用第二段中的定位证据说明选择理由。';
+    const checked = { completedObjectives: [], evidence: answer, status: 'active' as const, selfChecked: true, selfCheckEvidence: answer, lessonRevision: content.revision, selfCheckLessonRevision: content.revision };
+    const { rerender } = render(<LessonWorkspace task={task} progress={checked} content={content} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    const settle = () => screen.getByRole('button', { name: '结算自评完成记录' }) as HTMLButtonElement;
+    expect(settle().disabled).toBe(false);
+    expect(screen.getByText(/这不等于 AI 验证/)).toBeTruthy();
+
+    rerender(<LessonWorkspace task={task} progress={{ ...checked, selfCheckLessonRevision: content.revision - 1 }} content={content} onEvidence={vi.fn()} onEvaluate={vi.fn()} onSelfCheck={vi.fn()} onComplete={vi.fn()}/>);
+    expect((screen.getByRole('button', { name: '结算任务与奖励' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('keeps earlier answer attempts visible with their version and decision', () => {
     const attempts = [
       { at: '2026-10-14T00:00:00.000Z', answer: '第一份答案：我混淆了 axis。', hintLevelsUsed: 0, verification: 'ai' as const, passed: false, feedback: 'axis 方向需修正。', lessonRevision: 1 },

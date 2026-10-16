@@ -185,13 +185,46 @@ function replaceProgress(state: LearningState, id: string, progress: TaskProgres
 function assertEditable(progress: TaskProgress): void {
   if (progress.status === 'completed') throw new Error('已完成任务的证据与目标已归档，不能修改');
 }
+export function taskEvidenceText(progress: TaskProgress): string {
+  return [progress.evidence, progress.supplementalEvidence?.trim() ? `补充证据：\n${progress.supplementalEvidence}` : ''].filter(Boolean).join('\n\n');
+}
+export function currentTaskVerification(progress: TaskProgress, currentLessonRevision?: number): 'self' | 'ai' | null {
+  const evidence = taskEvidenceText(progress);
+  if (evidence.trim().length < 20 || progress.answerRevealed) return null;
+  const expectedRevision = currentLessonRevision ?? progress.lessonRevision;
+  const selfVersionMatches = expectedRevision === undefined
+    ? progress.selfCheckLessonRevision === undefined
+    : progress.selfCheckLessonRevision === expectedRevision;
+  const aiVersionMatches = expectedRevision === undefined
+    ? progress.lessonRevision === undefined && progress.evaluationLessonRevision === undefined
+    : progress.lessonRevision === expectedRevision && progress.evaluationLessonRevision === expectedRevision;
+  if (progress.evaluationSource === 'ai' && progress.evaluation?.passed && progress.evaluation.score >= 70 && progress.evaluationEvidence === evidence && aiVersionMatches) return 'ai';
+  if (progress.selfChecked && selfVersionMatches && progress.selfCheckEvidence === evidence) return 'self';
+  return null;
+}
+export interface TaskSettlementReadiness { ready: boolean; verification?: 'self' | 'ai'; reason: string }
+export function taskSettlementReadiness(state: LearningState, taskId: string): TaskSettlementReadiness {
+  const task = getTasks(state.campaign).find(item => item.id === taskId);
+  const progress = state.progress[taskId];
+  if (!task || !progress) return { ready: false, reason: '找不到当前赛季任务。' };
+  const revision = state.content?.[taskId]?.revision ?? task.teaching?.revision;
+  const verification = currentTaskVerification(progress, revision);
+  if (progress.status === 'completed') {
+    if (progress.verification === 'self' && verification === 'ai') return { ready: true, verification: 'ai', reason: '可用当前答案和讲解版本升级为 AI 验证。' };
+    return { ready: false, reason: '任务已经结算；重复提交不会再次发奖。' };
+  }
+  if (!isTaskUnlocked(state.campaign, state.progress, taskId)) return { ready: false, reason: '先完成显示的前置任务，当前任务才能验收和结算。' };
+  if (progress.answerRevealed) return { ready: false, reason: '参考答案已查看；本次只作学习反馈，请生成新的同目标变式。' };
+  if (taskEvidenceText(progress).trim().length < 20) return { ready: false, reason: '先保存至少 20 个字符的答案或成果证据。' };
+  if (verification) return { ready: true, verification, reason: verification === 'ai' ? '当前答案已通过 AI 核验，可结算奖励。' : '当前答案已记录自评，可按自评完成任务。' };
+  return { ready: false, reason: '需要对当前答案完成自评，或取得与当前答案和讲解版本一致的 AI 通过记录。' };
+}
 function clearEvaluation(progress: TaskProgress): TaskProgress {
-  const { evaluation: _evaluation, assistedEvaluation: _assistedEvaluation, verification: _verification, completedAt: _completedAt, selfChecked: _selfChecked, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, evaluationLessonRevision: _evaluationLessonRevision, ...rest } = progress;
+  const { evaluation: _evaluation, assistedEvaluation: _assistedEvaluation, verification: _verification, completedAt: _completedAt, selfChecked: _selfChecked, selfCheckEvidence: _selfCheckEvidence, selfCheckLessonRevision: _selfCheckLessonRevision, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, evaluationLessonRevision: _evaluationLessonRevision, ...rest } = progress;
   return rest;
 }
 function evaluationMatchesCurrentEvidence(progress: TaskProgress): boolean {
-  const current = [progress.evidence, progress.supplementalEvidence?.trim() ? `补充证据：\n${progress.supplementalEvidence}` : ''].filter(Boolean).join('\n\n');
-  return progress.evaluationEvidence === current;
+  return progress.evaluationEvidence === taskEvidenceText(progress);
 }
 function timestamp(now: Date): string {
   if (!Number.isFinite(now.getTime())) throw new Error('时间无效');
@@ -234,32 +267,36 @@ export function setSupplementalEvidence(state: LearningState, taskId: string, ev
   if (!hasUnsettledFailure && !selfCompleted) throw new Error('只有存在未通过记录的任务或自行完成的任务可以补充证据');
   if (typeof evidence !== 'string' || evidence.length > 100000) throw new Error('补充证据必须是有效文本且不超过 100000 字符');
   if (progress.supplementalEvidence === evidence) return state;
-  const { evaluation: _evaluation, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, ...rest } = progress;
+  const { evaluation: _evaluation, evaluationSource: _evaluationSource, evaluationEvidence: _evaluationEvidence, selfChecked: _selfChecked, selfCheckEvidence: _selfCheckEvidence, selfCheckLessonRevision: _selfCheckLessonRevision, ...rest } = progress;
   return replaceProgress(state, taskId, { ...rest, supplementalEvidence: evidence });
 }
 
 export function setEvaluation(state: LearningState, taskId: string, evaluation: Evaluation, source: 'self' | 'ai' = 'ai'): LearningState {
-  const [, progress] = taskAndProgress(state, taskId);
+  const [task, progress] = taskAndProgress(state, taskId);
   if (source === 'ai' && progress.answerRevealed) throw new Error('已查看参考答案，评价只能用于学习反馈，不能作为独立掌握证明');
   if (progress.status === 'completed' && !(source === 'ai' && progress.verification === 'self')) assertEditable(progress);
   if (progress.status === 'completed' && source !== 'ai') throw new Error('已自行完成的任务只能追加 AI 核验');
   const evidence = [progress.evidence, progress.supplementalEvidence?.trim() ? `补充证据：\n${progress.supplementalEvidence}` : ''].filter(Boolean).join('\n\n');
-  if (progress.status === 'completed') return replaceProgress(state, taskId, { ...progress, evaluation: evaluationSchema.parse(evaluation), evaluationSource: source, evaluationEvidence: evidence, ...(progress.lessonRevision ? { evaluationLessonRevision: progress.lessonRevision } : {}) });
-  return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation), evaluationSource: source, evaluationEvidence: evidence, ...(progress.lessonRevision ? { evaluationLessonRevision: progress.lessonRevision } : {}) });
+  const lessonRevision = state.content?.[taskId]?.revision ?? task.teaching?.revision ?? progress.lessonRevision;
+  const revisionEvidence = lessonRevision !== undefined ? { lessonRevision, evaluationLessonRevision: lessonRevision } : {};
+  if (progress.status === 'completed') return replaceProgress(state, taskId, { ...progress, evaluation: evaluationSchema.parse(evaluation), evaluationSource: source, evaluationEvidence: evidence, ...revisionEvidence });
+  return replaceProgress(state, taskId, { ...clearEvaluation(progress), evaluation: evaluationSchema.parse(evaluation), evaluationSource: source, evaluationEvidence: evidence, ...revisionEvidence });
 }
 
 export function markSelfChecked(state: LearningState, taskId: string): LearningState {
-  const [, progress] = taskAndProgress(state, taskId);
+  const [task, progress] = taskAndProgress(state, taskId);
   assertEditable(progress);
-  if (progress.evidence.trim().length < 20) throw new Error('提交至少 20 个字符的答案或成果后再做自我检查');
-  const { evaluation: _evaluation, verification: _verification, ...rest } = progress;
-  return replaceProgress(state, taskId, { ...rest, selfChecked: true });
+  if (taskEvidenceText(progress).trim().length < 20) throw new Error('提交至少 20 个字符的答案或成果后再做自我检查');
+  const rest = clearEvaluation(progress);
+  const lessonRevision = state.content?.[taskId]?.revision ?? task.teaching?.revision ?? progress.lessonRevision;
+  return replaceProgress(state, taskId, { ...rest, selfChecked: true, selfCheckEvidence: taskEvidenceText(progress), ...(lessonRevision !== undefined ? { selfCheckLessonRevision: lessonRevision } : {}) });
 }
 
 export function completeTask(state: LearningState, taskId: string, verification: 'self' | 'ai', now = new Date()): LearningState {
   const [task, progress] = taskAndProgress(state, taskId);
+  const currentLessonRevision = state.content?.[taskId]?.revision ?? task.teaching?.revision;
   if (progress.status === 'completed') {
-    if (progress.verification !== 'self' || verification !== 'ai' || progress.answerRevealed || !progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai' || (progress.lessonRevision && progress.evaluationLessonRevision !== progress.lessonRevision) || !evaluationMatchesCurrentEvidence(progress)) return state;
+    if (progress.verification !== 'self' || verification !== 'ai' || currentTaskVerification(progress, currentLessonRevision) !== 'ai' || !evaluationMatchesCurrentEvidence(progress)) return state;
     let promoted = replaceProgress(state, taskId, { ...progress, verification: 'ai' });
     const verificationItems = getTaskReward(task).items;
     if (verificationItems.length) promoted = applyReward(promoted, task, { xp: 0, coins: 0, items: verificationItems }, 'verification', now);
@@ -276,8 +313,9 @@ export function completeTask(state: LearningState, taskId: string, verification:
   if (verification !== 'self' && verification !== 'ai') throw new Error('验收方式无效');
   if (progress.answerRevealed) throw new Error('已查看参考答案，请生成新的迁移题后再独立验收');
   if (!isTaskUnlocked(state.campaign, state.progress, taskId)) throw new Error('请先完成前置任务与前一阶段');
-  if (Array.from(progress.evidence.trim()).length < 20) throw new Error('请提交至少 20 个字符的行动证据');
-  if (verification === 'ai' && (!progress.evaluation?.passed || progress.evaluation.score < 70 || progress.evaluationSource !== 'ai' || (progress.lessonRevision && progress.evaluationLessonRevision !== progress.lessonRevision) || !evaluationMatchesCurrentEvidence(progress))) throw new Error('AI 验收未通过，需达到 70 分且评价必须对应当前证据与讲解版本');
+  if (taskEvidenceText(progress).trim().length < 20) throw new Error('请提交至少 20 个字符的行动证据');
+  if (verification === 'self' && currentTaskVerification(progress, currentLessonRevision) !== 'self') throw new Error('请先对当前答案完成自我检查；旧答案的自评不能复用');
+  if (verification === 'ai' && (currentTaskVerification(progress, currentLessonRevision) !== 'ai' || !evaluationMatchesCurrentEvidence(progress))) throw new Error('AI 验收未通过，需达到 70 分且评价必须对应当前证据与讲解版本');
   const completedAt = timestamp(now);
   const stageIndex = state.campaign.stages.findIndex(stage => stage.tasks.some(item => item.id === taskId));
   const required = [...state.campaign.stages.slice(0, stageIndex).flatMap(stageGateIds), ...task.prerequisites, ...(task.unlockAfter ?? [])];

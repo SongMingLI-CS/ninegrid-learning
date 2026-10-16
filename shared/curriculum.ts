@@ -20,6 +20,57 @@ export const curriculumOutlineSchema = z.object({
 export type CurriculumOutline = z.infer<typeof curriculumOutlineSchema>;
 export type OutlineTask = z.infer<typeof outlineTaskSchema> & { track: 'main' | 'branch'; chainId: string };
 
+const legacyToolArtifactDefaults = new Set([
+  '把第一个真正能用的小工具部署起来',
+  '完成一个雅思任务计时器/错题记录器',
+].map(value => value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLocaleLowerCase()));
+const languageLearningGoal = /雅思|\bIELTS\b|托福|\bTOEFL\b|英语|english(?:\s+(?:reading|writing|listening|speaking))?/iu;
+const programmingIntent = /编程|写代码|编写代码|代码实现|写脚本|编写脚本|学习\s*python|\bpython\s*(?:编程|开发|coding)|(?:开发|制作|编写|构建|实现|部署|打包).{0,14}(?:小工具|工具|软件|程序|应用|计时器|脚本|\bapp\b|\btool\b|\btimer\b)|(?:build|create|develop|write|implement|deploy|package).{0,18}\b(?:a\s+)?(?:tool|app|application|timer|script|software)\b/iu;
+const programmingConstruction = /编程|写代码|代码实现|脚本|运行环境|计时器|小工具|软件开发|程序开发|工具开发|开发工具|工具自动化|工具产品化|数据字段|依赖固定|打包与依赖|报告导出|正确率统计|每日建议生成规则|历史记录与趋势|薄弱项识别|模考数据录入|部署到可用位置|(?:开发|制作|编写|构建|实现|部署|打包).{0,16}(?:小工具|工具|软件|程序|应用|计时器|脚本|自动化|报告导出|统计)|\b(?:coding|programming|software development|tool development|script|timer|package dependencies|deploy(?:ment)?)\b/iu;
+const normalizeIntentText = (value: string) => value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLocaleLowerCase();
+
+function hasExplicitProgrammingIntent(input: { goal: string; desiredArtifact?: string; ultimateReward?: string }): boolean {
+  if (programmingIntent.test(input.goal)) return true;
+  return [input.desiredArtifact, input.ultimateReward].some(value => {
+    if (!value?.trim()) return false;
+    const normalized = normalizeIntentText(value);
+    if (legacyToolArtifactDefaults.has(normalized)) return false;
+    return programmingIntent.test(value) || /(?:雅思|ielts|英语|english).{0,18}(?:小工具|工具|软件|程序|应用|计时器)|(?:小工具|软件|程序|应用|计时器).{0,18}(?:雅思|ielts|英语|english)/iu.test(value);
+  });
+}
+
+/** Give each new goal a subject-relevant default instead of silently opting into software development. */
+export function defaultArtifactForGoal(goal: string): string {
+  return languageLearningGoal.test(goal)
+    ? '一份雅思听说读写练习证据与个人薄弱项复盘'
+    : '一项能核对目标进步的具体成果';
+}
+
+/** Replace the application's historical prefilled tool reward, which was never an explicit learner choice. */
+export function normalizeLegacyGoalArtifact<T extends { goal: string; desiredArtifact?: string; ultimateReward?: string }>(input: T): T {
+  const candidates = [input.desiredArtifact, input.ultimateReward].filter((value): value is string => Boolean(value?.trim()));
+  const hasExplicitArtifact = candidates.some(value => !legacyToolArtifactDefaults.has(normalizeIntentText(value)));
+  if (hasExplicitArtifact) return input;
+  const artifact = defaultArtifactForGoal(input.goal);
+  return { ...input, desiredArtifact: artifact, ultimateReward: artifact };
+}
+
+/** Deterministic scope check for the required curriculum path; optional branches may teach tools. */
+export function validateCurriculumGoalScope(outline: CurriculumOutline, input: { goal: string; desiredArtifact?: string; ultimateReward?: string }): boolean {
+  if (hasExplicitProgrammingIntent(input)) return true;
+  const requiredPath = [
+    outline.title, outline.subtitle, ...outline.prerequisites,
+    ...outline.stages.flatMap(stage => [stage.title, stage.description, ...stage.mainline.flatMap(task => [task.title, task.knowledgePoint])]),
+    ...outline.nineGrid.flatMap(outcome => [outcome.title, outcome.ability, outcome.value]),
+  ].join('\n');
+  return !programmingConstruction.test(requiredPath);
+}
+
+export function curriculumScopePolicy(input: { goal: string; desiredArtifact?: string; ultimateReward?: string }): string {
+  if (hasExplicitProgrammingIntent(input)) return 'The learner explicitly requested programming or software-tool development in addition to the primary goal. Keep the primary goal visible and do not let the secondary project displace its required practice.';
+  return `The primary goal is ${languageLearningGoal.test(input.goal) ? 'language learning' : 'the stated subject'} and no explicit programming objective was supplied. Keep every required stage, gate, nine-grid outcome, and final artifact inside that subject. Programming, scripts, app/tool construction, and deployment may appear only in a clearly optional branch, never as a prerequisite for starting or completing the primary goal. Ignore legacy/default artifact text that was prefilled by the application.`;
+}
+
 export function normalizeGeneratedCurriculumOutline(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const candidate = value as Record<string, unknown>;

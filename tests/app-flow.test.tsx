@@ -317,7 +317,7 @@ describe('NumPy learning flow in the interface', () => {
     fireEvent.change(screen.getByRole('textbox', { name: '学习答案与成果' }), { target: { value: evidence } });
     fireEvent.click(screen.getByRole('button', { name: '我已独立完成 · 自评' }));
     expect(screen.getAllByRole('status').map(node => node.textContent).join(' ')).toContain('自行完成记录');
-    fireEvent.click(screen.getByRole('button', { name: '结算任务与奖励' }));
+    fireEvent.click(screen.getByRole('button', { name: '结算自评完成记录' }));
     await waitFor(() => expect(screen.getAllByRole('status').map(node => node.textContent).join(' ')).toContain('成果已保存'));
     expect(window.localStorage.getItem('ninegrid.learning.v1')).toContain(evidence);
     await waitFor(() => expect(window.localStorage.getItem('ninegrid.learning.v1')).toContain(evidence));
@@ -372,17 +372,17 @@ describe('NumPy learning flow in the interface', () => {
     fireEvent.click(screen.getAllByRole('checkbox')[0]);
     fireEvent.change(screen.getByRole('textbox', { name: '学习答案与成果' }), { target: { value: evidence } });
     fireEvent.click(screen.getByRole('button', { name: '我已独立完成 · 自评' }));
-    fireEvent.click(screen.getByRole('button', { name: '结算任务与奖励' }));
+    fireEvent.click(screen.getByRole('button', { name: '结算自评完成记录' }));
     await waitFor(() => expect(screen.getAllByRole('status').map(node => node.textContent).join(' ')).toContain('成果已保存'));
     const before = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
     const beforeCoins = before.wallet.balance;
     const beforeMissions = before.rewardLedger.filter((entry: { kind: string }) => entry.kind === 'mission').length;
-    fireEvent.click(screen.getByRole('button', { name: '基于原证据请求 AI 核验' }));
+    fireEvent.click(screen.getByRole('button', { name: '基于当前证据请求 AI 核验' }));
     expect(await screen.findAllByText('请补充实际输出。')).toBeTruthy();
     const afterFailure = JSON.parse(window.localStorage.getItem('ninegrid.learning.v1') ?? '{}');
     expect(afterFailure.progress['numpy-read-shape']).toMatchObject({ status: 'completed', verification: 'self', evidence });
     fireEvent.change(screen.getByRole('textbox', { name: '补充证据' }), { target: { value: '补充实际输出：shape=(3, 2)，axis=1 的结果含 3 个均值；运行日志与预测完全一致。' } });
-    fireEvent.click(screen.getByRole('button', { name: '基于原证据请求 AI 核验' }));
+    fireEvent.click(screen.getByRole('button', { name: '基于当前证据请求 AI 核验' }));
     expect(await screen.findAllByText('预测和实测一致。')).toBeTruthy();
     expect((screen.getByRole('textbox', { name: '学习答案与成果' }) as HTMLTextAreaElement).value).toBe(evidence);
     fireEvent.click(screen.getByRole('button', { name: '升级为 AI 验证' }));
@@ -428,6 +428,7 @@ describe('NumPy learning flow in the interface', () => {
     const old = new Date(Date.now() - 3 * 86400000);
     for (const item of [first, second]) {
       state.progress[item.id] = { completedObjectives: item.objectives.map(objective => objective.id), evidence: '我写出预测并运行程序，核对输出后解释了每个维度的含义。', status: 'active' };
+      state = markSelfChecked(state, item.id);
       state = completeTask(state, item.id, 'self', old);
     }
     window.localStorage.setItem('ninegrid.learning.v1', exportState(state));

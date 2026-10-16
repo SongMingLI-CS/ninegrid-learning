@@ -260,6 +260,7 @@ describe('server-owned learning archives', () => {
     const editable = structuredClone(archive) as LearningState;
     editable.progress[task.id].evidence = 'I created and ran the requested example; here are the output and explanation.';
     editable.progress[task.id].selfChecked = true;
+    editable.progress[task.id].selfCheckEvidence = editable.progress[task.id].evidence;
     const saved = await request(app).put(`/api/seasons/${id}`).send({ revision, state: editable }).expect(200);
     const settle = () => request(app).post(`/api/seasons/${id}/settle`).send({ revision: saved.body.season.revision, taskId: task.id });
     const results = await Promise.all([settle(), settle()]);
@@ -268,6 +269,42 @@ describe('server-owned learning archives', () => {
     expect(ledger.rows.length).toBeGreaterThan(0);
     const keys = ledger.rows.map((row: { idempotency_key: string }) => row.idempotency_key);
     expect(new Set(keys).size).toBe(keys.length);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('rejects settlement when self-check is empty or belongs to an older answer', async () => {
+    const { app, pool, directory } = await fixture();
+    const created = await request(app).post('/api/seasons').send({ state: state() }).expect(201);
+    const { id, revision, state: archive } = created.body.season;
+    const taskId = archive.campaign.stages[0].tasks[0].id;
+
+    const empty = structuredClone(archive) as LearningState;
+    empty.progress[taskId].selfChecked = true;
+    empty.progress[taskId].selfCheckEvidence = '';
+    const savedEmpty = await request(app).put(`/api/seasons/${id}`).send({ revision, state: empty }).expect(200);
+    await request(app).post(`/api/seasons/${id}/settle`).send({ revision: savedEmpty.body.season.revision, taskId, verification: 'self' }).expect(422);
+
+    const revised = structuredClone(savedEmpty.body.season.state) as LearningState;
+    revised.progress[taskId].evidence = 'This is a longer replacement answer with concrete work and a result.';
+    revised.progress[taskId].selfChecked = true;
+    revised.progress[taskId].selfCheckEvidence = 'A different earlier answer that was checked before this replacement.';
+    const savedRevised = await request(app).put(`/api/seasons/${id}`).send({ revision: savedEmpty.body.season.revision, state: revised }).expect(200);
+    await request(app).post(`/api/seasons/${id}/settle`).send({ revision: savedRevised.body.season.revision, taskId, verification: 'self' }).expect(422);
+
+    const staleVersion = structuredClone(savedRevised.body.season.state) as LearningState;
+    staleVersion.content = { ...(staleVersion.content ?? {}), [taskId]: {
+      purpose: 'Read the passage and identify its main idea.', explanation: 'Find a claim and support it with evidence.', terms: [],
+      example: { kind: 'text', prompt: 'Identify the claim.', content: 'The example passage.', walkthrough: 'Locate the supporting sentence.' },
+      guidedPractice: { prompt: 'Choose a supporting sentence.', expected: 'The second paragraph.', hint: 'Look for a direct detail.' },
+      challenge: { prompt: 'State the claim and evidence.', rubric: ['Give the claim.', 'Quote supporting evidence.'], referenceAnswer: 'A reference response.', hints: ['Track repeated ideas.'] },
+      language: 'en', generatedAt: new Date().toISOString(), revision: 2,
+    } };
+    staleVersion.progress[taskId].selfChecked = true;
+    staleVersion.progress[taskId].selfCheckEvidence = staleVersion.progress[taskId].evidence;
+    staleVersion.progress[taskId].lessonRevision = 2;
+    staleVersion.progress[taskId].selfCheckLessonRevision = 1;
+    const savedVersion = await request(app).put(`/api/seasons/${id}`).send({ revision: savedRevised.body.season.revision, state: staleVersion }).expect(200);
+    await request(app).post(`/api/seasons/${id}/settle`).send({ revision: savedVersion.body.season.revision, taskId, verification: 'self' }).expect(422);
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 
@@ -295,7 +332,7 @@ describe('server-owned learning archives', () => {
     const created = await request(app).post('/api/seasons').send({ state: state() }).expect(201);
     const { id, revision, state: archive } = created.body.season; const taskId = archive.campaign.stages[0].tasks[0].id;
     const evidence = 'I ran the example and recorded the output. I can explain each step and the observed result.';
-    const editable = structuredClone(archive) as LearningState; editable.progress[taskId].evidence = evidence; editable.progress[taskId].selfChecked = true;
+    const editable = structuredClone(archive) as LearningState; editable.progress[taskId].evidence = evidence; editable.progress[taskId].selfChecked = true; editable.progress[taskId].selfCheckEvidence = evidence;
     const saved = await request(app).put(`/api/seasons/${id}`).send({ revision, state: editable }).expect(200);
     const first = await request(app).post(`/api/seasons/${id}/settle`).send({ revision: saved.body.season.revision, taskId, verification: 'self' }).expect(200);
     const ledgerBefore = await pool.query('SELECT id,kind FROM reward_ledger WHERE user_id=$1', [user]);

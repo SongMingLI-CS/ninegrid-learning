@@ -4,6 +4,7 @@ export const LEARNING_RULES_VERSION = 'learning-loop-1';
 export const LEARNING_RULES = {
   planning: [
     'Work backwards from the learner goal, prior knowledge, time budget, and concrete final artifact.',
+    'Do not invent a second skill domain from a prefilled/default artifact. Keep required stages, gates, outcomes, and the final artifact inside the learner goal; adjacent software/tool building stays optional unless the learner explicitly requests it.',
     'Each task must teach one distinct ability and produce observable evidence; do not split work merely to increase task count.',
     'Mark prerequisites, mainline, optional branches, assessment, and review time separately. Required work must fit the budget; optional work is never a completion promise.',
   ],

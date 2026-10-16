@@ -49,6 +49,8 @@ export interface TaskProgress {
   supplementalEvidence?: string;
   evaluation?: Evaluation; verification?: 'self' | 'ai'; completedAt?: string;
   selfChecked?: boolean;
+  selfCheckEvidence?: string;
+  selfCheckLessonRevision?: number;
   evaluationSource?: 'self' | 'ai';
   evaluationEvidence?: string;
   assistedEvaluation?: Evaluation;

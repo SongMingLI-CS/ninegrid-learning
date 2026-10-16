@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { campaignSchema } from '../shared/schema';
-import { curriculumOutlineSchema, normalizeGeneratedCurriculumOutline, normalizeMissingStageGates, validateCurriculumOutline } from '../shared/curriculum';
+import { curriculumOutlineSchema, defaultArtifactForGoal, normalizeGeneratedCurriculumOutline, normalizeLegacyGoalArtifact, normalizeMissingStageGates, validateCurriculumOutline, validateCurriculumGoalScope } from '../shared/curriculum';
 import { planCurriculumBudget } from '../shared/curriculum';
 import { createProgressForCampaign, isTaskUnlocked, recordGridOutcome } from '../src/lib/engine';
 
@@ -16,6 +16,37 @@ function outlineFixture() {
 }
 
 describe('versioned NumPy curriculum', () => {
+  it('uses subject-relevant suggested outcomes and normalizes only the historical tool default', () => {
+    const goal = '雅思听力与阅读训练';
+    expect(defaultArtifactForGoal(goal)).toMatch(/雅思听说读写/);
+    expect(normalizeLegacyGoalArtifact({ goal, ultimateReward: '把第一个真正能用的小工具部署起来' }).ultimateReward).toMatch(/雅思听说读写/);
+    expect(normalizeLegacyGoalArtifact({ goal, ultimateReward: '雅思阅读能力与错题复盘报告' }).ultimateReward).toBe('雅思阅读能力与错题复盘报告');
+  });
+
+  it('keeps programming out of a language-learning core unless the learner explicitly asks for it', () => {
+    const outline = outlineFixture();
+    outline.title = '雅思四科训练路线';
+    outline.subtitle = '逐步完成听说读写练习与个人复盘';
+    outline.stages.forEach((stage, index) => {
+      stage.title = `雅思训练阶段 ${index + 1}`;
+      stage.description = '围绕雅思听力、阅读、写作与口语练习。';
+    });
+    outline.stages[0].branches[0].tasks[0].title = '可选支线：编写雅思错题脚本';
+    const input = { goal: '雅思，现在是六级430分水平，从来没做过雅思真题', desiredArtifact: '把第一个真正能用的小工具部署起来' };
+
+    expect(validateCurriculumGoalScope(outline, input)).toBe(true);
+
+    const misplaced = structuredClone(outline);
+    misplaced.stages[0].mainline[0].title = '运行环境与第一个脚本';
+    expect(validateCurriculumGoalScope(misplaced, input)).toBe(false);
+
+    const mismatchedOutcome = structuredClone(outline);
+    mismatchedOutcome.nineGrid[7].ability = '编写并部署雅思学习工具';
+    expect(validateCurriculumGoalScope(mismatchedOutcome, input)).toBe(false);
+
+    expect(validateCurriculumGoalScope(misplaced, { goal: '雅思备考，同时学习 Python 并开发计时工具' })).toBe(true);
+  });
+
   it('provides four dense, verifiable stages with optional branches that do not gate progression', () => {
     const course = NUMPY_DEMO_CAMPAIGN;
     expect(course.curriculumRulesVersion).toBe(3);

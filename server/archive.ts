@@ -6,7 +6,7 @@ import { BOXES, CHALLENGES, ECONOMY_VERSION, EFFECTIVE_REVIEW_COINS, STAGE_COMPL
 import { evaluationSchema, learningStateSchema } from '../shared/schema';
 import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
-import { completeTask, isTaskUnlocked, rateReview, recordGridOutcome } from '../src/lib/engine';
+import { completeTask, currentTaskVerification, isTaskUnlocked, rateReview, recordGridOutcome, taskEvidenceText } from '../src/lib/engine';
 
 type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string; lifecycle_status?: 'active'|'paused'|'archived' };
 type Options = { pool: Pool };
@@ -30,14 +30,16 @@ function withoutClientAuthority(incoming: LearningState, existing?: LearningStat
     const old = existingProgress[task.id];
     if (!next) { progress[task.id] = old ?? { completedObjectives: [], evidence: '', status: 'idle' }; continue; }
     const sameEvidence = old && old.evidence === next.evidence && (old.supplementalEvidence ?? '') === (next.supplementalEvidence ?? '');
+    const selfCheckIsCurrent = next.selfChecked === true && next.selfCheckEvidence === taskEvidenceText(next);
     const safe: TaskProgress = {
       completedObjectives: next.completedObjectives.filter(id => task.objectives.some(objective => objective.id === id)),
       evidence: next.evidence,
       status: old?.status ?? 'idle',
       ...(old?.status === 'completed' ? { evidence: old.evidence, completedObjectives: old.completedObjectives, verification: old.verification, completedAt: old.completedAt } : {}),
       ...(next.supplementalEvidence ? { supplementalEvidence: next.supplementalEvidence } : {}),
-      ...(next.selfChecked ? { selfChecked: true } : {}),
-      ...(sameEvidence && old?.evaluation ? { evaluation: old.evaluation, evaluationSource: old.evaluationSource, evaluationEvidence: old.evaluationEvidence, verification: old.verification, completedAt: old.completedAt } : {}),
+      ...(selfCheckIsCurrent ? { selfChecked: true, selfCheckEvidence: next.selfCheckEvidence, ...(next.selfCheckLessonRevision !== undefined ? { selfCheckLessonRevision: next.selfCheckLessonRevision } : {}) } : {}),
+      ...(next.lessonRevision !== undefined ? { lessonRevision: next.lessonRevision } : old?.lessonRevision !== undefined ? { lessonRevision: old.lessonRevision } : {}),
+      ...(sameEvidence && old?.evaluation ? { evaluation: old.evaluation, evaluationSource: old.evaluationSource, evaluationEvidence: old.evaluationEvidence, ...(old.evaluationLessonRevision !== undefined ? { evaluationLessonRevision: old.evaluationLessonRevision } : {}), verification: old.verification, completedAt: old.completedAt } : {}),
     };
     progress[task.id] = safe;
   }
@@ -72,14 +74,17 @@ function stripClientAuthority(value: unknown, existing?: LearningState): unknown
     const previous = existing?.progress?.[task.id];
     if (!client) { safeProgress[task.id] = previous ?? { completedObjectives: [], evidence: '', status: 'idle' }; continue; }
     const sameEvidence = previous && previous.evidence === client.evidence && (previous.supplementalEvidence ?? '') === (client.supplementalEvidence ?? '');
+    const clientEvidence = [typeof client.evidence === 'string' ? client.evidence : '', typeof client.supplementalEvidence === 'string' && client.supplementalEvidence.trim() ? `补充证据：\n${client.supplementalEvidence}` : ''].filter(Boolean).join('\n\n');
+    const selfCheckIsCurrent = client.selfChecked === true && client.selfCheckEvidence === clientEvidence;
     safeProgress[task.id] = {
       completedObjectives: Array.isArray(client.completedObjectives) ? client.completedObjectives : [],
       evidence: typeof client.evidence === 'string' ? client.evidence : '',
       status: previous?.status ?? 'idle',
       ...(previous?.status === 'completed' ? { evidence: previous.evidence, completedObjectives: previous.completedObjectives, verification: previous.verification, completedAt: previous.completedAt } : {}),
       ...(typeof client.supplementalEvidence === 'string' && client.supplementalEvidence ? { supplementalEvidence: client.supplementalEvidence } : {}),
-      ...(client.selfChecked === true ? { selfChecked: true } : {}),
-      ...(sameEvidence && previous?.evaluation ? { evaluation: previous.evaluation, evaluationSource: previous.evaluationSource, evaluationEvidence: previous.evaluationEvidence, verification: previous.verification, completedAt: previous.completedAt } : {}),
+      ...(selfCheckIsCurrent ? { selfChecked: true, selfCheckEvidence: client.selfCheckEvidence, ...(Number.isInteger(client.selfCheckLessonRevision) ? { selfCheckLessonRevision: client.selfCheckLessonRevision } : {}) } : {}),
+      ...(Number.isInteger(client.lessonRevision) ? { lessonRevision: client.lessonRevision } : previous?.lessonRevision !== undefined ? { lessonRevision: previous.lessonRevision } : {}),
+      ...(sameEvidence && previous?.evaluation ? { evaluation: previous.evaluation, evaluationSource: previous.evaluationSource, evaluationEvidence: previous.evaluationEvidence, ...(previous.evaluationLessonRevision !== undefined ? { evaluationLessonRevision: previous.evaluationLessonRevision } : {}), verification: previous.verification, completedAt: previous.completedAt } : {}),
     };
   }
   raw.progress = safeProgress;
@@ -569,14 +574,15 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       if (progress.status === 'completed' && req.body.verification !== 'ai') { await client.query('ROLLBACK'); res.json({ season: publicSeason(row), alreadyCompleted: true, rewards: [] }); return; }
       if (!isTaskUnlocked(previous.campaign, previous.progress, task.id)) { await client.query('ROLLBACK'); res.status(409).json({ error: 'PREREQUISITES_NOT_MET' }); return; }
       if (taskEvidence(previous, task.id).trim().length < 20) { await client.query('ROLLBACK'); res.status(422).json({ error: 'EVIDENCE_REQUIRED' }); return; }
+      const currentLessonRevision = previous.content?.[task.id]?.revision ?? task.teaching?.revision;
       let verification: 'self' | 'ai' = 'self';
       if (req.body.verification === 'ai') {
         const hash = evidenceHash(taskEvidence(previous, task.id));
         const checked = await client.query('SELECT 1 FROM task_evaluations WHERE owner_user_id=$1 AND season_id=$2 AND task_id=$3 AND evidence_sha256=$4 AND (evaluation->>\'passed\')::boolean=true AND (evaluation->>\'score\')::integer>=70', [ownerOf(req), row.id, task.id, hash]);
-        if (!checked.rowCount || progress.evaluationSource !== 'ai' || progress.evaluationEvidence !== taskEvidence(previous, task.id) || !progress.evaluation?.passed || progress.evaluation.score < 70) { await client.query('ROLLBACK'); res.status(422).json({ error: 'AI_EVALUATION_REQUIRED' }); return; }
+        if (!checked.rowCount || currentTaskVerification(progress, currentLessonRevision) !== 'ai' || progress.evaluationEvidence !== taskEvidence(previous, task.id)) { await client.query('ROLLBACK'); res.status(422).json({ error: 'AI_EVALUATION_REQUIRED' }); return; }
         if (progress.status === 'completed' && progress.verification === 'ai') { await client.query('ROLLBACK'); res.json({ season: publicSeason(row), alreadyCompleted: true, rewards: [] }); return; }
         verification = 'ai';
-      } else if (!progress.selfChecked) { await client.query('ROLLBACK'); res.status(422).json({ error: 'SELF_CHECK_REQUIRED' }); return; }
+      } else if (currentTaskVerification(progress, currentLessonRevision) !== 'self') { await client.query('ROLLBACK'); res.status(422).json({ error: 'SELF_CHECK_REQUIRED' }); return; }
       const canonical = structuredClone(previous);
       normalizeCampaignRewards(canonical.campaign);
       const completed = completeTask(canonical, task.id, verification);

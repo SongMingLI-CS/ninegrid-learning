@@ -292,6 +292,30 @@ describe('curriculum orchestration endpoints', () => {
     expect(finalResponse.body.campaign.stages[0].tasks[0].title).toBe('Create one array');
   });
 
+  it('rejects a schema-valid programming mainline for an IELTS goal while allowing only optional tool branches', async () => {
+    const offGoal = structuredClone(shortOutline);
+    offGoal.title = '雅思四科短期训练';
+    offGoal.subtitle = '完成听说读写练习和复盘';
+    offGoal.stages[0].title = '雅思能力阶段';
+    offGoal.stages[0].description = '学习雅思阅读并完成写作和口语练习。';
+    offGoal.stages[0].mainline[0].title = '运行环境与第一个脚本';
+    offGoal.stages[0].mainline[0].knowledgePoint = '编写雅思任务计时器';
+    offGoal.nineGrid[0].ability = '编写并部署雅思学习工具';
+    let prompt = '';
+    const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
+      prompt = JSON.parse(String(options?.body)).messages[0].content;
+      return provider(offGoal);
+    } })).post('/api/generation/outline').send({ input: {
+      ...shortInput,
+      goal: '雅思，现在是六级430分水平，从来没做过雅思真题',
+      desiredArtifact: '把第一个真正能用的小工具部署起来',
+      ultimateReward: '把第一个真正能用的小工具部署起来',
+    } });
+    expect(prompt).toMatch(/Programming, scripts, app\/tool construction, and deployment may appear only in a clearly optional branch/i);
+    expect(response.status).toBe(422);
+    expect(response.body.code).toBe('GOAL_SCOPE_MISMATCH');
+  });
+
   it('raises the provider output ceiling for a long outline without changing the regular request ceiling', async () => {
     let maxTokens = 0;
     const response = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {

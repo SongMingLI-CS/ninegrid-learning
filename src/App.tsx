@@ -7,11 +7,11 @@ import {
   Sparkles, SquareArrowOutUpRight, Swords, Target, TerminalSquare, Trophy, UserRound, X, Zap,
 } from 'lucide-react';
 import type { Campaign, GoalInput, LearningState, Task, TaskProgress } from '../shared/types';
-import { planCurriculumBudget, type CurriculumOutline } from '../shared/curriculum';
+import { defaultArtifactForGoal, planCurriculumBudget, type CurriculumOutline } from '../shared/curriculum';
 import { formatHafverCoins } from '../shared/economy';
 import { campaignSchema } from '../shared/schema';
 import { lessonExposesReferenceAnswer, taskChallengeContract } from '../shared/learningChallenge';
-import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setAssistedEvaluation, setChallengeAssistance, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask, requestTaskRescue } from './lib/engine';
+import { completeTask, buildDailySchedule, createProgressForCampaign, getStats, getTaskReward, isTaskUnlocked, markSelfChecked, rateReview, setAssistedEvaluation, setChallengeAssistance, setEvaluation, setEvidence, setSupplementalEvidence, switchCampaign, updateObjective, cacheLesson, recordAttempt, recordGridOutcome, activateTask, requestTaskRescue, taskEvidenceText, taskSettlementReadiness } from './lib/engine';
 import { loadStateSafely, saveStateSafely, exportState, importState } from './lib/storage';
 import { DEMO_CAMPAIGN } from './lib/demo';
 import { LessonWorkspace } from './components/LessonWorkspace';
@@ -120,7 +120,7 @@ function App() {
   const [level, setLevel] = useState('零基础');
   const [days, setDays] = useState(28);
   const [dailyMinutes, setDailyMinutes] = useState(45);
-  const [reward, setReward] = useState('把第一个真正能用的小工具部署起来');
+  const [reward, setReward] = useState('');
   const [busy, setBusy] = useState<'generate' | 'evaluate' | 'lesson' | 'schedule' | 'settle' | null>(null);
   const [saveError, setSaveError] = useState(loaded.warning ?? '');
   const [syncStatus, setSyncStatus] = useState<'loading' | 'saving' | 'saved' | 'error' | 'conflict'>('loading');
@@ -605,7 +605,8 @@ function App() {
     let recoverableDraft: GenerationDraft | undefined;
     let revisionConflict = false;
     try {
-      const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: reward.trim() || '完成一项真实可用的成果', desiredArtifact: reward.trim() || undefined, language: languagePreference, sourceMaterial: sourceMaterial || undefined, ...(quickDiagnostic ? { quickDiagnostic } : {}) };
+      const artifact = reward.trim() || defaultArtifactForGoal(goal.trim());
+      const input: GoalInput = { goal: goal.trim(), level, days, dailyMinutes, ultimateReward: artifact, desiredArtifact: artifact, language: languagePreference, sourceMaterial: sourceMaterial || undefined, ...(quickDiagnostic ? { quickDiagnostic } : {}) };
       const controller = new AbortController(); activeRequest.current = controller;
       const storageKey = `ninegrid.curriculum-draft.v4.${accountUser?.id ?? 'guest'}`;
       const sameInput = (candidate: GoalInput) => JSON.stringify(candidate) === JSON.stringify(input);
@@ -784,7 +785,7 @@ function App() {
   };
 
   const selfEvaluate = () => {
-    if (!task || !taskProgress || taskProgress.evidence.trim().length < 20) {
+    if (!task || !taskProgress || taskEvidenceText(taskProgress).trim().length < 20) {
       flash({ title: '还没到撤离条件', body: '先提交至少 20 个字的过程、答案或作品路径，说明你做了什么、结果如何。', tone: 'warning' }); return;
     }
     if (taskProgress.answerRevealed) { flash({ title: '需要新的独立题目', body: '已查看参考答案；本次可以保留作学习记录，但不能作为独立掌握证明。请生成同目标迁移题。', tone: 'warning' }); return; }
@@ -794,7 +795,7 @@ function App() {
   };
 
   const evaluateWithAI = async (assessmentMode: 'standard' | 'feynman' = 'standard', feynmanSessionId?: string) => {
-    if (!task || !taskProgress || taskProgress.evidence.trim().length < 20) {
+    if (!task || !taskProgress || taskEvidenceText(taskProgress).trim().length < 20) {
       flash({ title: '请先提交可供核验的情报', body: '写下至少 20 个字的答案或作品记录，AI 会依据课程验收标准核对。', tone: 'warning' }); return;
     }
     const targetTask = task; const targetId = task.id; const originalEvidence = taskProgress.evidence; const supplementalEvidence = taskProgress.supplementalEvidence ?? ''; const evidence = supplementalEvidence.trim() ? `${originalEvidence}\n\n补充证据：\n${supplementalEvidence}` : originalEvidence; let submitted = structuredClone(currentState.current); const lesson = submitted.content?.[targetId] ?? targetTask.teaching; if (lesson) submitted = setChallengeAssistance(submitted, targetId, lesson.revision, { hintLevelsUsed: submitted.progress[targetId]?.hintLevelsUsed ?? hintLevels[targetId] ?? 0, answerRevealed: submitted.progress[targetId]?.answerRevealed === true || lessonExposesReferenceAnswer(lesson) }); const challengeProgress = submitted.progress[targetId]; const archiveAtStart = serverArchive.current; setState(submitted); setBusy('evaluate'); const controller = new AbortController(); activeRequest.current = controller;
@@ -837,13 +838,17 @@ function App() {
 
   const claimTask = async () => {
     if (settlementInFlight.current) return;
-    if (!task || (!taskProgress?.selfChecked && !(taskProgress?.evaluationSource === 'ai' && taskProgress?.evaluation?.passed))) { flash({ title: '还没有可结算的检查记录', body: '先自行核对目标和证据，或提交给 AI 验收。', tone: 'warning' }); return; }
+    if (!task) return;
+    const targetId = task.id;
+    const submitted = structuredClone(currentState.current);
+    const readiness = taskSettlementReadiness(submitted, targetId);
+    if (!readiness.ready || !readiness.verification) { flash({ title: '当前还不能结算', body: readiness.reason, tone: 'warning' }); return; }
     settlementInFlight.current = true;
-    const targetTask = task; const targetId = task.id; const submitted = structuredClone(currentState.current);
+    const targetTask = task;
     const archiveAtId = serverArchive.current?.id;
     setBusy('settle');
     try {
-      const verification = taskProgress.evaluationSource === 'ai' && taskProgress.evaluation?.passed ? 'ai' : 'self';
+      const verification = readiness.verification;
       if (accountUser) {
         const outcome = await queueServerRequest(async archive => {
           await writeServerArchive(archive, submitted);
@@ -867,7 +872,7 @@ function App() {
         return;
       }
       const next = completeTask(submitted, targetId, verification);
-      const newlyCompleted = next.progress[task.id]?.status === 'completed' && taskProgress.status !== 'completed';
+      const newlyCompleted = next.progress[targetId]?.status === 'completed' && submitted.progress[targetId]?.status !== 'completed';
       const saved = saveStateSafely(next);
       if (!saved.ok) setSaveError(`任务已在本页更新，但自动保存失败：${saved.error}`);
       update(next);
@@ -1087,7 +1092,7 @@ function App() {
             setDiagnosticMode(false);
             try {
               let next = setEvidence(state, task.id, answer);
-              if (confidence === 'known') next = completeTask(next, task.id, 'self');
+              if (confidence === 'known') next = completeTask(markSelfChecked(next, task.id), task.id, 'self');
               next = recordAttempt(next, task.id, { answer, hintLevelsUsed: 0, verification: 'none', passed: confidence === 'known', feedback: confidence === 'known' ? `自行诊断达到标准：${task.acceptance}` : `诊断未通过，返回练习：${task.acceptance}` });
               update(next);
               if (confidence === 'known') { setTab('today'); flash({ title: '诊断通过 · 已记录掌握', body: '回答和诊断记录已保存；本次计为自行完成，不授予 AI 验证或高价值道具。阶段仍须完成主线验收任务。', tone: 'success' }); }
@@ -1246,7 +1251,8 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     setDiagnosticError('');
     try{
       if(!diagnosticDraft.current){
-        const response=await apiFetch('/api/generation-drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rulesVersion:4,input:{goal:goal.trim(),level,days,dailyMinutes:minutes,ultimateReward:reward.trim()||'完成一项真实可用的成果',desiredArtifact:reward.trim()||undefined,language,sourceMaterial:sourceMaterial||undefined}})});
+        const artifact=reward.trim()||defaultArtifactForGoal(goal.trim());
+        const response=await apiFetch('/api/generation-drafts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rulesVersion:4,input:{goal:goal.trim(),level,days,dailyMinutes:minutes,ultimateReward:artifact,desiredArtifact:artifact,language,sourceMaterial:sourceMaterial||undefined}})});
         const payload=await response.json();if(!response.ok)throw new Error(payload.error??'账号草稿创建失败');
         diagnosticDraft.current={id:payload.draft.id,revision:payload.draft.revision};
       }
@@ -1282,7 +1288,7 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     if(!connection.configured){setQuickError('快速摸底需要服务器配置 DeepSeek；当前不可用。基础自评仍可使用。');return;}
     setQuickBusy(true);setQuickError('');
     try{
-      const input={goal:goal.trim(),level,days,dailyMinutes:minutes,desiredArtifact:reward.trim()||'完成一项可验证的成果',language};
+      const input={goal:goal.trim(),level,days,dailyMinutes:minutes,desiredArtifact:reward.trim()||defaultArtifactForGoal(goal.trim()),language};
       const retryable=quickSession?.status==='failed'||quickSession?.status==='generating';
       if(retryable&&JSON.stringify(quickSession.input)!==JSON.stringify(input))quickKey.current=crypto.randomUUID();
       const response=await apiFetch('/api/diagnostics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({idempotencyKey:quickKey.current,input})});
@@ -1319,7 +1325,7 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     <label className="form-field material-field"><span><b>02</b>课程大纲 / 知识点 / 考试范围 <small>可选，可粘贴或读取本地纯文本文件</small></span><textarea value={sourceMaterial} onChange={event=>onSourceMaterial(event.target.value)} placeholder="粘贴教材目录、课程大纲或你整理的知识点。链接请粘贴实际摘录；应用不会假装已读取网页。"/><input aria-label="读取本地文本材料" type="file" accept=".txt,.md,.csv,text/plain,text/markdown" onChange={onFile}/><small className={`field-hint ${sourceMaterial.length>20000?'field-error':''}`}>已读取 {sourceMaterial.length} / 20000 字符。超限时不会截断冒充完整阅读；请手动选择范围并保留页码或段落说明。只有所贴文本会被用于生成。</small></label>
     <div className="form-columns"><label className="form-field"><span><b>02</b>当前基础</span><select value={level} onChange={event => onLevel(event.target.value)}><option>零基础</option><option>了解一些，需要补基础</option><option>已有基础，想进阶</option><option>有经验，冲刺专精</option></select></label><label className="form-field"><span><b>03</b>赛季长度 <small>天</small></span><input type="number" min={1} max={365} value={days} onChange={event => onDays(Math.max(1, Math.min(365, Number(event.target.value))))}/></label></div>
     <section className="quick-diagnostic"><div><strong>可选 · 定级方式</strong><p>基础自评只记录你的自我判断。快速摸底会根据目标生成 3–5 道短题，由服务端按隐藏标准评价；结果只是有限样本，可纠正，不代表全部能力。</p></div><div className="quick-diagnostic-options"><button type="button" aria-pressed={diagnosticMode==='self-report'} onClick={()=>setDiagnosticMode('self-report')}>基础自评</button><button type="button" aria-pressed={diagnosticMode==='quick-assessment'} onClick={()=>setDiagnosticMode('quick-assessment')}>快速摸底</button></div>{diagnosticMode==='self-report' ? <>{!diagnosticOpen ? <button type="button" className="secondary-button" onClick={()=>void startDiagnostic()}>开始基础自评</button> : <div className="quick-diagnostic-items">{prompts.map((item,index)=><article key={item.id}><span>{String(index+1).padStart(2,'0')} · {item.prompt}</span><textarea aria-label={`${index+1} 自评回答`} maxLength={2000} value={diagnosticAnswers[item.id]?.response ?? ''} onChange={event => updateDiagnostic(item.id,{response:event.target.value})} placeholder="写下简短回答；也可以选“不知道”。"/><div className="quick-diagnostic-options"><button type="button" aria-pressed={diagnosticAnswers[item.id]?.confidence==='known'} onClick={()=>updateDiagnostic(item.id,{confidence:'known'})}>能解释</button><button type="button" aria-pressed={diagnosticAnswers[item.id]?.confidence==='needs-practice'} onClick={()=>updateDiagnostic(item.id,{confidence:'needs-practice'})}>需要补齐</button><button type="button" aria-pressed={diagnosticAnswers[item.id]?.confidence==='unknown'} onClick={()=>updateDiagnostic(item.id,{confidence:'unknown'})}>暂时不知道</button></div></article>)}<p className="field-hint">自评记录：{prompts.map(item=>diagnosticAnswers[item.id]?.confidence==='known'?'已自评熟悉':diagnosticAnswers[item.id]?.confidence==='needs-practice'?'自评需补齐':'尚待判断').join(' · ')}</p>{diagnosticError&&<p role="alert" className="field-error">{diagnosticError}</p>}<button type="button" className="text-button" onClick={()=>void skipDiagnostic()}>跳过基础自评，按当前基础生成</button></div>}</> : <div className="quick-diagnostic-items">{!quickSession||quickSession.status==='failed'||quickSession.status==='generating'?<><p>{quickSession?.status==='generating'?'摸底仍在生成；可以重试同一请求恢复。':!connection.configured?'服务器未配置 DeepSeek，快速摸底暂不可用；基础自评仍可使用。':'按当前目标生成题目，问题和评分标准会保存在账号。'}</p>{quickSession?.status==='failed'&&<p>上次请求失败；失败记录保留。</p>}<button type="button" disabled={quickBusy||!connection.configured||goal.trim().length<12} onClick={()=>void startQuickAssessment()}>{quickBusy?'生成中…':quickSession?.status==='generating'?'恢复或重试生成':quickSession?'重试快速摸底':'生成目标相关摸底题'}</button></>:<>{quickSession.status==='answering'&&quickSession.questions.map((q:any,index:number)=><article key={q.id}><span>{String(index+1).padStart(2,'0')} · {q.prompt}<small>目标能力：{q.objective} · {q.minutes} 分钟 · {q.difficulty==='foundation'?'基础':q.difficulty==='working'?'应用':'迁移'}</small></span><textarea aria-label={`${index+1} 摸底作答`} maxLength={5000} value={quickDrafts[q.id]??quickSession.answers?.[q.id]?.response??''} onChange={event=>setQuickDrafts(previous=>({...previous,[q.id]:event.target.value}))} placeholder="简短作答；也可以选择不知道。"/><div className="quick-diagnostic-options"><button type="button" onClick={()=>void saveQuickAnswer(q.id,false)} disabled={quickBusy}>保存作答</button><button type="button" onClick={()=>void saveQuickAnswer(q.id,true)} disabled={quickBusy}>不知道 / 跳过此题</button><span>{quickSession.answers?.[q.id]?'已保存':''}</span></div></article>)}{quickSession.status==='answering'&&<button type="button" onClick={()=>void finishQuickAssessment()} disabled={quickBusy||quickSession.questions.some((q:any)=>!quickSession.answers?.[q.id])}>提交摸底结果</button>}{quickSession.status==='ready'&&<><p>{quickSession.result.summary} 这只是少量题目的有限判断。</p>{quickSession.result.items.map((item:any)=><article key={item.id}><span>{item.status==='supported'?'已有证据支持':item.status==='needs_practice'?'需要补齐':'暂时无法判断'} · {item.evidence}</span><label>纠正判断<select value={item.confidence} disabled={quickBusy} onChange={event=>void correctQuickResult(item.id,event.target.value==='known'?'supported':event.target.value==='needs-practice'?'needs_practice':'uncertain')}><option value="known">已有证据支持</option><option value="needs-practice">需要补齐</option><option value="unknown">暂时无法判断</option></select></label></article>)}<button type="button" onClick={()=>void useQuickResult()} disabled={busy||quickBusy}>将摸底用于课程蓝图</button></>}</>}{quickError&&<p role="alert" className="field-error">{quickError}</p>}{diagnosticError&&<p role="alert" className="field-error">{diagnosticError}</p>}</div>}</section>
-    <div className="form-columns"><label className="form-field"><span><b>04</b>每天预算 <small>分钟</small></span><input type="number" min={1} max={1440} step={5} value={minutes} onChange={event => onMinutes(Math.max(1, Math.min(1440, Number(event.target.value))))}/></label><label className="form-field"><span><b>05</b>最终交付成果 <small>可修改</small></span><input value={reward} maxLength={2000} onChange={event => onReward(event.target.value)} placeholder="描述你想独立完成的成果"/></label></div>
+    <div className="form-columns"><label className="form-field"><span><b>04</b>每天预算 <small>分钟</small></span><input type="number" min={1} max={1440} step={5} value={minutes} onChange={event => onMinutes(Math.max(1, Math.min(1440, Number(event.target.value))))}/></label><label className="form-field"><span><b>05</b>最终交付成果 <small>可修改</small></span><input value={reward} maxLength={2000} onChange={event => onReward(event.target.value)} placeholder={defaultArtifactForGoal(goal)}/></label></div>
     <label className="form-field"><span><b>06</b>语言偏好</span><select value={language} onChange={event=>onLanguage(event.target.value as 'en'|'zh'|'mixed')}><option value="mixed">英文为主，中文辅助</option><option value="en">简单英文为主</option><option value="zh">中文为主</option></select></label></>}
     {preview && <div className="blueprint-preview"><div className="blueprint-summary"><span className="micro-label">{preview.source==='deepseek'?'AI BLUEPRINT · REAL API RESPONSE':'LOCAL NUMPY WALKTHROUGH · NO AI CLAIM'}</span><h3>{preview.title}</h3><p>{preview.goal}</p><p><strong>起点：</strong>{preview.level}</p><p><strong>最终作品：</strong>{preview.desiredArtifact??preview.ultimateReward}</p><p><strong>前置知识：</strong>{preview.prerequisites?.join('；')??'将按已知起点逐步补足，不默认高级基础。'}</p>{preview.quickDiagnostic&&<section className="diagnostic-preview"><strong>{preview.quickDiagnostic.source==='server-assessed'?'快速摸底 · 服务端按有限题目评价':'基础自评 · 自我报告，不是能力测量'}</strong>{preview.quickDiagnostic.items.map(item=><p key={item.id}><b>{item.confidence==='known'?(preview.quickDiagnostic?.source==='server-assessed'?'已有证据支持':'自评能解释'):item.confidence==='needs-practice'?'需要补齐':'暂时无法判断'}</b> · {item.prompt}{item.response?` 判断依据：${item.response.slice(0,140)}`:''}</p>)}<small>课程仍须覆盖必要前置，并重新检查总预算；请核对结果，可修改基础、周期或每日时间。</small></section>}</div>{preview.stages.map((stage,index)=><section className="blueprint-stage" key={stage.id}><header><span>阶段 {String(index+1).padStart(2,'0')}</span><strong>{stage.title}</strong><small>{stage.tasks.reduce((sum,item)=>sum+item.minutes,0)} 分钟 · 主线 {stage.mainlineTaskIds?.length??stage.tasks.filter(item=>(item.track??'main')==='main').length} 项</small></header><p>{stage.description}</p><div className="blueprint-chain-list">{stage.chains?.map(chain=><div key={chain.id}><b>{chain.track==='main'?'主线':'支线'} · {chain.title}</b><span>{chain.taskIds.map(id=>stage.tasks.find(task=>task.id===id)?.title??id).join(' → ')}</span></div>)??stage.tasks.map(task=><div key={task.id}><b>{task.track==='branch'?'支线':'主线'} · {task.title}</b><span>{task.acceptance}</span></div>)}</div></section>)}<div className="blueprint-controls"><label>目标周期（天）<input type="number" min={1} max={365} value={days} onChange={event=>onDays(Math.max(1,Math.min(365,Number(event.target.value))))}/></label><label>每日预算（分钟）<input type="number" min={1} max={1440} value={minutes} onChange={event=>onMinutes(Math.max(1,Math.min(1440,Number(event.target.value))))}/></label><label>难度 / 当前基础<input value={level} onChange={event=>onLevel(event.target.value)}/></label><button onClick={startGeneration} disabled={busy}>按调整后的预算重新生成</button></div><div className="blueprint-grid">{preview.nineGrid?.map(grid=><div key={grid.id}><strong>{grid.title}</strong><span>{grid.ability}</span><small>解锁：{grid.unlockTaskIds.map(id=>preview.stages.flatMap(stage=>stage.tasks).find(task=>task.id===id)?.title??id).join('、')}</small></div>)}</div><p className="source-provenance">生成状态：{preview.source==='deepseek'?'已收到并通过 Schema 校验的 AI 蓝图。':'离线预置 NumPy 示例，没有调用或模拟 DeepSeek。'}</p></div>}
     <details className="model-connection"><summary><span><KeyRound size={14}/> DeepSeek 连接 <i>{connection.configured ? '· 本机服务已连接' : '· 也可在服务器 .env 配置'}</i></span><ChevronDown size={14}/></summary><div className="connection-fields"><label className="form-field"><span>模型</span><select value={model} onChange={event => onModel(event.target.value)}><option value="deepseek-flash">DeepSeek Flash · 高效部署</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label><label className="form-field"><span>本次密钥 <small>离开页面即清除</small></span><input type="password" autoComplete="off" value={apiKey} onChange={event => onApiKey(event.target.value)} placeholder={connection.configured ? '已在本机 .env 配置，留空即可' : 'sk-… · 只发往官方 DeepSeek API'} /></label><p className="key-privacy"><ShieldCheck size={13}/> 密钥只在此页面内存中，并经本地服务端发送到 api.deepseek.com。不含在备份里。</p></div></details>

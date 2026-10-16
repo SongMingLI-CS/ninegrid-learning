@@ -25,7 +25,7 @@ function fresh(): LearningState {
 function ready(state: LearningState, id: string) {
   return setEvidence(updateObjective(state, id, `${id}-o`), id, EVIDENCE);
 }
-function done(state: LearningState, id: string) { return completeTask(ready(state, id), id, 'self', NOW); }
+function done(state: LearningState, id: string) { const evidenceReady = ready(state, id); return completeTask(markSelfChecked(evidenceReady, id), id, 'self', NOW); }
 afterEach(() => { vi.unstubAllGlobals(); setStorageScope(); });
 
 describe('progression and verification', () => {
@@ -81,13 +81,15 @@ describe('progression and verification', () => {
     expect(() => updateObjective(active, 'a', 'b-o')).toThrow();
     expect(() => setEvidence(active, 'missing', EVIDENCE)).toThrow();
   });
-  it('requires at least twenty non-whitespace evidence characters without forcing hidden checklist state', () => {
+  it('requires a current self-check of at least twenty characters before self-settlement', () => {
     const state = setEvidence(fresh(), 'a', EVIDENCE);
-    const checked = state;
     for (const evidence of ['', ' '.repeat(50), '少于二十字', ` ${'x'.repeat(19)} `]) {
-      expect(() => completeTask(setEvidence(checked, 'a', evidence), 'a', 'self', NOW)).toThrow();
+      const candidate = setEvidence(state, 'a', evidence);
+      expect(() => markSelfChecked(candidate, 'a')).toThrow();
+      expect(() => completeTask(candidate, 'a', 'self', NOW)).toThrow();
     }
-    expect(completeTask(setEvidence(checked, 'a', 'x'.repeat(20)), 'a', 'self', NOW).progress.a.status).toBe('completed');
+    const valid = setEvidence(state, 'a', 'x'.repeat(20));
+    expect(completeTask(markSelfChecked(valid, 'a'), 'a', 'self', NOW).progress.a.status).toBe('completed');
   });
   it('requires a passing AI evaluation with score at least 70', () => {
     const state = ready(fresh(), 'a');
@@ -270,7 +272,7 @@ describe('demo and browser storage', () => {
     for (const task of getTasks(state.campaign)) {
       state = activateTask(state, task.id);
       for (const objective of task.objectives) state = updateObjective(state, task.id, objective.id);
-      state = completeTask(setEvidence(state, task.id, EVIDENCE), task.id, 'self', NOW);
+      state = completeTask(markSelfChecked(setEvidence(state, task.id, EVIDENCE), task.id), task.id, 'self', NOW);
     }
     expect(getStats(state, NOW)).toMatchObject({ completed: 12, total: 12, slots: 0, stageCompleted: [true, true, true, true] });
     expect(importState(exportState(state))).toEqual(state);
@@ -483,7 +485,7 @@ describe('course branches, schedules, rewards, and multiple campaigns', () => {
     original = cacheLesson(original, 'a', { ...lesson, revision: 2 }, true);
     original = setEvidence(original, 'a', EVIDENCE);
     original.campaign.nineGrid = Array.from({ length: 9 }, (_, index) => ({ id: index === 0 ? 'grid-a' : `grid-${index}`, title: `格${index + 1}`, ability: '解释', value: '作品', unlockTaskIds: ['a'] }));
-    original = completeTask(original, 'a', 'self', NOW);
+    original = completeTask(markSelfChecked(original, 'a'), 'a', 'self', NOW);
     original = setEvaluation(original, 'a', PASS, 'ai');
     original = completeTask(original, 'a', 'ai', NOW);
     original = recordGridOutcome(original, 'grid-a', EVIDENCE, NOW);
