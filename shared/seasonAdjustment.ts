@@ -33,7 +33,7 @@ export type SeasonGoalAdjustmentPreview = {
   notice: string;
 };
 
-const programmingPattern = /\b(?:python|numpy|script|timer|deploy|deployment|environment|code|coding|programming|software|tool)\b|运行环境|脚本|计时器|部署|代码|编程|开发工具|小工具/i;
+const programmingPattern = /\b(?:python|numpy|script|timer|deploy|deployment|environment|code|coding|programming|software|tool)\b|运行环境|脚本|计时器|部署|代码|编程|开发工具|小工具|工具(?:[：:]|数据化|反馈(?:闭环)?|构建|打包|部署|开发|骨架|逻辑|依赖固定)/i;
 const languageGoalPattern = /雅思|ielts|英语|english|听力|口语|阅读|写作|语言能力/i;
 const explicitProgrammingPattern = /学习(?:编程|python|numpy|开发)|同时.{0,8}(?:编程|开发工具)|编写.{0,12}(?:应用|程序|脚本|工具)|build.{0,20}(?:app|tool|software|script)/i;
 
@@ -65,10 +65,12 @@ function targetSchedule(state: LearningState, targetText: string): { days: numbe
 function languageStageChange(stage: Stage, stageIndex: number, stageCount: number): SeasonGoalAdjustmentPreviewStage | undefined {
   if (!programmingPattern.test(`${stage.title} ${stage.description}`)) return undefined;
   const cleanedTitle = stage.title
-    .replace(/(?:最小)?(?:小工具|工具|应用|软件|脚本|计时器|开发|编程|代码|部署|运行环境)(?:骨架|逻辑|记录|开发|部署|阶段)?/gi, '')
+    .replace(/(?:最小)?(?:小工具|工具)(?:数据化|反馈(?:闭环)?|数据建模|反馈生成|打包(?:与依赖固定)?|依赖固定|骨架)?/gi, '')
+    .replace(/(?:应用|软件|脚本|计时器|开发|编程|代码|部署|运行环境)(?:骨架|逻辑|记录|开发|部署|阶段)?/gi, '')
     .replace(/[\s与和、·:：]+$/g, '')
     .trim();
-  const baseTitle = cleanedTitle && /雅思|IELTS/i.test(cleanedTitle) ? cleanedTitle : `雅思阶段 ${stageIndex + 1}`;
+  const stageLabel = cleanedTitle && /[\u3400-\u9fff]/.test(cleanedTitle) ? cleanedTitle : `第 ${stageIndex + 1} 阶段`;
+  const baseTitle = /雅思|IELTS/i.test(stageLabel) ? stageLabel : `雅思${stageLabel}`;
   const titleAfter = `${baseTitle}与四科训练`;
   const descriptionAfter = stageIndex === 0
     ? '围绕雅思听、说、读、写建立能力基线，熟悉题型与评分要求，并形成可核对的练习证据。'

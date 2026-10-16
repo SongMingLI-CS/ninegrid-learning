@@ -100,6 +100,46 @@ describe('season target adjustment preview', () => {
     expect(preview.tasks.some(item => item.action === 'replace')).toBe(true);
   });
 
+  it('recognizes the existing IELTS stages and task labels that use bare tool wording', () => {
+    const original = existingState();
+    const baseStage = original.campaign.stages[0];
+    const makeStage = (id: string, title: string, description: string, taskTitles: string[]) => {
+      const chainId = `${id}-main`;
+      const tasks = taskTitles.map((title, index) => ({ ...task(`${id}-task-${index + 1}`, title), chainId }));
+      return {
+        ...baseStage,
+        id,
+        title,
+        description,
+        tasks,
+        mainlineTaskIds: tasks.map(item => item.id),
+        gateTaskIds: [tasks.at(-1)!.id],
+        chains: [{ ...baseStage.chains![0], id: chainId, taskIds: tasks.map(item => item.id) }],
+      };
+    };
+    original.campaign.stages = [
+      makeStage('stage-two', '题型方法与工具数据化', '围绕题型训练建立工具数据化流程。', ['雅思阅读：题型判断与证据定位', '工具：打包与依赖固定']),
+      makeStage('stage-three', '限时训练与工具反馈闭环', '通过工具反馈闭环完成限时训练。', ['雅思写作：限时观点段落', '小工具数据建模与反馈生成']),
+    ];
+    original.progress = Object.fromEntries(original.campaign.stages.flatMap(stage => stage.tasks.map(item => [item.id, { completedObjectives: [], evidence: '', status: 'idle' as const }])));
+
+    const preview = buildSeasonGoalAdjustmentPreview(original, {
+      goal: '雅思，现在是六级 430 分水平，从来没做过雅思真题。',
+      desiredArtifact: '一个月 6.5，两个月 7.0 水平。',
+    });
+
+    expect(preview.stageChanges.map(change => change.stageId)).toEqual(['stage-two', 'stage-three']);
+    expect(preview.stageChanges.map(change => change.titleAfter)).toEqual(['雅思题型方法与四科训练', '雅思限时训练与四科训练']);
+    expect(preview.tasks.find(item => item.title === '工具：打包与依赖固定')).toMatchObject({
+      action: 'replace',
+      originalTaskDisposition: 'move-to-optional-branch',
+      replacement: { title: expect.stringMatching(/雅思/) },
+    });
+    expect(preview.tasks.find(item => item.title === '雅思阅读：题型判断与证据定位')?.action).toBe('keep');
+    expect(preview.notice).toContain('修正 2 个阶段信息');
+    expect(preview.notice).toContain('替换 2 个偏离目标的主线任务');
+  });
+
   it('does not move programming tasks when the new goal explicitly includes building a learning tool', () => {
     const original = existingState();
     const preview = buildSeasonGoalAdjustmentPreview(original, {

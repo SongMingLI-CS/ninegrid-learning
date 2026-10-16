@@ -14,7 +14,7 @@ describe('NineGrid beta release identity', () => {
       read('../src/App.tsx'),
     ]);
 
-    expect(JSON.parse(packageJson).version).toBe('1.0.0-beta.10');
+    expect(JSON.parse(packageJson).version).toBe('1.0.0-beta.11');
     for (const source of [titlebar, startup, settings, index, app]) {
       expect(source).toContain('九格行动1.0测试版');
     }
