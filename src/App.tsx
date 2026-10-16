@@ -32,6 +32,10 @@ import { reconcileServerState, savePendingDraft, readPendingDraft, clearPendingD
 import { getDailyBudgetMinutes, markVideoWatched, scheduleVideo as addVideoToSchedule } from './lib/videoSchedule';
 import { RuntimeGate } from './components/RuntimeGate';
 import { quickDiagnosticPrompts } from '../shared/learningRules';
+import { toast } from 'sonner';
+import { Toaster } from './components/ui/sonner';
+import { Button } from './components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from './components/ui/dialog';
 
 type Tab = 'missions' | 'today' | 'workspace' | 'archive' | 'history' | 'reviews' | 'inventory' | 'shop' | 'challenges' | 'profile';
 const pathTab = (path: string): Tab | undefined => ({ '/today':'today','/season':'missions','/learn':'workspace','/history':'history','/review':'reviews','/archive':'archive','/inventory':'inventory','/shop':'shop','/challenges':'challenges','/profile':'profile' } as Record<string,Tab>)[path];
@@ -219,7 +223,14 @@ function App() {
     if (currentAccountId.current && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived' || serverArchive.current.lifecycleStatus === 'deleted')) return;
     setState(next);
   }, []);
-  const flash = useCallback((value: Notification) => setNotification(value), []);
+  const flash = useCallback((value: Notification) => {
+    if (!value) return;
+    setNotification(value);
+    const description = value.body;
+    if (value.tone === 'success') toast.success(value.title, { description });
+    else if (value.tone === 'warning') toast.warning(value.title, { description });
+    else toast.message(value.title, { description });
+  }, []);
   const toggleFocusMode = () => setFocusMode(value => {
     const next = !value;
     try { window.localStorage.setItem('ninegrid.focus-mode', String(next)); } catch { /* The current view remains usable when storage is unavailable. */ }
@@ -423,11 +434,6 @@ function App() {
     }, 350);
     return () => window.clearTimeout(timer);
   }, [state, accountUser?.id]);
-  useEffect(() => {
-    if (!notification) return;
-    const handle = window.setTimeout(() => setNotification(null), 4200);
-    return () => window.clearTimeout(handle);
-  }, [notification]);
   useEffect(() => {
     if (!startedAt) return;
     const handle = window.setInterval(() => setSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
@@ -1042,35 +1048,43 @@ function App() {
   }
 
   return (
-    <main className={`app-shell ${tab === 'workspace' && focusMode ? 'focus-mode' : ''}`}>
+    <main className={`app-shell ng-tab-${tab} ${tab === 'workspace' && focusMode ? 'focus-mode' : ''}`}>
       <div className="app-header"><header className="topbar">
-        <button className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setMobileNav(value => !value)}><Menu size={19} /></button>
-        <button className="brand" onClick={() => { setTab('missions'); setMobileNav(false); }} aria-label="九格行动主页">
+        <Button type="button" variant="ghost" size="icon" className="mobile-menu icon-button" aria-label="打开导航" onClick={() => setMobileNav(value => !value)}><Menu size={19} /></Button>
+        <Button type="button" variant="ghost" className="brand" onClick={() => { setTab('missions'); setMobileNav(false); }} aria-label="九格行动主页">
           <span className="brand-mark"><span /><span /><span /><span /><span /><span /><span /><span /><span /></span>
           <span className="brand-copy"><strong>NINEGRID</strong><small>九格行动1.0测试版</small></span>
-        </button>
+        </Button>
         <div className="topbar-divider" />
-        <div className="topbar-season"><span className="status-light" /> SEASON 01 <span className="muted">/</span> 个人成长计划</div>
+        <div className="topbar-season"><span className={`status-light ${runtimeState === 'unavailable' ? 'offline' : ''}`} />{accountUser ? campaign.title : localChoice ? '本机学习档案' : runtimeState === 'unavailable' ? '服务不可用' : '学习行动'}</div>
         <div className="topbar-actions">
-          {accountUser && <button className="text-button account-identity" onClick={() => void logout()} title="退出登录" aria-label="退出登录">{accountUser.email} · 退出</button>}
+          {accountUser && <Button type="button" variant="ghost" className="text-button account-identity" onClick={() => void logout()} title="退出登录" aria-label="退出登录">{accountUser.email} · 退出</Button>}
           {accountUser && serverSeasons.length > 0 && <select aria-label="切换服务器学习赛季" className="campaign-switch" value={serverArchive.current?.id ?? ''} onChange={event => void switchServerSeason(event.target.value)}>{serverSeasons.map(season => <option key={season.id} value={season.id}>{season.title}</option>)}</select>}
           {state.history?.length ? <select aria-label="切换学习目标" className="campaign-switch" value={campaign.id} onChange={event => switchToCampaign(event.target.value)}><option value={campaign.id}>{campaign.title}</option>{state.history.map(item=><option key={item.campaign.id} value={item.campaign.id}>{item.campaign.title}</option>)}</select> : null}
           <div className="connection-pill" title={connection.accounts ? '账号服务器已启用' : '本机档案不会同步或提供真实交易'}><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`} />{accountUser ? syncStatus === 'saved' ? '服务器已同步' : syncStatus === 'saving' ? '同步中…' : syncStatus === 'conflict' ? '版本冲突' : syncStatus === 'error' ? '尚未同步' : '载入中…' : runtimeState === 'unavailable' ? '服务器不可用' : `本机档案 · AI ${connection.configured || apiKey ? '已就绪' : '未配置'}`}<ChevronDown size={13} /></div>
-          <button className="icon-button settings-trigger" aria-label="连接设置" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></button>
+          <Button type="button" variant="outline" size="icon" className="icon-button settings-trigger" aria-label="连接设置" onClick={() => setSettingsOpen(true)}><Settings2 size={17} /></Button>
           <span className="avatar" aria-label={`${stats.xp} 点经验`}>NG</span>
         </div>
       </header>
       <nav className={`main-nav ${mobileNav ? 'nav-open' : ''}`} aria-label="主导航">
-        <button className={`nav-link ${tab === 'today' ? 'active' : ''}`} onClick={() => navigateTab('today')}><Clock3 size={16}/>今日学习</button>
-        <button className={`nav-link ${tab === 'missions' ? 'active' : ''}`} onClick={() => navigateTab('missions')}><Crosshair size={16}/>赛季</button>
-        <button className={`nav-link ${tab === 'history' ? 'active' : ''}`} onClick={() => navigateTab('history')}><Activity size={16}/>学习记录</button>
-        <button className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} onClick={() => navigateTab('reviews')}><Radio size={16}/>复习 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</button>
-        <button className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'inventory' ? 'active' : ''}`} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/inventory','仓库')}><Backpack size={16}/>仓库{!accountUser&&<small>需账号</small>}</button>
-        <button className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'shop' ? 'active' : ''}`} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/shop','商城')}><KeyRound size={16}/>商城{!accountUser&&<small>需账号</small>}</button>
-        <button className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'challenges' ? 'active' : ''}`} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/challenges','挑战')}><Swords size={16}/>挑战{!accountUser&&<small>需账号</small>}</button>
-        <button className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'profile' ? 'active' : ''}`} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/profile','个人主页')}><UserRound size={16}/>个人主页{!accountUser&&<small>需账号</small>}</button>
+        <Button type="button" variant="ghost" className={`nav-link ${tab === 'today' ? 'active' : ''}`} aria-current={tab === 'today' ? 'page' : undefined} onClick={() => navigateTab('today')}><Clock3 size={16}/>今日学习</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${tab === 'missions' ? 'active' : ''}`} aria-current={tab === 'missions' ? 'page' : undefined} onClick={() => navigateTab('missions')}><Crosshair size={16}/>赛季</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${tab === 'history' ? 'active' : ''}`} aria-current={tab === 'history' ? 'page' : undefined} onClick={() => navigateTab('history')}><Activity size={16}/>学习记录</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${tab === 'reviews' ? 'active' : ''}`} aria-current={tab === 'reviews' ? 'page' : undefined} onClick={() => navigateTab('reviews')}><Radio size={16}/>复习 {dueReview.length > 0 && <span className="nav-count">{dueReview.length}</span>}</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'inventory' ? 'active' : ''}`} aria-current={tab === 'inventory' ? 'page' : undefined} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/inventory','仓库')}><Backpack size={16}/>仓库{!accountUser&&<small>需账号</small>}</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'shop' ? 'active' : ''}`} aria-current={tab === 'shop' ? 'page' : undefined} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/shop','商城')}><KeyRound size={16}/>商城{!accountUser&&<small>需账号</small>}</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'challenges' ? 'active' : ''}`} aria-current={tab === 'challenges' ? 'page' : undefined} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/challenges','挑战')}><Swords size={16}/>挑战{!accountUser&&<small>需账号</small>}</Button>
+        <Button type="button" variant="ghost" className={`nav-link ${!accountUser ? 'nav-restricted' : ''} ${tab === 'profile' ? 'active' : ''}`} aria-current={tab === 'profile' ? 'page' : undefined} title={!accountUser ? '需要账号存档' : undefined} onClick={() => openAccountFeature('/profile','个人主页')}><UserRound size={16}/>个人主页{!accountUser&&<small>需账号</small>}</Button>
       </nav>
-      <div className="runtime-version">{connection.environment ?? 'development'} · {connection.branch ?? '本地分支'} · {connection.commit ?? '版本未知'}{connection.workingTreeModified ? ' · 工作区有改动' : ''} · {connection.accounts ? '账号模式' : '本机模式'} · AI {connection.configured ? '可用' : '未配置'} · 服务启动 {connection.runtimeStartedAt ? new Date(connection.runtimeStartedAt).toLocaleString('zh-CN') : '时间未知'}</div></div>
+      <details className="runtime-diagnostics">
+        <summary className="runtime-summary">
+          <span className={`status-light ${runtimeState === 'unavailable' ? 'offline' : ''}`} aria-hidden="true" />
+          <span>{connection.accounts ? '账号模式' : '本机模式'}</span>
+          <span>· AI {connection.configured ? '可用' : '未配置'}</span>
+          <small>运行信息</small>
+        </summary>
+        <div className="runtime-version">{connection.environment ?? 'development'} · {connection.branch ?? '本地分支'} · {connection.commit ?? '版本未知'}{connection.workingTreeModified ? ' · 工作区有改动' : ''} · {connection.accounts ? '账号模式' : '本机模式'} · AI {connection.configured ? '可用' : '未配置'} · 服务启动 {connection.runtimeStartedAt ? new Date(connection.runtimeStartedAt).toLocaleString('zh-CN') : '时间未知'}</div>
+      </details></div>
       {runtimeState === 'unavailable' && localChoice && <div className="storage-warning runtime-warning" role="status"><span>服务状态暂不可用（{runtimeError}）。当前是你明确选择的本机模式，AI、登录和服务器同步未验证。</span><button onClick={retryRuntimeStatus}>重试连接</button></div>}
 
       {saveError && <div className="storage-warning" role="alert"><span>{saveError}</span>{accountUser ? <div className="storage-actions">{syncStatus === 'conflict' ? <><button onClick={() => { const blob = new Blob([exportState(currentState.current)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'ninegrid-unsynced-draft.json'; link.click(); URL.revokeObjectURL(link.href); }}>导出本机草稿</button><button onClick={() => void recoverServerArchive('server')}>加载服务器版本（放弃本机草稿）</button></> : <button onClick={() => void recoverServerArchive('retry')}>重试同步</button>}</div> : <button onClick={() => { setAllowOverwrite(true); setSaveError(''); }}>我已备份旧存档，允许使用新存档</button>}</div>}
@@ -1102,7 +1116,7 @@ function App() {
           <div className="section-controls"><span className="runtime-context">{accountUser ? '账号档案 · 跨设备同步' : '本机档案 · 仅此设备'}</span></div>
         </div>
 
-        {tab === 'today' ? <TodaySchedule schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={getDailyBudgetMinutes(state, localDate)} onVideoWatched={index => setState(previous => markVideoWatched(previous, localDate, index))} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
+        {tab === 'today' ? <TodaySchedule seasonTitle={campaign.title} schedule={dailyPlan} tasks={allTasks} progress={state.progress} reviews={state.reviews} recommendedTask={nextMission} noRecommendation={diagnosedAsKnown && !nextMission ? '诊断已记录为已掌握；当前仍是阶段前置，完成并结算后才能解锁后续任务。' : undefined} budgetMinutes={getDailyBudgetMinutes(state, localDate)} onVideoWatched={index => setState(previous => markVideoWatched(previous, localDate, index))} onStart={(t, kind) => { if (kind === 'review') { setSelectedReviewTaskId(t.id); setReviewRating(3); setReviewHintUsed(false); setReviewAnswer(''); setReviewRevealed(false); setTab('reviews'); } else { setDiagnosticMode(false); void beginTask(t); } }} onGenerate={() => void requestAiSchedule()} onAdjust={adjustToday} busy={busy === 'schedule'} error={scheduleError}/>
         : tab === 'workspace' && task ? <>
           <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} attempts={state.attempts?.[task.id] ?? []} loading={busy === 'lesson'} busy={busy === 'evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign, state.progress, task.id) || taskProgress?.status === 'completed'} feedback={lessonError || taskProgress?.assistedEvaluation?.feedback || taskProgress?.evaluation?.feedback} focusMode={focusMode} onToggleFocusMode={toggleFocusMode} onObjective={objectiveId => setState(previous => updateObjective(previous, task.id, objectiveId))} onEvidence={value => setState(previous => setEvidence(previous, task.id, value))} onSupplementalEvidence={value => setState(previous => setSupplementalEvidence(previous, task.id, value))} onEvaluate={(mode,sessionId) => void evaluateWithAI(mode,sessionId)} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level => { setHintLevels(previous => ({ ...previous, [task.id]: level })); const lesson=state.content?.[task.id]??task.teaching; if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level})); }} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} rescueLevel={state.rescueLevels?.[task.id]??0} failedAttempts={(state.attempts?.[task.id]??[]).filter(attempt=>!attempt.passed).length} latestFailedAttempt={[...(state.attempts?.[task.id]??[])].reverse().find(attempt=>!attempt.passed)} feynmanAvailable={task.kind==='boss' && Boolean(accountUser)} onRescue={()=>setState(previous=>requestTaskRescue(previous,task.id))} diagnosticMode={diagnosticMode} onDiagnosticFinish={(confidence, answer) => {
             setDiagnosticMode(false);
@@ -1117,7 +1131,8 @@ function App() {
           }}/>
           <YouTubeResources task={task} budgetMinutes={getDailyBudgetMinutes(state, localDate)} schedule={dailyPlan} language={campaign.language ?? 'mixed'} onScheduleVideo={accountUser ? scheduleVideo : undefined}/>
           <div className="lesson-workspace-secondary"><button className="secondary-button" onClick={() => setTab('missions')}>返回课程总览</button>{lessonError&&<button className="secondary-button" onClick={()=>void beginTask(task)}>重试生成本课讲解</button>}{adaptation&&<div className="adaptation-card"><strong>根据这次结果，建议：{adaptation.recommendation}</strong><p>{adaptation.reason}</p><button className="secondary-button" onClick={()=>{const next=allTasks.find(item=>item.id===adaptation.nextTaskId);if(next)void beginTask(next);}}>打开建议任务 · {adaptation.minutes} 分钟</button></div>}<div className="lesson-resources">{task.resources.map(source => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.title}<SquareArrowOutUpRight size={13}/></a>)}</div>{taskProgress?.status==='completed'&&nextMission&&nextMission.id!==task.id&&<button className="modal-submit" onClick={()=>void beginTask(nextMission)}>继续下一主线任务 · {nextMission.title}<ArrowRight size={15}/></button>}</div></>
-        : tab === 'missions' && task && currentStage ? <div className="operations-layout">
+        : tab === 'missions' && task && currentStage ? <div className="operations-layout ng-season-layout">
+          <div className="ng-season-directory" aria-label="赛季阶段与任务目录">
           <aside className="mission-rail">
             <div className="rail-head"><div><span className="micro-label">OPERATIONS</span><h2>行动目录 <span>{String(stageCount).padStart(2, '0')}</span></h2></div><button className="icon-button compact" onClick={openGoal} aria-label="新建行动线"><Plus size={16}/></button></div>
             <div className="campaign-note"><span className="note-marker">◎</span><span><strong>本赛季终局目标</strong><small>{campaign.goal}</small></span></div>
@@ -1157,6 +1172,7 @@ function App() {
             </div>
             <div className="board-footer"><span><span className="service-dot"/>{accountUser ? syncStatus === 'saved' ? '服务器已同步' : syncStatus === 'saving' ? '正在同步到服务器' : syncStatus === 'conflict' ? '服务器版本冲突' : '服务器尚未确认保存' : '只保存在此设备'}</span><button onClick={openGoal}>调整学习目标 <ArrowUpRight size={13}/></button></div>
           </section>
+          </div>
 
           <section className="mission-detail" aria-label="行动详情">
             <div className="detail-topline"><span className="detail-tag"><span className={`task-dot dot-${task.kind}`}/>{task.kind === 'boss' ? 'FINAL EXTRACTION' : task.kind === 'recall' ? 'ACTIVE RECALL' : task.kind === 'practice' ? 'FIELD PRACTICE' : 'INTELLIGENCE GATHERING'}</span><button className="icon-button compact" onClick={() => flash({ title: '行动手册', body: '先阅读线索，再动手，再关掉资料验证能否讲明白。' })} aria-label="帮助"><CircleHelp size={17}/></button></div>
@@ -1182,7 +1198,7 @@ function App() {
             <div className="detail-bottom"><span><span className="service-dot"/>{accountUser ? syncStatus === 'saved' ? '服务器已同步' : syncStatus === 'saving' ? '正在同步到服务器' : syncStatus === 'conflict' ? '版本冲突 · 未覆盖服务器' : '服务器尚未确认保存' : saveError ? '本机自动保存失败' : '本机自动保存'}</span><span><ShieldCheck size={13}/>{accountUser ? '服务器为主存档 · 本机恢复缓存未加密' : '浏览器本地存储；未启用加密'}</span></div>
           </section>
 
-          <aside className="rewards-panel"><div className="vault-header"><div><span className="micro-label">PERSONAL ARMORY</span><h3>九格能力成果</h3></div><span className="vault-level"><span className="vault-level-dot"/>{stats.slots} / 9 验证</span></div><div className="vault-summary"><span>赛季交付物</span><strong>{campaign.ultimateReward}</strong><div className="vault-summary-track"><i style={{ width: `${stats.slots / 9 * 100}%` }}/></div><small>按能力验收逐格解锁，不按完成任务比例点亮</small></div>
+          <details className="rewards-panel ng-season-more"><summary><span>赛季成果、复习与仓库摘要</span><small>九格 {stats.slots}/9 · {dueReview.length} 项待复习</small></summary><div className="ng-season-more-content"><div className="vault-header"><div><span className="micro-label">SEASON OUTCOMES</span><h3>九格能力成果</h3></div><span className="vault-level"><span className="vault-level-dot"/>{stats.slots} / 9 验证</span></div><div className="vault-summary"><span>赛季交付物</span><strong>{campaign.ultimateReward}</strong><div className="vault-summary-track"><i style={{ width: `${stats.slots / 9 * 100}%` }}/></div><small>按能力验收逐格解锁，不按完成任务比例点亮</small></div>
             <div className="vault-grid" aria-label={`九格能力成果，${stats.slots} 格已解锁`}>{(campaign.nineGrid ?? Array.from({length:9},(_,index)=>({id:`empty-${index}`,title:`能力格 ${index+1}`,ability:'课程蓝图尚未配置具体解锁条件',value:'课程蓝图尚未配置',unlockTaskIds:[]}))).map((grid,index)=>{ const verified = Boolean(state.gridOutcomes?.[grid.id]); const eligible = grid.unlockTaskIds.length > 0 && grid.unlockTaskIds.every(id => state.progress[id]?.status === 'completed' && state.progress[id]?.verification === 'ai'); return <div key={grid.id} className={`vault-cell ${verified ? 'vault-open' : ''}`} title={`第 ${index+1} 格：${grid.value}；需通过 AI 核验 ${grid.unlockTaskIds.map(id=>allTasks.find(item=>item.id===id)?.title??id).join('、')}`}><span className="vault-cell-index">0{index+1}</span><span className="vault-cell-icon">{verified ? <Check size={14}/> : <LockKeyhole size={13}/>}</span><span className="vault-cell-title">{grid.title}</span>{eligible && <div className="grid-outcome-input"><textarea aria-label={`${grid.title}成果`} value={gridDrafts[grid.id]??''} onChange={event=>setGridDrafts(previous=>({...previous,[grid.id]:event.target.value}))} placeholder="提交作品或能力证明"/><button onClick={()=>{try{const next=recordGridOutcome(state,grid.id,gridDrafts[grid.id]??'');update(next);setGridDrafts(previous=>({...previous,[grid.id]:''}));flash({title:`九格解锁：${grid.title}`,body:'能力成果已与任务链和验证记录关联保存。',tone:'success'});}catch(error){flash({title:'成果未解锁',body:error instanceof Error?error.message:'请先提交验证记录。',tone:'warning'});}}}>保存成果</button></div>}</div>;})}</div>
             {accountUser ? <div className="wallet-card"><div className="inventory-heading"><span><strong>账户共享仓库</strong><small>跨赛季收藏 · 与课程进度分开保存</small></span><b>{inventoryEntries.reduce((sum,entry)=>sum+entry.quantity,0)} 件</b></div><div className="wallet-balance"><strong>哈弗币 · {formatHafverCoins(inventoryBalance)}</strong><span>固定服务器余额</span></div>{serverInventory.some(item=>item.is_showcased) && <div className="showcase-summary"><strong>主页展示藏品</strong><span>{serverInventory.filter(item=>item.is_showcased).map(item=>item.definition.name).join('、')}</span></div>}<button className="review-cta" onClick={() => navigateRoute('/inventory')}>进入完整仓库 <ArrowRight size={14}/></button></div> : <div className="local-economy-note"><strong>本机模式未启用账号经济</strong><p>此处不显示余额、收藏资产或购买与出售入口。切换到已配置账号服务后，可在主导航打开仓库与商城。</p></div>}
             <div className="vault-foot"><span>行动奖励将为真实掌握解锁</span><span>{stats.slots}<i>/</i>9</span></div>
@@ -1191,7 +1207,7 @@ function App() {
 
             <div className="streak-panel"><Flame size={16}/><span>今天的行动记录</span><strong>{startedAt ? '进行中' : stats.completed > 0 ? '档案已保存' : '等待部署'}<small>{startedAt ? timeLabel + ' · 该休息时就休息' : '节奏由你掌握，不靠熬时长'}</small></strong></div>
             <button className="backup-link" onClick={() => { const blob = new Blob([exportState(state)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'ninegrid-learning-backup.json'; link.click(); URL.revokeObjectURL(url); flash({ title: '档案已导出', body: '备份文件不含 API Key。', tone: 'success' }); }}><ArrowDown size={13}/>导出赛季情报档案</button>
-          </aside>
+          </div></details>
             </div> : tab === 'archive' ? <ArchiveScreen state={state} allTasks={allTasks} onRestore={importBackup}/> : tab === 'history' ? <LearningHistoryScreen state={state}/> : tab === 'reviews' ? <ReviewScreen state={state} selectedTaskId={selectedReviewTaskId} onRating={setReviewRating} rating={reviewRating} answer={reviewAnswer} onAnswer={setReviewAnswer} revealed={reviewRevealed} onReveal={()=>setReviewRevealed(true)} onHintUsed={()=>setReviewHintUsed(true)} hintUsed={reviewHintUsed} onComplete={completeReview}/> : tab === 'inventory' && accountUser ? <InventoryScreen key={accountUser.id} seasons={serverSeasons}/> : task ? <LessonWorkspace task={task} seasonId={accountUser ? serverArchive.current?.id : undefined} progress={taskProgress ?? { completedObjectives: [], evidence: '', status: 'idle' }} content={state.content?.[task.id] ?? task.teaching} attempts={state.attempts?.[task.id] ?? []} focusMode={focusMode} onToggleFocusMode={toggleFocusMode} loading={busy==='lesson'} busy={busy==='evaluate'||busy==='lesson'} editable={isTaskUnlocked(campaign,state.progress,task.id)||taskProgress?.status==='completed'} feedback={lessonError||taskProgress?.assistedEvaluation?.feedback||taskProgress?.evaluation?.feedback} onEvidence={value=>setState(previous=>setEvidence(previous,task.id,value))} onSupplementalEvidence={value=>setState(previous=>setSupplementalEvidence(previous,task.id,value))} onEvaluate={(mode,sessionId)=>void evaluateWithAI(mode,sessionId)} onSelfCheck={selfEvaluate} onComplete={claimTask} onCancel={()=>activeRequest.current?.abort()} onHintUsed={level=>{setHintLevels(previous=>({...previous,[task.id]:level}));const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{hintLevelsUsed:level}));}} onAnswerRevealed={()=>{const lesson=state.content?.[task.id]??task.teaching;if(lesson)setState(previous=>setChallengeAssistance(previous,task.id,lesson.revision,{answerRevealed:true}));}} onRequestTransfer={()=>{if(!(connection.configured||apiKey)){setLessonError('当前没有可用的真实课程生成配置，无法生成新的同目标迁移题。');return;}void beginTask(task,{regenerate:true,transfer:true});}} rescueLevel={state.rescueLevels?.[task.id]??0} failedAttempts={(state.attempts?.[task.id]??[]).filter(attempt=>!attempt.passed).length} latestFailedAttempt={[...(state.attempts?.[task.id]??[])].reverse().find(attempt=>!attempt.passed)} feynmanAvailable={task.kind==='boss' && Boolean(accountUser)} onRescue={()=>setState(previous=>requestTaskRescue(previous,task.id))}/>: null}
 
         <footer className="global-footer"><span>九格行动 <i>·</i> 每一格，都由真正掌握解锁。</span><span>SESSION <i>—</i> {timeLabel}</span><span>休息也是行动计划的一部分。</span></footer>
@@ -1200,14 +1216,24 @@ function App() {
 
       {goalOpen && <GoalModal diagnosticOwner={accountUser?.id ?? 'guest'} goal={goal} level={level} days={days} minutes={dailyMinutes} reward={reward} connection={connection} model={model} busy={busy === 'generate'} apiKey={apiKey} sourceMaterial={sourceMaterial} language={languagePreference} inferred={extractedPreferences} preview={pendingCampaign} generationMessage={generationMessage} onGoal={handleGoalText} onLevel={setLevel} onDays={setDays} onMinutes={setDailyMinutes} onReward={setReward} onSourceMaterial={setSourceMaterial} onLanguage={setLanguagePreference} onModel={setModel} onApiKey={setApiKey} onLoadNumpy={loadNumpyBlueprint} onAccept={activateBlueprint} onCancelGeneration={() => activeRequest.current?.abort()} onFile={async event=>{const file=event.target.files?.[0];if(!file)return;try{if(file.size>2000000)throw new Error('文本材料不能超过 2 MB');const text=await file.text();setSourceMaterial(text);flash({title:'材料已读取',body:`已完整读取 ${file.name}，共 ${text.length} 字符。${text.length>20000?'超出 20000 字符生成上限，请在文本框中手动截取并注明范围。':'内容可作为课程资料依据。'}`,tone:text.length>20000?'warning':'success'});}catch(error){flash({title:'材料读取失败',body:error instanceof Error?error.message:'请粘贴纯文本材料。',tone:'warning'});}finally{event.target.value='';}}} onClose={() => { if(busy==='generate')activeRequest.current?.abort(); setGoalOpen(false); setApiKey(''); }} onGenerate={runGeneration}/>}
       {settingsOpen && <SettingsModal apiKey={apiKey} model={model} connection={connection} onApiKey={setApiKey} onModel={setModel} onClose={() => { setSettingsOpen(false); setApiKey(''); }} onApply={() => { setSettingsOpen(false); flash({ title: '连接设置已应用', body: '密钥仅保留在当前页面内存，刷新后需要重新输入。', tone: 'success' }); }}/ >}
-      {accountNotice && <div className="modal-backdrop" role="presentation" onClick={() => setAccountNotice('')}><section className="runtime-access-modal" role="dialog" aria-modal="true" aria-labelledby="account-access-heading" onClick={event => event.stopPropagation()}><span className="modal-topline">NINEGRID · ACCOUNT FEATURE</span><h2 id="account-access-heading">{accountNotice.split('需要')[0]}需要账号存档</h2><p>{accountNotice}</p><button className="modal-submit" onClick={() => setAccountNotice('')}>返回本机课程</button></section></div>}
-      {exitDialogOpen && <div className="modal-backdrop" role="presentation"><section className="settings-modal exit-save-dialog" role="dialog" aria-modal="true" aria-labelledby="exit-save-heading" onClick={event => event.stopPropagation()}>
-        <span className="modal-topline">九格行动 · 安全退出</span><h2 id="exit-save-heading">先确认学习记录已保存</h2>
-        <p>{accountUser ? syncStatus === 'saved' ? '当前服务器存档已同步。你可以再等待一次保存确认后退出。' : '退出前会把当前答案写入恢复缓存，并等待服务器确认；失败时窗口会保持打开。' : '退出前会再写入一次本机学习档案。'}</p>
-        {exitSaveError && <p className="field-error" role="alert">保存未完成：{exitSaveError}</p>}
-        <div className="modal-actions"><button className="text-button" disabled={exitSaving} onClick={() => { setExitDialogOpen(false); setExitSaveError(''); }}>取消退出</button><button className="modal-submit" disabled={exitSaving} onClick={() => void saveBeforeExit()}>{exitSaving ? '正在保存并等待确认…' : '保存完成后退出'}</button></div>
-      </section></div>}
-      {notification && <div className={`toast ${notification.tone ?? ''}`} role="status"><span className="toast-icon">{notification.tone === 'success' ? <CircleCheck size={16}/> : <Activity size={16}/>}</span><span><strong>{notification.title}</strong>{notification.body && <small>{notification.body}</small>}</span><button className="icon-button compact" onClick={() => setNotification(null)} aria-label="关闭通知"><X size={14}/></button></div>}
+      <Dialog open={Boolean(accountNotice)} onOpenChange={open => { if (!open) setAccountNotice(''); }}>
+        <DialogContent className="runtime-access-modal" aria-labelledby="account-access-heading" aria-describedby="account-access-description" showCloseButton={false}>
+          <span className="modal-topline">NINEGRID · ACCOUNT FEATURE</span>
+          <DialogTitle id="account-access-heading">{accountNotice.split('需要')[0]}需要账号存档</DialogTitle>
+          <DialogDescription id="account-access-description">{accountNotice}</DialogDescription>
+          <Button type="button" onClick={() => setAccountNotice('')}>返回本机课程</Button>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={exitDialogOpen} onOpenChange={open => { if (!open && !exitSaving) { setExitDialogOpen(false); setExitSaveError(''); } }}>
+        <DialogContent className="settings-modal exit-save-dialog" aria-labelledby="exit-save-heading" aria-describedby="exit-save-description" showCloseButton={false} onEscapeKeyDown={event => { if (exitSaving) event.preventDefault(); }}>
+          <span className="modal-topline">九格行动 · 安全退出</span><DialogTitle id="exit-save-heading">先确认学习记录已保存</DialogTitle>
+          <DialogDescription id="exit-save-description">{accountUser ? syncStatus === 'saved' ? '当前服务器存档已同步。你可以再等待一次保存确认后退出。' : '退出前会把当前答案写入恢复缓存，并等待服务器确认；失败时窗口会保持打开。' : '退出前会再写入一次本机学习档案。'}</DialogDescription>
+          {exitSaveError && <p className="field-error" role="alert">保存未完成：{exitSaveError}</p>}
+          <DialogFooter className="modal-actions"><Button type="button" variant="outline" disabled={exitSaving} onClick={() => { setExitDialogOpen(false); setExitSaveError(''); }}>取消退出</Button><Button type="button" disabled={exitSaving} onClick={() => void saveBeforeExit()}>{exitSaving ? '正在保存并等待确认…' : '保存完成后退出'}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {notification && <div className="sr-only" role="status" aria-live="polite" aria-atomic="true"><span>{notification.title}</span>{notification.body && <span>。{notification.body}</span>}</div>}
+      <Toaster position="bottom-right" />
     </main>
   );
 }
@@ -1334,9 +1360,10 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
       onGenerate({version:1,source:'server-assessed',items:quickSession.result.items.map((item:any)=>({id:item.id,prompt:quickSession.questions.find((q:any)=>q.id===item.id)?.objective??item.id,confidence:item.confidence,response:item.evidence}))});
     }finally{setQuickBusy(false);}
   };
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onClose(); }}><section className="goal-modal" role="dialog" aria-modal="true" aria-labelledby="goal-modal-title">
-    <div className="modal-topline"><span><Sparkles size={15}/> OPERATION DESIGN TERMINAL</span><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></div>
-    <div className="modal-heading"><span className="modal-icon"><Target size={19}/></span><div><h2 id="goal-modal-title">{preview ? '课程蓝图 · 部署前预览' : '输入你想学习的内容。'}</h2><p>自然语言、教学大纲或考试范围均可；AI 会先给出课程蓝图，确认后才开始保存为新目标。</p></div></div>
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
+    <DialogContent className="goal-modal" aria-labelledby="goal-modal-title" aria-describedby="goal-modal-description" showCloseButton={false} onInteractOutside={event => { if (busy) event.preventDefault(); }}>
+    <div className="modal-topline"><span><Sparkles size={15}/> OPERATION DESIGN TERMINAL</span><Button type="button" variant="ghost" size="icon" className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></Button></div>
+    <div className="modal-heading"><span className="modal-icon"><Target size={19}/></span><div><DialogTitle id="goal-modal-title">{preview ? '课程蓝图 · 部署前预览' : '输入你想学习的内容。'}</DialogTitle><DialogDescription id="goal-modal-description">自然语言、教学大纲或考试范围均可；AI 会先给出课程蓝图，确认后才开始保存为新目标。</DialogDescription></div></div>
     {!preview && <><label className="form-field goal-field"><span><b>01</b>你想学习什么？</span><textarea value={goal} onChange={event => onGoal(event.target.value)} minLength={12} maxLength={8000} placeholder="例如：我刚学 NumPy 的 ndarray、shape、dtype，希望四周后能独立完成基础数据处理，为机器学习做准备。每天一小时，英文为主、中文辅助。我看讲解能懂，但自己经常不会写代码。" /><small className="field-hint">系统会从描述中提取起点、预算、周期与偏好；生成后请核对蓝图再确认。</small>{(inferred.days||inferred.dailyMinutes||inferred.language)&&<small className="extracted-preferences">识别到：{inferred.days?`${inferred.days} 天`:'周期未提取'} · {inferred.dailyMinutes?`${inferred.dailyMinutes} 分钟/日`:'每日预算使用可编辑默认值'} · {inferred.language==='en'?'英文':inferred.language==='zh'?'中文':'英文为主、中文辅助'}；下方字段已更新，可直接修改。</small>}</label>
     <label className="form-field material-field"><span><b>02</b>课程大纲 / 知识点 / 考试范围 <small>可选，可粘贴或读取本地纯文本文件</small></span><textarea value={sourceMaterial} onChange={event=>onSourceMaterial(event.target.value)} placeholder="粘贴教材目录、课程大纲或你整理的知识点。链接请粘贴实际摘录；应用不会假装已读取网页。"/><input aria-label="读取本地文本材料" type="file" accept=".txt,.md,.csv,text/plain,text/markdown" onChange={onFile}/><small className={`field-hint ${sourceMaterial.length>20000?'field-error':''}`}>已读取 {sourceMaterial.length} / 20000 字符。超限时不会截断冒充完整阅读；请手动选择范围并保留页码或段落说明。只有所贴文本会被用于生成。</small></label>
     <div className="form-columns"><label className="form-field"><span><b>02</b>当前基础</span><select value={level} onChange={event => onLevel(event.target.value)}><option>零基础</option><option>了解一些，需要补基础</option><option>已有基础，想进阶</option><option>有经验，冲刺专精</option></select></label><label className="form-field"><span><b>03</b>赛季长度 <small>天</small></span><input type="number" min={1} max={365} value={days} onChange={event => onDays(Math.max(1, Math.min(365, Number(event.target.value))))}/></label></div>
@@ -1349,11 +1376,20 @@ function GoalModal({ diagnosticOwner, goal, level, days, minutes, reward, connec
     {!preview && generationMessage && <p className="source-provenance" role="status" aria-live="polite">生成进度：{generationMessage}</p>}
     {preview?.seasonalCollectible&&<section className="season-collectible-preview"><span>本赛季限定红色收藏 · 预览</span><strong>{preview.seasonalCollectible.name}</strong><p>{preview.seasonalCollectible.story}</p><small>{preview.seasonalCollectible.appearance}</small><small>获得条件：完成“{preview.stages.at(-1)?.tasks.find(task=>task.id===preview.seasonalCollectible?.finalTaskId)?.title??preview.stages.at(-1)?.gateTaskIds?.[0]??'最终阶段验收'}”并通过 AI 核验；限定藏品每个学习目标仅领取一次，不可出售。</small></section>}
     <div className="modal-actions"><span>旧赛季会保留；示例无需 API，生成真实蓝图需要 Key。</span>{busy ? <button className="text-button" onClick={onCancelGeneration}>取消生成</button> : <><button className="text-button" onClick={onLoadNumpy}>预览离线 NumPy 示例</button>{preview ? <button className="modal-submit" onClick={onAccept}><Check size={15}/>确认蓝图并开始</button> : <button className="modal-submit" onClick={()=>diagnosticMode==='quick-assessment'&&quickSession?.status==='ready'?void useQuickResult():startGeneration()} disabled={goal.trim().length < 12}><Crosshair size={16}/>{diagnosticMode==='quick-assessment'&&quickSession?.status!=='ready'?'跳过摸底并生成课程蓝图':generationMessage.includes('生成中断')||generationMessage.includes('生成已取消')||generationMessage.includes('服务器草稿已恢复')?'继续生成':'生成课程蓝图'}<ArrowRight size={15}/></button>}</>}</div>
-  </section></div>;
+    </DialogContent>
+  </Dialog>;
 }
 
 function SettingsModal({ apiKey, model, connection, onApiKey, onModel, onClose, onApply }: { apiKey: string; model: string; connection: Connection; onApiKey:(s:string)=>void; onModel:(s:string)=>void; onClose:()=>void; onApply:()=>void }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="modal-topline"><span><KeyRound size={15}/> CONNECTION SETTINGS</span><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></div><h2 id="settings-title">连接学习引擎</h2><p>使用官方 DeepSeek API 为本次行动生成任务和核对成果。也可在本机 <code>.env</code> 文件设置服务密钥。</p><div className="connection-state"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`}/>{connection.configured ? `服务器已配置 · ${connection.model}` : apiKey ? '仅此会话有效 · 离开页面后清除' : '尚未连接 · 可先体验预置赛季'}</div><label className="form-field"><span>DeepSeek API Key</span><input type="password" value={apiKey} autoComplete="off" onChange={event => onApiKey(event.target.value)} placeholder={connection.configured ? '留空即使用本机已配置密钥' : '粘贴本次使用的密钥'}/></label><label className="form-field"><span>模型</span><select value={model} onChange={event => onModel(event.target.value)}><option value="deepseek-flash">DeepSeek Flash · 高效部署</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label><p className="key-privacy"><ShieldCheck size={13}/> 密钥不存入 localStorage、备份文件或 Git。</p><div className="modal-actions"><button className="text-button" onClick={onClose}>返回任务大厅</button><button className="modal-submit" onClick={onApply}><Check size={15}/>应用设置</button></div></section></div>;
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}><DialogContent className="settings-modal" aria-labelledby="settings-title" aria-describedby="settings-description" showCloseButton={false}>
+    <div className="modal-topline"><span><KeyRound size={15}/> CONNECTION SETTINGS</span><Button type="button" variant="ghost" size="icon" className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></Button></div>
+    <DialogTitle id="settings-title">连接学习引擎</DialogTitle><DialogDescription id="settings-description">使用官方 DeepSeek API 为本次行动生成任务和核对成果。也可在本机 <code>.env</code> 文件设置服务密钥。</DialogDescription>
+    <div className="connection-state"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`}/>{connection.configured ? `服务器已配置 · ${connection.model}` : apiKey ? '仅此会话有效 · 离开页面后清除' : '尚未连接 · 可先体验预置赛季'}</div>
+    <label className="form-field"><span>DeepSeek API Key</span><input type="password" value={apiKey} autoComplete="off" onChange={event => onApiKey(event.target.value)} placeholder={connection.configured ? '留空即使用本机已配置密钥' : '粘贴本次使用的密钥'}/></label>
+    <label className="form-field"><span>模型</span><select value={model} onChange={event => onModel(event.target.value)}><option value="deepseek-flash">DeepSeek Flash · 高效部署</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label>
+    <p className="key-privacy"><ShieldCheck size={13}/> 密钥不存入 localStorage、备份文件或 Git。</p>
+    <DialogFooter className="modal-actions"><Button type="button" variant="outline" onClick={onClose}>返回任务大厅</Button><Button type="button" onClick={onApply}><Check size={15}/>应用设置</Button></DialogFooter>
+  </DialogContent></Dialog>;
 }
 
 function AccountSeasonStart({ onCreateGoal, onExample, seasons, onSelectSeason }: { onCreateGoal:()=>void; onExample:()=>void; seasons:Array<{id:string;title:string;lifecycleStatus?:'active'|'paused'|'archived'|'deleted'}>; onSelectSeason:(id:string)=>void }) {

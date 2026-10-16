@@ -8,6 +8,7 @@ import { formatHafverCoins } from '../shared/economy';
 const item = COLLECTION_CATALOG[0];
 let inventory: any;
 let wallet: any;
+let elementMethodDescriptors: Record<string, PropertyDescriptor | undefined> | null = null;
 const seasons = { seasons: [{ id: 'season-a', title: '春季试验' }] };
 function response(body: unknown) { return new Response(JSON.stringify(body), { status: 200 }); }
 
@@ -32,7 +33,16 @@ function serve() {
 }
 
 describe('independent warehouse page', () => {
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  afterEach(() => {
+    cleanup(); vi.unstubAllGlobals();
+    if (elementMethodDescriptors) {
+      for (const [name, descriptor] of Object.entries(elementMethodDescriptors)) {
+        if (descriptor) Object.defineProperty(Element.prototype, name, descriptor);
+        else delete (Element.prototype as any)[name];
+      }
+      elementMethodDescriptors = null;
+    }
+  });
 
   it('separates owned inventory from the 155-item catalog and reports collection by kinds', async () => {
     inventory = { items: [{ item_id: item.id, definition: item, quantity: 2, acquired_at: '2026-10-10T08:00:00Z', sources: [{ seasonId: 'season-a', taskId: 'numpy-lesson' }], is_locked: false, is_showcased: false }], sales: [] };
@@ -46,10 +56,46 @@ describe('independent warehouse page', () => {
     expect(container.querySelector('.wh-detail-art .wh-art img')?.getAttribute('src')).toBe('/assets/catalog/items/small-purple-01.webp');
     expect(screen.getByLabelText('仓库统计').textContent).toContain('1 / 155');
     expect(screen.getByText('1 种不同物品')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /完整图鉴/ }));
+    const fullCatalogTab = screen.getByRole('tab', { name: /完整图鉴/ });
+    fireEvent.mouseDown(fullCatalogTab, { button: 0 });
+    fireEvent.click(fullCatalogTab);
     expect(await screen.findByText('收藏图鉴')).toBeTruthy();
     expect(screen.getAllByText('未收集').length).toBeGreaterThan(0);
     expect(screen.getByText('155')).toBeTruthy();
+  });
+
+  it('opens the selected item in a compact viewport Sheet', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: query === '(max-width: 800px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    inventory = { items: [{ item_id: item.id, definition: item, quantity: 1, acquired_at: '2026-10-10T08:00:00Z', sources: [], is_locked: false, is_showcased: false }], sales: [] };
+    wallet = { wallets: [{ currency: 'learning-coin', balance: 50 }] }; serve();
+    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} onNavigate={() => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: `查看${item.name}详情` }));
+    const sheet = await screen.findByRole('dialog', { name: '藏品详情' });
+    expect(within(sheet).getByRole('heading', { name: item.name })).toBeTruthy();
+    expect(sheet.textContent).toContain('出售回收价');
+  });
+
+  it('uses accessible tabs and comboboxes for warehouse browsing filters', async () => {
+    inventory = { items: [], sales: [] };
+    wallet = { wallets: [{ currency: 'learning-coin', balance: 0 }] }; serve();
+    render(<WarehouseScreen account="learner@example.com" onExit={() => {}} onLogout={() => {}} onNavigate={() => {}} />);
+    await screen.findByRole('heading', { name: '行动仓库' });
+    expect(screen.getByRole('tab', { name: /我的仓库/ }).getAttribute('aria-selected')).toBe('true');
+    const fullCatalogTab = screen.getByRole('tab', { name: /完整图鉴/ });
+    fireEvent.mouseDown(fullCatalogTab, { button: 0 });
+    fireEvent.click(fullCatalogTab);
+    expect(fullCatalogTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByText('收藏图鉴')).toBeTruthy();
+    const category = screen.getByRole('combobox', { name: '类别' });
+    elementMethodDescriptors = Object.fromEntries(['hasPointerCapture', 'setPointerCapture', 'releasePointerCapture', 'scrollIntoView'].map(name => [name, Object.getOwnPropertyDescriptor(Element.prototype, name)]));
+    Object.defineProperty(Element.prototype, 'hasPointerCapture', { configurable: true, value: () => false });
+    Object.defineProperty(Element.prototype, 'setPointerCapture', { configurable: true, value: () => {} });
+    Object.defineProperty(Element.prototype, 'releasePointerCapture', { configurable: true, value: () => {} });
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    fireEvent.pointerDown(category, { button: 0, pointerType: 'mouse' });
+    fireEvent.click(await screen.findByRole('option', { name: '研究样本' }));
+    expect(screen.getByRole('combobox', { name: '类别' }).textContent).toContain('研究样本');
+    expect(screen.getByRole('tab', { name: /完整图鉴/ })).toBeTruthy();
   });
 
   it('previews batch recovery value, then updates the account balance and quantity after sale', async () => {

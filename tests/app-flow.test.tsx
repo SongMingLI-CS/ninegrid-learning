@@ -59,11 +59,37 @@ describe('local entry and account feature discoverability', () => {
     expect(document.body.textContent).not.toContain('哈弗币');
     const nav = screen.getByRole('navigation', { name: '主导航' });
     expect(within(nav).getAllByRole('button')).toHaveLength(8);
+    expect(within(nav).getAllByRole('button').every(button => button.getAttribute('data-slot') === 'button')).toBe(true);
+    expect(within(nav).getByRole('button', { name: /赛季/ }).getAttribute('aria-current')).toBe('page');
     for (const name of ['今日学习', '赛季', '学习记录', '复习', '仓库', '商城', '挑战', '个人主页']) {
       expect(within(nav).getByRole('button', { name: new RegExp(name) })).toBeTruthy();
     }
     fireEvent.click(within(nav).getByRole('button', { name: /仓库/ }));
     expect(await screen.findByRole('dialog', { name: '仓库需要账号存档' })).toBeTruthy();
+  });
+
+  it('keeps verbose build diagnostics collapsed while showing the active local mode clearly', async () => {
+    stubOfflineApi();
+    window.sessionStorage.setItem('ninegrid.local-choice', 'sample-python');
+    render(<App/>);
+    await screen.findByRole('heading', { name: '情报归档行动' });
+
+    const diagnostics = document.querySelector<HTMLDetailsElement>('.runtime-diagnostics');
+    expect(diagnostics?.open).toBe(false);
+    expect(diagnostics?.querySelector('.runtime-version')?.textContent).toMatch(/development/);
+    expect(diagnostics?.querySelector('.runtime-summary')?.textContent).toMatch(/本机模式.*AI 未配置/);
+  });
+
+  it('marks the active page so Today can lead with the next task instead of repeating the season hero', async () => {
+    stubOfflineApi();
+    window.sessionStorage.setItem('ninegrid.local-choice', 'sample-python');
+    render(<App/>);
+    await screen.findByRole('heading', { name: '情报归档行动' });
+
+    fireEvent.click(screen.getByRole('button', { name: /今日学习/ }));
+
+    expect(await screen.findByRole('region', { name: '推荐学习任务' })).toBeTruthy();
+    expect(document.querySelector('.app-shell')?.classList.contains('ng-tab-today')).toBe(true);
   });
 
   it('does not silently create a NumPy demo season for a new authenticated account', async () => {
@@ -274,7 +300,7 @@ describe('local entry and account feature discoverability', () => {
     expect(submitted!.input).toMatchObject({ goal, level: '已有基础，想进阶', days: 7, dailyMinutes: 30, desiredArtifact: '一个可测试的 NumPy 筛选与汇总函数' });
   });
 
-  it('labels a server-backed demo season and its saves as account storage', async () => {
+  it('labels a server-backed demo season and reports account synchronization', async () => {
     const numpyState = { ...createInitialState(), campaign: structuredClone(NUMPY_DEMO_CAMPAIGN), progress: createProgressForCampaign(NUMPY_DEMO_CAMPAIGN) };
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -290,7 +316,7 @@ describe('local entry and account feature discoverability', () => {
     expect(await screen.findByText('账号赛季 · 预置示例')).toBeTruthy();
     expect(screen.getByText('可选示例')).toBeTruthy();
     expect(screen.getAllByText('服务器已同步').length).toBeGreaterThan(0);
-    expect(screen.getByText('服务器为主存档 · 本机恢复缓存未加密')).toBeTruthy();
+    expect(screen.getByTitle('账号服务器已启用')).toBeTruthy();
     expect(screen.queryByText('只保存在此设备')).toBeNull();
     expect(screen.queryByText('本机自动保存')).toBeNull();
     expect(screen.queryByText('浏览器本地存储；未启用加密')).toBeNull();

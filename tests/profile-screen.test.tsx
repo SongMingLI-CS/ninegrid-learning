@@ -6,10 +6,12 @@ import {COLLECTION_CATALOG} from '../shared/catalog';
 
 const api=vi.hoisted(()=>vi.fn());vi.mock('../src/lib/api',()=>({apiFetch:api}));
 const date='2026-10-13T00:00:00Z';
+const originalScrollIntoView=HTMLElement.prototype.scrollIntoView;
 const season=(id:string)=>({id,revision:5,title:`课程 ${id}`,goal:'独立完成可检验作品',desiredArtifact:'作品',status:'active',completed:0,total:24,mainlineCompleted:0,mainlineTotal:15,selfCompleted:0,aiCompleted:0,currentStageIndex:0,nextTaskId:`${id}-saved-task`,nextTaskTitle:'上次学习任务',createdAt:date,updatedAt:date,lastStudyAt:null,stages:[{title:'第一阶段',completed:false}],grid:[],finalProjectEvidence:null});
 let data:any;let stock:any[];
 function reply(body:any,status=200){return new Response(JSON.stringify(body),{status});}
 beforeEach(()=>{
+ if(!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView=vi.fn();
  data={profile:{nickname:'行动者',bio:'',avatar_url:'',joinedAt:date},balance:0,xp:0,currentSeasonId:'a',selectionRevision:3,seasons:[season('a'),season('b')],collection:{kinds:2,total:155,completion:2/155,byRarity:{}},seasonalCollectibles:[],showcased:COLLECTION_CATALOG.slice(0,2).map((item,i)=>({...item,itemId:item.id,quantity:1,showcaseOrder:i})),activity:[],challenges:[]};
  stock=COLLECTION_CATALOG.slice(0,2).map(item=>({item_id:item.id,definition:item,quantity:1,is_locked:false,is_showcased:true,sources:[]}));
  api.mockImplementation(async(url:string,init?:RequestInit)=>{
@@ -23,8 +25,16 @@ beforeEach(()=>{
   throw Error(url);
  });
 });
-afterEach(()=>{cleanup();api.mockReset()});
+afterEach(()=>{cleanup();api.mockReset();if(!originalScrollIntoView)delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView});
 describe('server profile actions',()=>{
+ it('keeps verified capability outcomes before the showcase and historical activity',async()=>{
+  const {container}=render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  await screen.findByRole('heading',{name:'个人学习档案'});
+  await waitFor(()=>expect(container.querySelector('[data-profile-section="identity"]')).toBeTruthy());
+  const sections=[...container.querySelectorAll<HTMLElement>('[data-profile-section]')].map(section=>section.dataset.profileSection);
+  expect(sections).toEqual(['identity','current-season','capabilities','showcase','season-honors','season-archive','activity','collection','action-record','profile-settings']);
+ });
+
  it('provides the complete account navigation from the profile',async()=>{
   const navigate=vi.fn();render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={navigate}/>);
   await screen.findByRole('heading',{name:'个人学习档案'});
@@ -57,11 +67,22 @@ describe('server profile actions',()=>{
   const request=api.mock.calls.find(call=>call[0]==='/api/inventory/preferences')!;
   expect(JSON.parse(String(request[1].body)).items.map((item:any)=>[item.itemId,item.showcased,item.showcaseOrder])).toEqual([[stock[0].item_id,true,1],[stock[1].item_id,true,0]]);
  });
+ it('uses an accessible shared select for the avatar preference without saving on selection',async()=>{
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  const avatar=await screen.findByRole('combobox',{name:'头像样式'});
+  fireEvent.click(avatar);
+  fireEvent.click(await screen.findByRole('option',{name:'野外行动'}));
+  expect(avatar.textContent).toContain('野外行动');
+  expect(api.mock.calls.some(call=>String(call[0]).includes('/preferences'))).toBe(false);
+ });
  it('requires a visible preview and a separate apply action before changing a season goal',async()=>{
   const flush=vi.fn(async()=>8),adjusted=vi.fn(async()=>{});
   render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}} onFlushSeason={flush} onSeasonAdjusted={adjusted}/>);
   fireEvent.click((await screen.findAllByRole('button',{name:'调整目标'}))[0]);
-  await screen.findByRole('dialog',{name:'调整赛季目标'});
+  const dialog=await screen.findByRole('dialog',{name:'调整赛季目标'});
+  expect(dialog.querySelectorAll('[data-slot="textarea"]')).toHaveLength(2);
+  expect(dialog.querySelectorAll('[data-slot="button"]')).toHaveLength(3);
+  expect(dialog.contains(document.activeElement)).toBe(true);
   fireEvent.change(screen.getByLabelText('学习目标'),{target:{value:'IELTS goal'}});
   fireEvent.change(screen.getByLabelText('最终成果'),{target:{value:'IELTS archive'}});
   fireEvent.click(screen.getByRole('button',{name:'生成调整预览'}));
@@ -76,14 +97,24 @@ describe('server profile actions',()=>{
   await waitFor(()=>expect(adjusted).toHaveBeenCalled());
   expect(api.mock.calls.some(call=>String(call[0]).endsWith('/goal-adjustment'))).toBe(true);
  });
+ it('closes the goal editor on Escape and restores focus to its opener',async()=>{
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  const opener=(await screen.findAllByRole('button',{name:'调整目标'}))[0];
+  fireEvent.click(opener);
+  const dialog=await screen.findByRole('dialog',{name:'调整赛季目标'});
+  fireEvent.keyDown(dialog,{key:'Escape',code:'Escape'});
+  await waitFor(()=>expect(screen.queryByRole('dialog',{name:'调整赛季目标'})).toBeNull());
+  await waitFor(()=>expect(document.activeElement).toBe(opener));
+ });
  it('moves a season to the recoverable bin without a permanent delete action',async()=>{
-  const confirm=vi.spyOn(window,'confirm').mockReturnValue(true);
   render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
   fireEvent.click((await screen.findAllByRole('button',{name:/移入回收站/}))[0]);
+  const confirmation=await screen.findByRole('alertdialog',{name:'确认移入回收站'});
+  expect(confirmation.textContent).toContain('答案、证据、奖励和藏品都会保留');
+  fireEvent.click(within(confirmation).getByRole('button',{name:'确认移入回收站'}));
   await waitFor(()=>expect(api.mock.calls.some(call=>String(call[0]).endsWith('/lifecycle')&&JSON.parse(String(call[1].body)).status==='deleted')).toBe(true));
   expect(await screen.findByText('赛季已移入回收站；答案、证据和奖励记录仍保留。')).toBeTruthy();
   expect(screen.queryByRole('button',{name:/永久删除/})).toBeNull();
-  confirm.mockRestore();
  });
  it('allows a completed season to be moved to the recoverable bin',async()=>{
   data.seasons[0]={...data.seasons[0],status:'completed'};

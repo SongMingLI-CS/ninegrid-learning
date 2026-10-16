@@ -6,6 +6,8 @@ import type { LearningState, Task } from '../../shared/types';
 import { isTaskUnlocked } from '../lib/engine';
 import { apiFetch } from '../lib/api';
 import { AccountFeatureNavigation } from './AccountFeatureNavigation';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import './EconomyScreens.css';
 
 type Season = { id: string; title: string; state: LearningState };
@@ -263,10 +265,10 @@ export function ChallengesScreen({ account, onExit, onLogout, onNavigate }: { ac
             <p>{question.prompt}</p>
             <details className="challenge-rubric"><summary>查看本题验收要点</summary><ul>{question.requiredCriteria.map(criterion=><li key={criterion.id}>{criterion.text}</li>)}</ul></details>
             <div className="challenge-hints"><button type="button" className="econ-secondary" disabled={busy || (answers.find(item => item.questionId === question.id)?.hintLevelsUsed ?? 0) >= Math.min(CHALLENGE_MODE_SETTINGS[active.tier].hintLimit, question.hints.length)} onClick={() => revealNextHint(question)}>查看提示 · {answers.find(item => item.questionId === question.id)?.hintLevelsUsed ?? 0}/{CHALLENGE_MODE_SETTINGS[active.tier].hintLimit}</button>{(question.hints ?? []).slice(0, answers.find(item => item.questionId === question.id)?.hintLevelsUsed ?? 0).map((hint, hintIndex) => <p key={hintIndex}>提示 {hintIndex + 1}：{hint}</p>)}</div>
-            <label>你的答案<textarea aria-label={`第 ${index + 1} 题答案`} value={answer} onChange={event => updateAnswer(question.id, event.target.value)} maxLength={20_000} placeholder="写下这题的作答和必要依据。答案会自动保存。"/></label>
+            <label>你的答案<Textarea aria-label={`第 ${index + 1} 题答案`} value={answer} onChange={event => updateAnswer(question.id, event.target.value)} maxLength={20_000} placeholder="写下这题的作答和必要依据。答案会自动保存。"/></label>
           </article>;
         })}</div>
-        <div className="challenge-actions"><button className="econ-primary" disabled={busy || saveState === 'saving'} onClick={() => void submit()}><ShieldCheck size={16}/>{busy ? '正在评价…' : '提交答案并验收'}</button><button className="econ-secondary" disabled={busy} onClick={() => void abandon()}>{active.tier === 'free' ? '结束训练' : '放弃行动（入场费不退）'}</button></div>
+        <div className="challenge-actions"><Button disabled={busy || saveState === 'saving'} onClick={() => void submit()}><ShieldCheck size={16}/>{busy ? '正在评价…' : '提交答案并验收'}</Button><Button variant="outline" disabled={busy} onClick={() => void abandon()}>{active.tier === 'free' ? '结束训练' : '放弃行动（入场费不退）'}</Button></div>
       </>}
       {active.status === 'evaluating' && <p role="status">服务器正在处理已保存的答案。刷新可读取最新结果。</p>}
       {active.status === 'ready_to_extract' && <div className="challenge-extraction"><h3>撤离条件已满足</h3><p>{active.evaluation?.feedback} · {active.evaluation?.score ?? 0}/100</p><p>{active.tier === 'free' ? `确认结算后获得 ${money(modes.find(item=>item.id==='free')?.rewardCoins ?? 0)} 哈弗币，不产出藏品。` : '评价已保存。确认撤离后，行动奖励才会收入仓库。'}</p><button className="econ-primary" disabled={busy} onClick={() => void extract()}>{busy ? '正在结算…' : active.tier === 'free' ? '确认结束训练并领取奖励' : '确认撤离并结算奖励'}</button><button className="econ-secondary" disabled={busy} onClick={() => void abandon()}>{active.tier === 'free' ? '结束训练' : '放弃行动（入场费不退）'}</button></div>}

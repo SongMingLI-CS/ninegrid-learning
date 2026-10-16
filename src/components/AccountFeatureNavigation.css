@@ -1,42 +1,9 @@
 .account-feature-navigation {
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
   width: min(100%, 1600px);
-  margin: 12px auto 4px;
-}
-
-.account-feature-navigation button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-width: 0;
-  min-height: 46px;
-  padding: 8px 10px;
-  border: 1px solid #33443e;
-  background: #151e20;
-  color: #c5d1c9;
-  font-size: 14px;
-  line-height: 1.35;
-}
-
-.account-feature-navigation button:hover {
-  border-color: #7ca98a;
-  background: #1d2a25;
-  color: #eef5ee;
-}
-
-.account-feature-navigation button.active {
-  border-color: #76967b;
-  background: #23352b;
-  color: #e8f4e8;
-  box-shadow: inset 0 -2px #a9d392;
-}
-
-.account-feature-navigation svg {
-  flex: none;
-  color: #9dc7a7;
+  margin: 12px auto 12px;
 }
 
 @media (max-width: 1050px) {
@@ -44,7 +11,5 @@
 }
 
 @media (max-width: 600px) {
-  .account-feature-navigation { gap: 6px; margin-top: 9px; }
-  .account-feature-navigation button { min-height: 42px; gap: 6px; padding: 6px 4px; font-size: 13px; }
-  .account-feature-navigation svg { width: 15px; height: 15px; }
+  .account-feature-navigation { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 }

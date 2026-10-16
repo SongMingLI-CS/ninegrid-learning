@@ -1,0 +1,111 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 3px);
+  --radius-md: calc(var(--radius) - 1px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  color-scheme: dark;
+  --background: #0d1417;
+  --foreground: #e5ede8;
+  --card: #151f22;
+  --card-foreground: #e5ede8;
+  --popover: #172226;
+  --popover-foreground: #e5ede8;
+  --primary: #89c6a3;
+  --primary-foreground: #102018;
+  --secondary: #202c2f;
+  --secondary-foreground: #d9e5df;
+  --muted: #1a2528;
+  --muted-foreground: #a9b8b1;
+  --accent: #243532;
+  --accent-foreground: #e4efe7;
+  --destructive: #d47770;
+  --border: #344347;
+  --input: #29383b;
+  --ring: #8dccaa;
+  --radius: 6px;
+  --ng-titlebar-height: 0px;
+  --ng-content-width: 1440px;
+  --ng-reading-width: 76ch;
+  --ng-space-1: 4px;
+  --ng-space-2: 8px;
+  --ng-space-3: 12px;
+  --ng-space-4: 16px;
+  --ng-space-6: 24px;
+  --ng-space-8: 32px;
+  --ng-space-12: 48px;
+}
+
+:where(button, input, textarea, select) {
+  font: inherit;
+}
+
+:where(button:not(:disabled), [role="button"]:not([aria-disabled="true"])) {
+  cursor: pointer;
+}
+
+:where(:focus-visible) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  color: var(--foreground);
+  background: #6ab89170;
+}
+
+.ng-page {
+  width: min(var(--ng-content-width), calc(100% - clamp(24px, 5vw, 80px)));
+  margin-inline: auto;
+}
+
+.ng-section-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.ng-section-heading h1,
+.ng-section-heading h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: clamp(22px, 1.8vw, 28px);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.ng-section-heading p {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+@media (max-width: 600px) {
+  .ng-page { width: calc(100% - 24px); }
+}

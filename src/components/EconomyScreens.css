@@ -278,11 +278,10 @@
 .profile-current-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .profile-season-actions button{min-height:38px}
 .season-status.status-deleted{color:#d8ae9b;border-color:#765345;background:rgba(93,48,34,.24)}
-.season-adjustment-backdrop{position:fixed;inset:0;z-index:1200;display:grid;place-items:center;padding:24px;background:rgba(3,8,12,.78);backdrop-filter:blur(5px)}
-.season-adjustment-dialog{width:min(920px,100%);max-height:min(90vh,1000px);overflow:auto;padding:clamp(20px,3vw,34px);border:1px solid #465b58;border-radius:14px;background:#111b1b;color:#e8eeea;box-shadow:0 24px 80px rgba(0,0,0,.5);outline:none}
+.season-adjustment-dialog{width:min(920px,calc(100vw - 32px));max-width:920px;max-height:min(calc(100dvh - var(--ng-titlebar-height,0px) - 32px),1000px);overflow:auto;padding:clamp(20px,3vw,34px);border:1px solid #465b58;border-radius:8px;background:#111b1b;color:#e8eeea;box-shadow:0 24px 80px rgba(0,0,0,.5);outline:none}
 .season-adjustment-dialog>header,.season-adjustment-dialog>footer{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .season-adjustment-dialog h2{margin:.35rem 0 1rem;font-size:clamp(1.3rem,2vw,1.7rem)}
-.season-adjustment-dialog>label{display:grid;gap:8px;margin:16px 0;color:#dce6df;font-weight:600}
+.season-adjustment-dialog>.season-adjustment-field{display:grid;gap:8px;margin:16px 0;color:#dce6df;font-weight:600}
 .season-adjustment-dialog input,.season-adjustment-dialog textarea{width:100%;min-height:76px;padding:12px;border:1px solid #435552;border-radius:8px;background:#0b1415;color:#f4f5ef;font:inherit;line-height:1.6;resize:vertical}
 .season-adjustment-dialog>p,.season-adjustment-preview>p{color:#b8c5bf;line-height:1.65}
 .season-adjustment-preview{display:grid;gap:14px;margin:18px 0;padding:16px;border:1px solid #40544e;border-radius:10px;background:#0e1716}
@@ -293,9 +292,9 @@
 .season-adjustment-stage-list article strong{line-height:1.5}
 .season-adjustment-stage-list article small{color:#bdc9c1;line-height:1.55}
 .season-adjustment-budget{display:flex;gap:10px 18px;flex-wrap:wrap;color:#d3dfd8;font-size:.9rem}
-.season-adjustment-tasks{display:grid;gap:10px;max-height:38vh;overflow:auto;padding-right:4px}
+.season-adjustment-tasks{display:grid;gap:10px;padding-right:4px}
 .season-adjustment-tasks article{display:grid;gap:6px;padding:12px 14px;border-left:3px solid #638f77;background:#15201d}
 .season-adjustment-tasks article>span,.season-adjustment-tasks article>small{color:#bdc9c1;line-height:1.55}
 .season-adjustment-tasks article>strong{font-size:1rem}
 .season-adjustment-dialog>footer{justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid #34423f}
-@media(max-width:680px){.season-adjustment-backdrop{padding:10px}.season-adjustment-dialog{max-height:94dvh;padding:16px}.season-adjustment-budget{display:grid;gap:6px}.season-adjustment-dialog>footer{position:sticky;bottom:-16px;padding:12px 0 4px;background:#111b1b}}
+@media(max-width:680px){.season-adjustment-dialog{width:calc(100vw - 20px);max-height:calc(100dvh - 24px);padding:16px}.season-adjustment-budget{display:grid;gap:6px}.season-adjustment-dialog>footer{position:sticky;bottom:-16px;padding:12px 0 4px;background:#111b1b}}
