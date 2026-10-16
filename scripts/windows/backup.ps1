@@ -28,7 +28,8 @@ try {
   New-Item -ItemType Directory -Path $bundle -Force | Out-Null
   $dump = Join-Path $bundle 'database.dump'
   $archive = Join-Path $bundle 'uploads.tar.gz'
-  Invoke-NineGridPgTool -ToolPath $tools['pg_dump.exe'] -Arguments @('--no-password', '--host', $db.Host, '--port', [string]$db.Port, '--username', $db.User, '--dbname', $db.Database, '--format=custom', '--no-owner', '--file', $dump) -Password $db.Password -ErrorLabel 'PostgreSQL backup' | Out-Null
+  $dumpDb = if ($config.ContainsKey('DATABASE_ADMIN_URL') -and $config.DATABASE_ADMIN_URL) { Get-NineGridDatabaseParts -ConnectionString (New-NineGridAdminDatabaseUrl -Database $db.Database) } else { $db }
+  Invoke-NineGridPgTool -ToolPath $tools['pg_dump.exe'] -Arguments @('--no-password', '--host', $dumpDb.Host, '--port', [string]$dumpDb.Port, '--username', $dumpDb.User, '--dbname', $db.Database, '--format=custom', '--no-owner', '--file', $dump) -Password $dumpDb.Password -ErrorLabel 'PostgreSQL backup' | Out-Null
   $tar = (Get-Command tar.exe -ErrorAction Stop).Source
   $tarOutput = @(& $tar '-czf' $archive '-C' $paths.Uploads '.')
   if ($LASTEXITCODE -ne 0) { throw "Upload backup failed with exit $LASTEXITCODE." }

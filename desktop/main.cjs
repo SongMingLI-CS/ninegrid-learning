@@ -12,6 +12,7 @@ const { decryptStoredText } = require('./secure-config.cjs');
 const { readSecureConfiguration } = require('./secure-config-loader.cjs');
 const { persistSecureConfiguration } = require('./secure-config-store.cjs');
 const { createCloseGate } = require('./close-gate.cjs');
+const { buildSnapshotConnectionString } = require('./snapshot-connection.cjs');
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_DATA_ROOT = 'F:\\Projects\\NineGridData';
@@ -644,7 +645,9 @@ async function getPendingMigrations(db) {
 async function runSnapshot(db, uploadDirectory) {
   const script = path.join(appRoot, 'scripts', 'windows', 'db-snapshot.mjs');
   const result = await runTool(nodeRuntime, [script], {
-    ...runtimeEnv, NINEGRID_DATABASE_URL: db.connectionString, NINEGRID_UPLOAD_DIR: uploadDirectory,
+    ...runtimeEnv,
+    NINEGRID_DATABASE_URL: buildSnapshotConnectionString(db.connectionString, secrets.DATABASE_ADMIN_URL),
+    NINEGRID_UPLOAD_DIR: uploadDirectory,
   }, 120000);
   if (!result.ok) throw new Error('附件与数据库快照检查失败；没有标记备份完成。');
   try { return JSON.parse(result.stdout); } catch { throw new Error('备份快照未返回有效清单。'); }
@@ -661,10 +664,11 @@ async function createBackupBundle() {
   await fsp.mkdir(bundle, { recursive: false });
   const dump = path.join(bundle, 'database.dump');
   const archive = path.join(bundle, 'uploads.tar.gz');
+  const dumpDb = db.admin ?? db;
   const dumpResult = await runTool(path.join(pgBin, 'pg_dump.exe'), [
-    '--no-password', '--host', db.host, '--port', String(db.port), '--username', db.user,
+    '--no-password', '--host', dumpDb.host, '--port', String(dumpDb.port), '--username', dumpDb.user,
     '--dbname', db.database, '--format=custom', '--no-owner', '--file', dump,
-  ], { PGPASSWORD: db.password }, 10 * 60 * 1000);
+  ], { PGPASSWORD: dumpDb.password }, 10 * 60 * 1000);
   if (!dumpResult.ok) throw new Error('PostgreSQL 备份失败；不完整文件已保留供检查。');
   const tarExe = path.join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'tar.exe');
   if (!fs.existsSync(tarExe)) throw new Error('Windows tar.exe 不可用；数据库已导出，但附件归档未完成。');
