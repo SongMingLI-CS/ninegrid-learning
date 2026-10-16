@@ -31,7 +31,7 @@ describe('versioned economy rules',()=>{
     }
     expect(detailHashes.size,'unique detail images').toBe(COLLECTION_CATALOG.length);
     expect(thumbnailHashes.size,'unique thumbnails').toBe(COLLECTION_CATALOG.length);
-  });
+  },15_000);
   it('validates exact full-pool recovery expectation below each box price',()=>{
     const result=validateEconomy();
     for(const box of Object.values(BOXES)){

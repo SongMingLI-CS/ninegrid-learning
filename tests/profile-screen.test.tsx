@@ -17,7 +17,7 @@ beforeEach(()=>{
   if(url==='/api/inventory')return reply({items:stock});
   if(url.endsWith('/lifecycle')){const body=JSON.parse(String(init?.body));data.seasons[0]={...data.seasons[0],status:body.status,revision:9};return reply({season:{id:'a',revision:9,lifecycleStatus:body.status,state:{}},currentSeasonId:'a',selectionRevision:3});}
   if(url==='/api/seasons/a')return reply({season:{id:'a',revision:8,lifecycleStatus:'active',state:{campaign:{goal:'Build a timer',desiredArtifact:'Timer tool',ultimateReward:'Timer tool'}}}});
-  if(url.endsWith('/goal-preview'))return reply({preview:{previewId:'1234abcd',campaignId:'campaign-a',goal:'IELTS goal',desiredArtifact:'IELTS archive',stageChanges:[{stageId:'stage-a',titleBefore:'雅思认知与最小工具骨架',titleAfter:'雅思认知与四科训练',descriptionBefore:'工具骨架',descriptionAfter:'听说读写训练',reason:'阶段名称仍包含工具开发内容'}],tasks:[{taskId:'tool',title:'Build timer',stageId:'stage-a',stageTitle:'第一阶段',action:'replace',originalTaskDisposition:'move-to-optional-branch',reason:'编程偏题',minutes:20,preservesEvidence:true,replacement:{id:'new-task',title:'雅思阅读：主旨与证据定位',brief:'阅读',acceptance:'主旨和证据',deliverable:'阅读证据',minutes:20},dependencyChanges:['阅读证据']}],budget:{mainlineMinutesBefore:60,mainlineMinutesAfter:60,movedToOptionalMinutes:20,dailyMinutes:80,days:28},notice:'旧答案和奖励流水保留。'}});
+  if(url.endsWith('/goal-preview'))return reply({preview:{previewId:'1234abcd',campaignId:'campaign-a',goal:'IELTS goal',desiredArtifact:'IELTS archive',stageChanges:[{stageId:'stage-a',titleBefore:'雅思认知与最小工具骨架',titleAfter:'雅思认知与四科训练',descriptionBefore:'工具骨架',descriptionAfter:'听说读写训练',reason:'阶段名称仍包含工具开发内容'}],tasks:[{taskId:'tool',title:'Build timer',stageId:'stage-a',stageTitle:'第一阶段',action:'replace',originalTaskDisposition:'move-to-optional-branch',reason:'编程偏题',minutes:20,preservesEvidence:true,replacement:{id:'new-task',title:'雅思阅读：主旨与证据定位',brief:'阅读',acceptance:'主旨和证据',deliverable:'阅读证据',minutes:20},dependencyChanges:['阅读证据']}],budget:{mainlineMinutesBefore:60,mainlineMinutesAfter:60,movedToOptionalMinutes:20,dailyMinutesBefore:145,dailyMinutes:80,daysBefore:28,days:60},notice:'旧答案和奖励流水保留。'}});
   if(url.endsWith('/goal-adjustment')){const body=JSON.parse(String(init?.body));data.seasons[0]={...data.seasons[0],goal:body.goal,desiredArtifact:body.desiredArtifact,revision:9};return reply({season:{id:'a',revision:9,lifecycleStatus:'active',state:{campaign:{goal:body.goal,desiredArtifact:body.desiredArtifact}}}});}
   if(url==='/api/inventory/preferences')return reply({saved:2});
   throw Error(url);
@@ -67,6 +67,8 @@ describe('server profile actions',()=>{
   fireEvent.click(screen.getByRole('button',{name:'生成调整预览'}));
   expect(await screen.findByText(/移入可选支线并替换/)).toBeTruthy();
   expect(await screen.findByText('雅思认知与最小工具骨架 → 雅思认知与四科训练')).toBeTruthy();
+  expect(await screen.findByText('赛季周期 28 → 60 天')).toBeTruthy();
+  expect(await screen.findByText('每日预算 145 → 80 分钟')).toBeTruthy();
   expect(adjusted).not.toHaveBeenCalled();
   const previewRequest=api.mock.calls.find(call=>String(call[0]).endsWith('/goal-preview'))!;
   expect(JSON.parse(String(previewRequest[1].body))).toMatchObject({revision:8,goal:'IELTS goal',desiredArtifact:'IELTS archive'});

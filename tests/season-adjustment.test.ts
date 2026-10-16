@@ -35,6 +35,23 @@ function existingState(): LearningState {
 }
 
 describe('season target adjustment preview', () => {
+  it('previews and applies the requested two-month IELTS schedule instead of retaining stale timing', () => {
+    const original = existingState();
+    original.campaign.days = 28;
+    original.campaign.dailyMinutes = 145;
+    const input = {
+      goal: '一个月雅思达到 6.5，第二个月达到 7.0。',
+      desiredArtifact: '一个月 6.5、两个月 7.0 的听说读写成绩与练习档案。',
+    };
+
+    const preview = buildSeasonGoalAdjustmentPreview(original, input);
+
+    expect(preview.budget).toMatchObject({ daysBefore: 28, days: 60, dailyMinutesBefore: 145, dailyMinutes: 80 });
+    const updated = applySeasonGoalAdjustment(original, preview);
+    expect(updated.campaign.days).toBe(60);
+    expect(updated.campaign.dailyMinutes).toBe(80);
+  });
+
   it('previews and applies an IELTS stage rename when only the stage metadata still describes a tool', () => {
     const original = existingState();
     const reading = task('reading-lesson', '雅思阅读：主旨与证据');

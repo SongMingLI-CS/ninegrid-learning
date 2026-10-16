@@ -29,7 +29,7 @@ export type SeasonGoalAdjustmentPreview = {
   desiredArtifact: string;
   stageChanges: SeasonGoalAdjustmentPreviewStage[];
   tasks: SeasonGoalAdjustmentPreviewTask[];
-  budget: { mainlineMinutesBefore: number; mainlineMinutesAfter: number; movedToOptionalMinutes: number; dailyMinutes: number; days: number };
+  budget: { mainlineMinutesBefore: number; mainlineMinutesAfter: number; movedToOptionalMinutes: number; dailyMinutesBefore: number; dailyMinutes: number; daysBefore: number; days: number };
   notice: string;
 };
 
@@ -49,6 +49,18 @@ function isProgrammingTask(task: Task): boolean {
 }
 
 function isLanguageGoal(goal: string): boolean { return languageGoalPattern.test(goal); }
+
+function targetSchedule(state: LearningState, targetText: string): { days: number; dailyMinutes: number } {
+  const hasTwoMonthMilestone = /(?:两个月|两个(?:月)?目标|第二个月|2\s*个?月|2\s*months?)/i.test(targetText)
+    || /(?:一个月|1\s*month).{0,24}两个\s*\d/i.test(targetText);
+  const explicitDailyMinutes = targetText.match(/(?:每天|每日|daily)\s*(\d{1,3})\s*(?:分钟|minutes?|mins?)|\b(\d{1,3})\s*(?:分钟|minutes?|mins?)\s*(?:每天|每日|daily)\b/i);
+  const requestedMinutes = explicitDailyMinutes ? Number(explicitDailyMinutes[1] ?? explicitDailyMinutes[2]) : undefined;
+  if (!isLanguageGoal(targetText)) return { days: state.campaign.days, dailyMinutes: requestedMinutes ?? state.campaign.dailyMinutes };
+  return {
+    days: hasTwoMonthMilestone ? 60 : state.campaign.days,
+    dailyMinutes: requestedMinutes ?? (hasTwoMonthMilestone ? 80 : state.campaign.dailyMinutes),
+  };
+}
 
 function languageStageChange(stage: Stage, stageIndex: number, stageCount: number): SeasonGoalAdjustmentPreviewStage | undefined {
   if (!programmingPattern.test(`${stage.title} ${stage.description}`)) return undefined;
@@ -123,6 +135,7 @@ export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: Se
   const desiredArtifact = input.desiredArtifact.trim();
   if (!goal || !desiredArtifact) throw new Error('请填写学习目标和最终成果。');
   const targetText = `${goal}\n${desiredArtifact}`;
+  const schedule = targetSchedule(state, targetText);
   const replacements = eligibleReplacements(state, targetText, goal);
   const stageChanges = isLanguageGoal(targetText) && !explicitProgrammingPattern.test(goal)
     ? state.campaign.stages.flatMap((stage, index) => {
@@ -151,12 +164,12 @@ export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: Se
   const before = allTasks.reduce((sum, item) => sum + item.task.minutes, 0);
   const moved = [...replacements.values()].reduce((sum, item) => sum + item.task.minutes, 0);
   return {
-    previewId: fingerprint({ campaignId: state.campaign.id, input: { goal, desiredArtifact }, revisionData: state.campaign.stages.map(stage => [stage.title, stage.description, stage.tasks.map(task => [task.id, task.title, task.minutes, task.prerequisites])]) }),
+    previewId: fingerprint({ campaignId: state.campaign.id, input: { goal, desiredArtifact }, schedule, revisionData: state.campaign.stages.map(stage => [stage.title, stage.description, stage.tasks.map(task => [task.id, task.title, task.minutes, task.prerequisites])]) }),
     campaignId: state.campaign.id, goal, desiredArtifact, stageChanges, tasks,
-    budget: { mainlineMinutesBefore: before, mainlineMinutesAfter: before, movedToOptionalMinutes: moved, dailyMinutes: state.campaign.dailyMinutes, days: state.campaign.days },
-    notice: replacements.size || stageChanges.length
-      ? `预览将修正 ${stageChanges.length} 个阶段信息并替换 ${replacements.size} 个偏离目标的主线任务；旧答案、证据、评价和奖励流水保留，新任务不继承旧评价或重复发奖。`
-      : '当前阶段和任务已与新目标一致；本次只更新目标和最终成果描述，预算保持不变。',
+    budget: { mainlineMinutesBefore: before, mainlineMinutesAfter: before, movedToOptionalMinutes: moved, dailyMinutesBefore: state.campaign.dailyMinutes, dailyMinutes: schedule.dailyMinutes, daysBefore: state.campaign.days, days: schedule.days },
+    notice: replacements.size || stageChanges.length || schedule.days !== state.campaign.days || schedule.dailyMinutes !== state.campaign.dailyMinutes
+      ? `预览将修正 ${stageChanges.length} 个阶段信息、替换 ${replacements.size} 个偏离目标的主线任务，并按目标调整周期与每日预算；旧答案、证据、评价和奖励流水保留，新任务不继承旧评价或重复发奖。`
+      : '当前阶段、任务和预算已与新目标一致；本次只更新学习目标和最终成果描述。',
   };
 }
 
@@ -172,6 +185,8 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
   next.campaign.goal = preview.goal;
   next.campaign.desiredArtifact = preview.desiredArtifact;
   next.campaign.ultimateReward = preview.desiredArtifact;
+  next.campaign.days = preview.budget.days;
+  next.campaign.dailyMinutes = preview.budget.dailyMinutes;
   for (const change of preview.stageChanges) {
     const stage = next.campaign.stages.find(item => item.id === change.stageId);
     if (!stage) throw new Error('赛季阶段已变化，请重新生成预览。');
