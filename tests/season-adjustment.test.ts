@@ -35,6 +35,45 @@ function existingState(): LearningState {
 }
 
 describe('season target adjustment preview', () => {
+  it('previews and applies an IELTS stage rename when only the stage metadata still describes a tool', () => {
+    const original = existingState();
+    const reading = task('reading-lesson', '雅思阅读：主旨与证据');
+    original.campaign.stages[0] = {
+      ...original.campaign.stages[0],
+      title: '雅思认知与最小工具骨架',
+      description: '熟悉考试并搭建最小工具骨架。',
+      tasks: [reading],
+      mainlineTaskIds: [reading.id],
+      gateTaskIds: [reading.id],
+      chains: [{ id: 'main-chain', title: '雅思主线', track: 'main', taskIds: [reading.id], completionReward: { xp: 10, coins: 1000, items: [] } }],
+    };
+    original.progress = { [reading.id]: { completedObjectives: [], evidence: '', status: 'idle' } };
+
+    const preview = buildSeasonGoalAdjustmentPreview(original, {
+      goal: '提升雅思听说读写能力，达到雅思目标分数。',
+      desiredArtifact: '保留雅思练习证据和成绩记录。',
+    });
+
+    expect(preview.tasks).toHaveLength(1);
+    expect(preview.tasks[0].action).toBe('keep');
+    expect(preview.stageChanges).toEqual([
+      expect.objectContaining({
+        stageId: 'stage-one',
+        titleBefore: '雅思认知与最小工具骨架',
+        titleAfter: expect.stringMatching(/雅思/),
+      }),
+    ]);
+    expect(preview.notice).not.toMatch(/未发现.*只更新目标/);
+
+    const updated = applySeasonGoalAdjustment(original, preview);
+    expect(updated.campaign.stages[0].title).toBe(preview.stageChanges[0].titleAfter);
+    expect(updated.campaign.stages[0].tasks[0].id).toBe(reading.id);
+    expect(updated.campaign.stages[0].description).not.toContain('工具骨架');
+    expect(updated.progress).toEqual(original.progress);
+    expect(updated.wallet).toEqual(original.wallet);
+    expect(updated.rewardLedger).toEqual(original.rewardLedger);
+  });
+
   it('uses the new goal to identify an IELTS scope even when the old season was only about programming', () => {
     const original = existingState();
     original.campaign.goal = '学习 Python 编程，做一个计时器工具。';

@@ -1,4 +1,4 @@
-import type { Campaign, LearningState, Task } from './types';
+import type { Campaign, LearningState, Stage, Task } from './types';
 
 export type SeasonGoalAdjustmentInput = { goal: string; desiredArtifact: string };
 export type SeasonGoalAdjustmentPreviewTask = {
@@ -14,11 +14,20 @@ export type SeasonGoalAdjustmentPreviewTask = {
   replacement?: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance' | 'deliverable' | 'minutes'>;
   dependencyChanges: string[];
 };
+export type SeasonGoalAdjustmentPreviewStage = {
+  stageId: string;
+  titleBefore: string;
+  titleAfter: string;
+  descriptionBefore: string;
+  descriptionAfter: string;
+  reason: string;
+};
 export type SeasonGoalAdjustmentPreview = {
   previewId: string;
   campaignId: string;
   goal: string;
   desiredArtifact: string;
+  stageChanges: SeasonGoalAdjustmentPreviewStage[];
   tasks: SeasonGoalAdjustmentPreviewTask[];
   budget: { mainlineMinutesBefore: number; mainlineMinutesAfter: number; movedToOptionalMinutes: number; dailyMinutes: number; days: number };
   notice: string;
@@ -40,6 +49,29 @@ function isProgrammingTask(task: Task): boolean {
 }
 
 function isLanguageGoal(goal: string): boolean { return languageGoalPattern.test(goal); }
+
+function languageStageChange(stage: Stage, stageIndex: number, stageCount: number): SeasonGoalAdjustmentPreviewStage | undefined {
+  if (!programmingPattern.test(`${stage.title} ${stage.description}`)) return undefined;
+  const cleanedTitle = stage.title
+    .replace(/(?:最小)?(?:小工具|工具|应用|软件|脚本|计时器|开发|编程|代码|部署|运行环境)(?:骨架|逻辑|记录|开发|部署|阶段)?/gi, '')
+    .replace(/[\s与和、·:：]+$/g, '')
+    .trim();
+  const baseTitle = cleanedTitle && /雅思|IELTS/i.test(cleanedTitle) ? cleanedTitle : `雅思阶段 ${stageIndex + 1}`;
+  const titleAfter = `${baseTitle}与四科训练`;
+  const descriptionAfter = stageIndex === 0
+    ? '围绕雅思听、说、读、写建立能力基线，熟悉题型与评分要求，并形成可核对的练习证据。'
+    : stageIndex === stageCount - 1
+      ? '通过限时综合练习检验雅思目标能力，补齐薄弱项并整理最终成果。'
+      : '围绕阶段重点完成雅思专项练习，并使用新材料验证理解与迁移能力。';
+  return {
+    stageId: stage.id,
+    titleBefore: stage.title,
+    titleAfter,
+    descriptionBefore: stage.description,
+    descriptionAfter,
+    reason: '阶段名称或说明仍包含工具开发内容；雅思四科训练应作为本阶段核心。',
+  };
+}
 
 function buildReplacement(campaign: Campaign, stageId: string, task: Task, index: number, targetGoal: string): Task {
   const skill = ['阅读', '听力', '写作', '口语'][index % 4];
@@ -70,9 +102,9 @@ function buildReplacement(campaign: Campaign, stageId: string, task: Task, index
   };
 }
 
-function eligibleReplacements(state: LearningState, targetGoal = state.campaign.goal): Map<string, { stageIndex: number; task: Task; replacement: Task }> {
+function eligibleReplacements(state: LearningState, targetGoal = state.campaign.goal, explicitGoal = targetGoal): Map<string, { stageIndex: number; task: Task; replacement: Task }> {
   const { campaign } = state;
-  const shouldReplace = isLanguageGoal(targetGoal) && !explicitProgrammingPattern.test(targetGoal);
+  const shouldReplace = isLanguageGoal(targetGoal) && !explicitProgrammingPattern.test(explicitGoal);
   const replacements = new Map<string, { stageIndex: number; task: Task; replacement: Task }>();
   if (!shouldReplace) return replacements;
   campaign.stages.forEach((stage, stageIndex) => {
@@ -90,7 +122,14 @@ export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: Se
   const goal = input.goal.trim();
   const desiredArtifact = input.desiredArtifact.trim();
   if (!goal || !desiredArtifact) throw new Error('请填写学习目标和最终成果。');
-  const replacements = eligibleReplacements(state, goal);
+  const targetText = `${goal}\n${desiredArtifact}`;
+  const replacements = eligibleReplacements(state, targetText, goal);
+  const stageChanges = isLanguageGoal(targetText) && !explicitProgrammingPattern.test(goal)
+    ? state.campaign.stages.flatMap((stage, index) => {
+      const change = languageStageChange(stage, index, state.campaign.stages.length);
+      return change ? [change] : [];
+    })
+    : [];
   const allTasks = state.campaign.stages.flatMap((stage, stageIndex) => {
     const mainline = new Set(stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id));
     return stage.tasks.filter(task => mainline.has(task.id)).map(task => ({ stageIndex, task }));
@@ -112,10 +151,12 @@ export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: Se
   const before = allTasks.reduce((sum, item) => sum + item.task.minutes, 0);
   const moved = [...replacements.values()].reduce((sum, item) => sum + item.task.minutes, 0);
   return {
-    previewId: fingerprint({ campaignId: state.campaign.id, input: { goal, desiredArtifact }, revisionData: state.campaign.stages.map(stage => stage.tasks.map(task => [task.id, task.title, task.minutes, task.prerequisites])) }),
-    campaignId: state.campaign.id, goal, desiredArtifact, tasks,
+    previewId: fingerprint({ campaignId: state.campaign.id, input: { goal, desiredArtifact }, revisionData: state.campaign.stages.map(stage => [stage.title, stage.description, stage.tasks.map(task => [task.id, task.title, task.minutes, task.prerequisites])]) }),
+    campaignId: state.campaign.id, goal, desiredArtifact, stageChanges, tasks,
     budget: { mainlineMinutesBefore: before, mainlineMinutesAfter: before, movedToOptionalMinutes: moved, dailyMinutes: state.campaign.dailyMinutes, days: state.campaign.days },
-    notice: replacements.size ? '旧任务、答案、证据、评价和奖励账本会保留；新主线任务使用新 ID，不继承旧评价或奖励。请先检查预览再应用。' : '未发现与当前目标冲突的编程主线任务；本次只更新目标和最终成果描述。',
+    notice: replacements.size || stageChanges.length
+      ? `预览将修正 ${stageChanges.length} 个阶段信息并替换 ${replacements.size} 个偏离目标的主线任务；旧答案、证据、评价和奖励流水保留，新任务不继承旧评价或重复发奖。`
+      : '当前阶段和任务已与新目标一致；本次只更新目标和最终成果描述，预算保持不变。',
   };
 }
 
@@ -123,7 +164,7 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
   if (preview.campaignId !== state.campaign.id) throw new Error('预览不属于当前赛季。');
   const current = buildSeasonGoalAdjustmentPreview(state, preview);
   if (current.previewId !== preview.previewId) throw new Error('赛季内容已变化，请重新生成调整预览。');
-  const replacements = eligibleReplacements(state, preview.goal);
+  const replacements = eligibleReplacements(state, `${preview.goal}\n${preview.desiredArtifact}`, preview.goal);
   const next = structuredClone(state);
   const replacedIds = new Map([...replacements].map(([id, value]) => [id, value.replacement.id]));
   const branchIdsByStage = new Map<number, string[]>();
@@ -131,6 +172,12 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
   next.campaign.goal = preview.goal;
   next.campaign.desiredArtifact = preview.desiredArtifact;
   next.campaign.ultimateReward = preview.desiredArtifact;
+  for (const change of preview.stageChanges) {
+    const stage = next.campaign.stages.find(item => item.id === change.stageId);
+    if (!stage) throw new Error('赛季阶段已变化，请重新生成预览。');
+    stage.title = change.titleAfter;
+    stage.description = change.descriptionAfter;
+  }
 
   for (const [taskId, { stageIndex }] of replacements) {
     const ids = branchIdsByStage.get(stageIndex) ?? [];
