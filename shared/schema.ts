@@ -83,6 +83,7 @@ export const taskSchema = z.object({
   recallQuestion: text(), hint: text(), resources: z.array(resourceSchema).max(20),
   track: z.enum(['main', 'branch']).optional(), chainId: idSchema.optional(), unlockAfter: z.array(idSchema).max(100).optional(),
   knowledgePoints: z.array(text(300)).max(20).optional(), knownBasis: text(1000).optional(), deliverable: text(1000).optional(), hints: z.array(text(1000)).max(5).optional(),
+  goalCapabilityIds: z.array(idSchema).min(1).max(6).optional(), goalRelevance: text(800).optional(), action: text(1000).optional(),
   reward: rewardBundleSchema.optional(), teaching: lessonContentSchema.optional(),
 });
 
@@ -102,6 +103,7 @@ export const campaignSchema = z.object({
   })).min(1).max(20),
   prerequisites: z.array(text(500)).max(100).optional(),
   curriculumRulesVersion: z.number().int().min(1).max(100).optional(), densityRationale: text(2000).optional(),
+  goalCapabilities: z.array(z.object({ id: idSchema, title: text(300), description: text(800) })).min(1).max(24).optional(),
   seasonalCollectible: z.object({
     id: idSchema, name: text(120), story: text(1200), appearance: text(1200), abilityOutcome: text(1000),
     rewardKey: z.string().regex(/^[a-f0-9]{64}$/), finalTaskId: idSchema, displayValue: z.number().int().min(1_000_000).max(2_000_000), imageKey: z.string().max(128).optional(),
@@ -112,6 +114,16 @@ export const campaignSchema = z.object({
   if (!unique(campaign.stages.map(stage => stage.id))) issue('阶段 ID 必须唯一');
   const tasks = campaign.stages.flatMap(stage => stage.tasks);
   const declaredMainline = new Set(campaign.stages.flatMap(stage => stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id)));
+  if ((campaign.curriculumRulesVersion ?? 0) >= 5) {
+    const capabilities = new Set(campaign.goalCapabilities?.map(capability => capability.id) ?? []);
+    if (!capabilities.size || capabilities.size !== (campaign.goalCapabilities?.length ?? 0)) issue('课程版本 5 必须声明唯一的目标能力');
+    const covered = new Set<string>();
+    for (const task of tasks) {
+      if (!task.goalCapabilityIds?.length || task.goalCapabilityIds.some(id => !capabilities.has(id)) || !task.goalRelevance?.trim() || !task.action?.trim() || !task.deliverable?.trim() || !task.acceptance?.trim()) issue(`任务 ${task.id} 缺少目标关联、实际行动、交付物或验收标准`);
+      if (declaredMainline.has(task.id)) task.goalCapabilityIds?.forEach(id => covered.add(id));
+    }
+    if ([...capabilities].some(id => !covered.has(id))) issue('课程版本 5 的每项目标能力都必须由主线任务覆盖');
+  }
   if (!unique(tasks.map(task => task.id))) issue('任务 ID 必须唯一');
   if (!unique(tasks.flatMap(task => task.objectives.map(objective => objective.id)))) issue('目标 ID 必须全局唯一');
   const byId = new Map(tasks.map(task => [task.id, task]));
@@ -136,7 +148,7 @@ export const campaignSchema = z.object({
     if (stage.mainlineTaskIds && (!unique(stage.mainlineTaskIds) || stage.mainlineTaskIds.some(id => !stage.tasks.some(task => task.id === id) || (byId.get(id)?.track ?? 'main') !== 'main'))) issue(`阶段 ${stage.id} 的主线引用无效`);
     if (stage.gateTaskIds && (!stage.gateTaskIds.length || !unique(stage.gateTaskIds) || stage.gateTaskIds.some(id => !mainline.includes(id)))) issue(`阶段 ${stage.id} 的门槛必须属于主线`);
     for (const task of stage.tasks) {
-      if (campaign.curriculumRulesVersion === 4 && stage.chains?.length && !task.chainId) issue(`阶段 ${stage.id} 的任务必须归属任务链`);
+      if ((campaign.curriculumRulesVersion ?? 0) >= 4 && stage.chains?.length && !task.chainId) issue(`阶段 ${stage.id} 的任务必须归属任务链`);
       if (task.chainId) {
         const owner = chainById.get(task.chainId);
         if (!owner || owner.stage.id !== stage.id || !owner.chain.taskIds.includes(task.id)) issue(`任务 ${task.id} 的任务链归属不正确`);
@@ -157,7 +169,7 @@ export const campaignSchema = z.object({
         if (taskStage.id !== parentStage.id) {
           const parentIndex = campaign.stages.findIndex(item => item.id === parentStage.id);
           const taskIndex = campaign.stages.findIndex(item => item.id === taskStage.id);
-          if (campaign.curriculumRulesVersion === 4 && (parentIndex !== taskIndex - 1 || !(parentStage.gateTaskIds ?? []).includes(prerequisite))) issue(`跨阶段依赖 ${prerequisite} 必须经过紧邻前一阶段的门槛`);
+          if ((campaign.curriculumRulesVersion ?? 0) >= 4 && (parentIndex !== taskIndex - 1 || !(parentStage.gateTaskIds ?? []).includes(prerequisite))) issue(`跨阶段依赖 ${prerequisite} 必须经过紧邻前一阶段的门槛`);
         }
       }
     }

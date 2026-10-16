@@ -27,8 +27,9 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
   app.post('/api/generation-drafts', async (req, res, next) => {
     if (jsonBytes(req.body) > MAX_DRAFT_BYTES) { res.status(413).json({ code: 'DRAFT_TOO_LARGE', error: '课程草稿超过 2 MB 限额。请减少材料或拆成更小课程。' }); return; }
     const parsed = goalInputSchema.safeParse(req.body?.input);
-    if (!parsed.success || req.body?.rulesVersion !== 4) { res.status(400).json({ code: 'INVALID_DRAFT', error: '草稿输入或课程规则版本无效。' }); return; }
-    const fingerprintBase = createHash('sha256').update(JSON.stringify({ input: parsed.data, rulesVersion: 4 })).digest('hex');
+    const rulesVersion = req.body?.rulesVersion;
+    if (!parsed.success || typeof rulesVersion !== 'number' || ![4, 5].includes(rulesVersion)) { res.status(400).json({ code: 'INVALID_DRAFT', error: '草稿输入或课程规则版本无效。' }); return; }
+    const fingerprintBase = createHash('sha256').update(JSON.stringify({ input: parsed.data, rulesVersion })).digest('hex');
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -45,7 +46,7 @@ export function mountGenerationDraftRoutes(app: Express, { pool }: { pool: Pool 
       const count = await client.query<{ count: string }>("SELECT count(*)::text AS count FROM generation_drafts WHERE owner_user_id=$1 AND status NOT IN ('activated','failed','cancelled')", [ownerOf(req)]);
       if (Number(count.rows[0]?.count ?? 0) >= 3) { await client.query('ROLLBACK'); res.status(429).json({ code: 'DRAFT_LIMIT', error: '账号已有 3 个未完成的生成草稿；请恢复、取消或完成其中一个。' }); return; }
       const inserted = await client.query<DraftRow>(`INSERT INTO generation_drafts (id,owner_user_id,input_fingerprint,input,rules_version,status)
-        VALUES ($1,$2,$3,$4,4,'pending') RETURNING *`, [randomUUID(), ownerOf(req), fingerprint, JSON.stringify(parsed.data)]);
+        VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`, [randomUUID(), ownerOf(req), fingerprint, JSON.stringify(parsed.data), rulesVersion]);
       await client.query('COMMIT'); res.status(201).json({ draft: publicDraft(inserted.rows[0]), reused: false });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); }
     finally { client.release(); }

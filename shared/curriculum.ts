@@ -1,8 +1,12 @@
 import { z } from 'zod';
+import type { Campaign, GoalInput } from './types';
 
 const id = z.string().min(1).max(128).regex(/^[\p{L}\p{N}_-]+$/u);
 const text = (limit = 500) => z.string().trim().min(1).max(limit);
-export const outlineTaskSchema = z.object({ id, title: text(300), knowledgePoint: text(300), minutes: z.number().int().min(5).max(90), prerequisites: z.array(id).max(30) });
+export const outlineTaskSchema = z.object({
+  id, title: text(300), knowledgePoint: text(300), minutes: z.number().int().min(5).max(90), prerequisites: z.array(id).max(30),
+  goalCapabilityIds: z.array(id).min(1).max(6).optional(), goalRelevance: text(800).optional(), action: text(1000).optional(), deliverable: text(1000).optional(), acceptance: text(1200).optional(),
+});
 export const stageOutlineSchema = z.object({
   id, title: text(300), description: text(2000), gateTaskId: id,
   mainline: z.array(outlineTaskSchema).min(1).max(40),
@@ -13,9 +17,25 @@ export const seasonalCollectibleProposalSchema = z.object({
 });
 export const curriculumOutlineSchema = z.object({
   title: text(300), subtitle: text(1000), prerequisites: z.array(text(500)).max(30),
-  densityRationale: text(2000).optional(), stages: z.array(stageOutlineSchema).min(1).max(20),
+  densityRationale: text(2000).optional(), curriculumRulesVersion: z.number().int().min(1).max(100).optional(),
+  goalCapabilities: z.array(z.object({ id, title: text(300), description: text(800) })).min(1).max(24).optional(),
+  stages: z.array(stageOutlineSchema).min(1).max(20),
   seasonalCollectible: seasonalCollectibleProposalSchema,
   nineGrid: z.array(z.object({ id, title: text(200), ability: text(500), value: text(500), taskIds: z.array(id).min(1).max(10) })).length(9),
+}).superRefine((outline, ctx) => {
+  if ((outline.curriculumRulesVersion ?? 0) < 5) return;
+  if (!outline.goalCapabilities?.length) ctx.addIssue({ code: 'custom', path: ['goalCapabilities'], message: '课程版本 5 必须声明目标能力。' });
+  const capabilityIds = new Set(outline.goalCapabilities?.map(capability => capability.id) ?? []);
+  if (capabilityIds.size !== (outline.goalCapabilities?.length ?? 0)) ctx.addIssue({ code: 'custom', path: ['goalCapabilities'], message: '目标能力 ID 必须唯一。' });
+  const requiredCoverage = new Set<string>();
+  outline.stages.forEach(stage => [...stage.mainline, ...stage.branches.flatMap(branch => branch.tasks)].forEach(task => {
+    for (const field of ['goalRelevance', 'action', 'deliverable', 'acceptance'] as const) {
+      if (!task[field]?.trim()) ctx.addIssue({ code: 'custom', path: ['stages', stage.id, task.id, field], message: `课程版本 5 的任务必须说明 ${field}` });
+    }
+    if (!task.goalCapabilityIds?.length || task.goalCapabilityIds.some(capabilityId => !capabilityIds.has(capabilityId))) ctx.addIssue({ code: 'custom', path: ['stages', stage.id, task.id, 'goalCapabilityIds'], message: '任务必须引用已声明的目标能力。' });
+  }));
+  outline.stages.forEach(stage => stage.mainline.forEach(task => task.goalCapabilityIds?.forEach(capabilityId => requiredCoverage.add(capabilityId))));
+  if ([...capabilityIds].some(capabilityId => !requiredCoverage.has(capabilityId))) ctx.addIssue({ code: 'custom', path: ['goalCapabilities'], message: '每项目标能力都必须由主线任务覆盖。' });
 });
 export type CurriculumOutline = z.infer<typeof curriculumOutlineSchema>;
 export type OutlineTask = z.infer<typeof outlineTaskSchema> & { track: 'main' | 'branch'; chainId: string };
@@ -26,7 +46,14 @@ const legacyToolArtifactDefaults = new Set([
 ].map(value => value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLocaleLowerCase()));
 const languageLearningGoal = /雅思|\bIELTS\b|托福|\bTOEFL\b|英语|english(?:\s+(?:reading|writing|listening|speaking))?/iu;
 const programmingIntent = /编程|写代码|编写代码|代码实现|写脚本|编写脚本|学习\s*python|\bpython\s*(?:编程|开发|coding)|(?:开发|制作|编写|构建|实现|部署|打包).{0,14}(?:小工具|工具|软件|程序|应用|计时器|脚本|\bapp\b|\btool\b|\btimer\b)|(?:build|create|develop|write|implement|deploy|package).{0,18}\b(?:a\s+)?(?:tool|app|application|timer|script|software)\b/iu;
-const programmingConstruction = /编程|写代码|代码实现|脚本|运行环境|计时器|小工具|软件开发|程序开发|工具开发|开发工具|工具自动化|工具产品化|数据字段|依赖固定|打包与依赖|报告导出|正确率统计|每日建议生成规则|历史记录与趋势|薄弱项识别|模考数据录入|部署到可用位置|(?:开发|制作|编写|构建|实现|部署|打包).{0,16}(?:小工具|工具|软件|程序|应用|计时器|脚本|自动化|报告导出|统计)|\b(?:coding|programming|software development|tool development|script|timer|package dependencies|deploy(?:ment)?)\b/iu;
+const clearSoftwareActivity = /编程|写代码|编写代码|代码实现|写脚本|编写脚本|配置运行环境|搭建运行环境|软件开发|程序开发|工具开发|开发工具|工具自动化|工具产品化|数据字段|依赖固定|打包与依赖|报告导出|正确率统计|每日建议生成规则|历史记录与趋势|薄弱项识别|模考数据录入|部署到可用位置|(?:开发|制作|编写|构建|搭建|实现|部署|打包|配置|固定).{0,18}(?:小工具|工具|软件|程序|应用|计时器|脚本|自动化|报告导出|统计)|\b(?:coding|programming|software development|tool development|package dependencies|deploy(?:ment)?)\b/iu;
+const explicitCodeTaskTitle = /(?:运行环境.{0,12}(?:脚本|代码|程序)|(?:第一个|首个).{0,8}(?:脚本|代码|程序)|编程|写代码|写脚本|编写代码|编写脚本)/iu;
+const explicitSoftwareAction = /(?:^|[。；，,]\s*|(?:并|再|然后|接着|最后|要求|需要|请|你要|你需要|本任务(?:要求)?))\s*(?:(?:先|首先|尝试|完成|制作|通过|根据[^，。；]{0,12})\s*)?(?:编写|写代码|写脚本|配置运行环境|搭建运行环境|配置项目依赖|固定依赖|打包|部署|开发|制作|构建|搭建|实现|创建|build|create|develop|write|implement|deploy|package|configure).{0,24}(?:小工具|工具|软件|程序|应用|网页|网站|计时器|脚本|代码|依赖|app|application|software|website|tool|timer)/iu;
+const explicitSoftwareTitle = /^(?:(?:任务\s*[:：]?\s*)?(?:小工具|工具|软件|程序|应用|网页|网站)?\s*[:：]?\s*(?:打包|部署|开发|编写|构建|搭建|创建|固定依赖|配置运行环境)|(?:编程|编写代码|写代码|编写脚本|写脚本))/iu;
+const softwareProductSurface = /小工具|工具|软件|程序|应用|网页|网站|计时器|\b(?:app|application|software|website|web app|tool|timer|dependencies|runtime environment)\b|运行环境|依赖固定|打包/iu;
+const codeAction = /(?:编写|写|运行|调试|实现).{0,12}(?:代码|脚本|程序)|(?:代码|脚本|程序).{0,12}(?:编写|运行|调试|实现)|\b(?:write|run|debug|implement)\s+(?:code|a script|a program)\b/iu;
+const programmingStudyGoal = /(?:学习|掌握|练习|入门|提升|理解)(?:从零|基础|系统地|系统)?\s*(?:python|numpy|编程|程序设计|代码)|\b(?:learn|study|practice)\s+(?:python|numpy|programming|coding|software engineering)\b|^\s*(?:学习\s*)?(?:python|numpy)(?:\b|数组|编程|基础|入门)/iu;
+const explicitProductGoal = /(?:做|开发|制作|构建|搭建|编写|部署|打包|实现|build|create|develop|write|implement|deploy|package).{0,24}(?:小工具|工具|软件|程序|应用|网页|网站|计时器|脚本|\b(?:app|application|software|tool|timer|script)\b)/iu;
 const normalizeIntentText = (value: string) => value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLocaleLowerCase();
 
 function hasExplicitProgrammingIntent(input: { goal: string; desiredArtifact?: string; ultimateReward?: string }): boolean {
@@ -55,18 +82,102 @@ export function normalizeLegacyGoalArtifact<T extends { goal: string; desiredArt
   return { ...input, desiredArtifact: artifact, ultimateReward: artifact };
 }
 
-/** Deterministic scope check for the required curriculum path; optional branches may teach tools. */
-export function validateCurriculumGoalScope(outline: CurriculumOutline, input: { goal: string; desiredArtifact?: string; ultimateReward?: string }): boolean {
-  if (hasExplicitProgrammingIntent(input)) return true;
-  const requiredPath = [
-    outline.title, outline.subtitle, ...outline.prerequisites,
-    ...outline.stages.flatMap(stage => [stage.title, stage.description, ...stage.mainline.flatMap(task => [task.title, task.knowledgePoint])]),
-    ...outline.nineGrid.flatMap(outcome => [outcome.title, outcome.ability, outcome.value]),
-  ].join('\n');
-  return !programmingConstruction.test(requiredPath);
+export type CurriculumScopeFinding = { severity: 'blocking' | 'review'; stageId: string; taskId?: string; title: string; reason: string; evidence: string[] };
+
+function scopeTaskRows(content: CurriculumOutline | Campaign) {
+  type ScopeRow = { stageId: string; stageTitle: string; stageDescription: string; taskId: string; title: string; track: 'main'; task: Record<string, unknown> };
+  const rows: ScopeRow[] = [];
+  for (const rawStage of content.stages as unknown[]) {
+    const stage = rawStage as { id: string; title: string; description: string; mainline?: Array<Record<string, unknown>>; mainlineTaskIds?: string[]; tasks?: Campaign['stages'][number]['tasks'] };
+    const add = (task: Record<string, unknown>) => {
+      if (typeof task.id !== 'string' || typeof task.title !== 'string') return;
+      rows.push({ stageId: stage.id, stageTitle: stage.title, stageDescription: stage.description, taskId: task.id, title: task.title, track: 'main', task });
+    };
+    if (Array.isArray(stage.mainline)) {
+      stage.mainline.forEach(add);
+      continue;
+    }
+    const tasks = (stage.tasks ?? []) as unknown as Array<Record<string, unknown>>;
+    const mainlineIds = new Set(stage.mainlineTaskIds ?? tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id).filter((taskId): taskId is string => typeof taskId === 'string'));
+    tasks.filter(task => typeof task.id === 'string' && mainlineIds.has(task.id)).forEach(add);
+  }
+  return rows;
+}
+
+/** Deterministic checks inspect required actions and outputs; a subject's mention of a tool is not itself a violation. */
+export function analyzeCurriculumGoalScope(content: CurriculumOutline | Campaign, input: Pick<GoalInput, 'goal'> & Partial<Pick<GoalInput, 'desiredArtifact' | 'ultimateReward'>>): CurriculumScopeFinding[] {
+  const normalizedInput = normalizeLegacyGoalArtifact(input);
+  const inputText = `${normalizedInput.goal}\n${normalizedInput.desiredArtifact ?? ''}\n${normalizedInput.ultimateReward ?? ''}`;
+  const explicitProduct = explicitProductGoal.test(inputText);
+  const programmingSubject = programmingStudyGoal.test(normalizedInput.goal);
+  const findings: CurriculumScopeFinding[] = [];
+  for (const row of scopeTaskRows(content)) {
+    const task = row.task;
+    const title = row.title;
+    const actionFields = [task.action, task.brief, task.objectives, task.steps, task.deliverable, task.acceptance]
+      .flatMap(value => Array.isArray(value) ? value : [value])
+      .filter((value): value is string => typeof value === 'string');
+    const actionText = actionFields.join('\n');
+    const contextText = [title, task.knowledgePoint, task.knownBasis, task.goalCapability, task.goalRelevance]
+      .filter((value): value is string => typeof value === 'string').join('\n');
+    const hasProductSurface = softwareProductSurface.test(`${contextText}\n${actionText}`);
+    const hasExplicitSoftwareAction = actionFields.some(value => explicitSoftwareAction.test(value));
+    const hasExplicitCodeWork = codeAction.test(actionText)
+      || hasExplicitSoftwareAction
+      || explicitCodeTaskTitle.test(title)
+      || explicitSoftwareTitle.test(title);
+    const isApplicationBuild = hasProductSurface && hasExplicitSoftwareAction;
+    const isUnrequestedCodeWork = !programmingSubject && hasExplicitCodeWork;
+    if ((isApplicationBuild || isUnrequestedCodeWork) && !explicitProduct) {
+      findings.push({
+        severity: 'blocking', stageId: row.stageId, taskId: row.taskId, title,
+        reason: '必需主线要求构建、配置或提交软件/代码成果，但用户目标未要求该类成果。',
+        evidence: [...actionFields.filter(value => softwareProductSurface.test(value) && (explicitSoftwareAction.test(value) || codeAction.test(value))), ...(explicitCodeTaskTitle.test(title) || explicitSoftwareTitle.test(title) ? [title] : [])].slice(0, 4),
+      });
+      continue;
+    }
+    if (!explicitProduct && (hasProductSurface || /(?:工具|tool|程序|应用).{0,18}(?:数据化|数据建模|反馈生成|反馈闭环|骨架|依赖固定|打包)/iu.test(contextText)) && (clearSoftwareActivity.test(contextText) || /(?:工具|tool|程序|应用).{0,18}(?:数据化|数据建模|反馈生成|反馈闭环|骨架|依赖固定|打包)/iu.test(contextText)) && !hasExplicitSoftwareAction) {
+      findings.push({
+        severity: 'review', stageId: row.stageId, taskId: row.taskId, title,
+        reason: '标题或能力说明提到软件化产物，但任务行动和交付证据尚不足以确认它是否为必需开发工作。',
+        evidence: [title, actionFields.find(value => value.length > 0) ?? '缺少明确的任务行动/交付证据'],
+      });
+    }
+  }
+  if (!explicitProduct) {
+    const seenStages = new Set<string>();
+    for (const row of scopeTaskRows(content)) {
+      if (seenStages.has(row.stageId)) continue;
+      seenStages.add(row.stageId);
+      const stageContext = `${row.stageTitle}\n${row.stageDescription}`;
+      if (softwareProductSurface.test(stageContext) && explicitSoftwareAction.test(stageContext)) {
+        findings.push({
+          severity: 'review', stageId: row.stageId, title: row.stageTitle,
+          reason: '阶段说明把软件/工具构建写成阶段主题；单凭阶段文案不能判断具体任务是否必要，需在预览中确认阶段主旨。',
+          evidence: [row.stageTitle, row.stageDescription],
+        });
+      }
+    }
+  }
+  if ('nineGrid' in content && content.nineGrid) {
+    for (const outcome of content.nineGrid) {
+      const evidence = [outcome.title, outcome.ability, outcome.value].filter(Boolean);
+      const description = evidence.join('\n');
+      if (!explicitProduct && softwareProductSurface.test(description) && explicitSoftwareAction.test(description)) {
+        findings.push({ severity: 'blocking', stageId: 'nine-grid', title: outcome.title, reason: '九格必需能力要求交付软件成果，但用户目标未要求软件开发。', evidence });
+      }
+    }
+  }
+  return findings;
+}
+
+/** Reject only explicit out-of-scope required work; uncertain cases remain visible for review. */
+export function validateCurriculumGoalScope(content: CurriculumOutline | Campaign, input: Pick<GoalInput, 'goal'> & Partial<Pick<GoalInput, 'desiredArtifact' | 'ultimateReward'>>): boolean {
+  return !analyzeCurriculumGoalScope(content, input).some(finding => finding.severity === 'blocking');
 }
 
 export function curriculumScopePolicy(input: { goal: string; desiredArtifact?: string; ultimateReward?: string }): string {
+  if (programmingStudyGoal.test(input.goal) && !explicitProductGoal.test(`${input.goal}\n${input.desiredArtifact ?? ''}\n${input.ultimateReward ?? ''}`)) return 'The primary goal is programming or numerical computing. Python/code may be a necessary learning medium and prerequisite; do not invent a separate app, website, deployment, or packaged-product project unless the learner explicitly requested one. Connect every task action and deliverable to the named programming or numerical-computing capability.';
   if (hasExplicitProgrammingIntent(input)) return 'The learner explicitly requested programming or software-tool development in addition to the primary goal. Keep the primary goal visible and do not let the secondary project displace its required practice.';
   return `The primary goal is ${languageLearningGoal.test(input.goal) ? 'language learning' : 'the stated subject'} and no explicit programming objective was supplied. Keep every required stage, gate, nine-grid outcome, and final artifact inside that subject. Programming, scripts, app/tool construction, and deployment may appear only in a clearly optional branch, never as a prerequisite for starting or completing the primary goal. Ignore legacy/default artifact text that was prefilled by the application.`;
 }
@@ -207,6 +318,19 @@ export function planCurriculumBudget(input: { days: number; dailyMinutes: number
 export function validateCurriculumOutline(outline: CurriculumOutline, input: { days: number; dailyMinutes: number }): boolean {
   const budget = planCurriculumBudget(input);
   if (!budget.feasible || outline.stages.length !== budget.stageCount) return false;
+  if ((outline.curriculumRulesVersion ?? 0) >= 5) {
+    const capabilities = new Set(outline.goalCapabilities?.map(capability => capability.id) ?? []);
+    if (!capabilities.size || capabilities.size !== (outline.goalCapabilities?.length ?? 0)) return false;
+    const mainlineCoverage = new Set<string>();
+    for (const stage of outline.stages) for (const task of stage.mainline) {
+      if (!task.goalCapabilityIds?.length || task.goalCapabilityIds.some(id => !capabilities.has(id)) || !task.goalRelevance?.trim() || !task.action?.trim() || !task.deliverable?.trim() || !task.acceptance?.trim()) return false;
+      task.goalCapabilityIds.forEach(id => mainlineCoverage.add(id));
+    }
+    if ([...capabilities].some(id => !mainlineCoverage.has(id))) return false;
+    for (const stage of outline.stages) for (const branch of stage.branches) for (const task of branch.tasks) {
+      if (!task.goalCapabilityIds?.length || task.goalCapabilityIds.some(id => !capabilities.has(id)) || !task.goalRelevance?.trim() || !task.action?.trim() || !task.deliverable?.trim() || !task.acceptance?.trim()) return false;
+    }
+  }
   const tasks = outline.stages.flatMap(stage => [
     ...stage.mainline.map(task => ({ ...task, track: 'main' as const, chainId: `${stage.id}-main`, stageId: stage.id })),
     ...stage.branches.flatMap(branch => branch.tasks.map(task => ({ ...task, track: 'branch' as const, chainId: branch.id, stageId: stage.id }))),

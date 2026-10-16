@@ -100,6 +100,18 @@ describe('season target adjustment preview', () => {
     expect(preview.tasks.some(item => item.action === 'replace')).toBe(true);
   });
 
+  it('does not let a clearly off-scope task pass as a review-only item for unsupported target adjustments', () => {
+    const original = existingState();
+    const preview = buildSeasonGoalAdjustmentPreview(original, {
+      goal: '学习中国古典诗词鉴赏',
+      desiredArtifact: '一份包含文本证据的诗词分析作品集',
+    });
+
+    expect(preview.tasks[0].action).toBe('blocked');
+    expect(preview.notice).toMatch(/不能应用|重新生成/);
+    expect(() => applySeasonGoalAdjustment(original, preview)).toThrow(/重新生成任务/);
+  });
+
   it('recognizes the existing IELTS stages and task labels that use bare tool wording', () => {
     const original = existingState();
     const baseStage = original.campaign.stages[0];
@@ -128,16 +140,17 @@ describe('season target adjustment preview', () => {
       desiredArtifact: '一个月 6.5，两个月 7.0 水平。',
     });
 
-    expect(preview.stageChanges.map(change => change.stageId)).toEqual(['stage-two', 'stage-three']);
-    expect(preview.stageChanges.map(change => change.titleAfter)).toEqual(['雅思题型方法与四科训练', '雅思限时训练与四科训练']);
+    expect(preview.stageChanges.map(change => change.stageId)).toEqual(['stage-two']);
+    expect(preview.stageChanges.map(change => change.titleAfter)).toEqual(['雅思题型方法与四科训练']);
     expect(preview.tasks.find(item => item.title === '工具：打包与依赖固定')).toMatchObject({
       action: 'replace',
       originalTaskDisposition: 'move-to-optional-branch',
       replacement: { title: expect.stringMatching(/雅思/) },
     });
     expect(preview.tasks.find(item => item.title === '雅思阅读：题型判断与证据定位')?.action).toBe('keep');
-    expect(preview.notice).toContain('修正 2 个阶段信息');
-    expect(preview.notice).toContain('替换 2 个偏离目标的主线任务');
+    expect(preview.tasks.find(item => item.title === '小工具数据建模与反馈生成')?.action).toBe('review');
+    expect(preview.notice).toContain('修正 1 个阶段信息');
+    expect(preview.notice).toContain('替换 1 个明确偏离目标的主线任务');
   });
 
   it('does not move programming tasks when the new goal explicitly includes building a learning tool', () => {
@@ -146,6 +159,11 @@ describe('season target adjustment preview', () => {
       goal: '学习雅思，同时编写一个雅思计时器工具。', desiredArtifact: '雅思训练工具与练习档案。',
     });
     expect(preview.tasks.every(item => item.action === 'keep')).toBe(true);
+
+    const naturalRequest = buildSeasonGoalAdjustmentPreview(original, {
+      goal: '学习雅思，同时开发一款听力练习工具。', desiredArtifact: '雅思听力练习工具与个人练习档案。',
+    });
+    expect(naturalRequest.tasks.every(item => item.action === 'keep')).toBe(true);
   });
 
   it('previews a versioned IELTS replacement without mutating the source archive', () => {
@@ -163,9 +181,49 @@ describe('season target adjustment preview', () => {
     expect(original.campaign.goal).toContain('timer');
   });
 
+  it('uses task scope evidence, binds a preview to the archive revision, and invalidates it when saved progress changes', () => {
+    const original = existingState();
+    const task = original.campaign.stages[0].tasks[0];
+    task.title = '雅思阅读：主旨与证据';
+    task.brief = '阅读英文材料并定位作者观点。';
+    task.deliverable = '可安装的雅思练习软件';
+    task.acceptance = '提供运行截图、应用程序和固定依赖。';
+    const input = { goal: '提升雅思听说读写能力', desiredArtifact: '四科练习证据与复盘档案' };
+
+    const preview = buildSeasonGoalAdjustmentPreview(original, input, { baseRevision: 7 });
+
+    expect(preview.baseRevision).toBe(7);
+    expect(preview.tasks[0]).toMatchObject({
+      action: 'replace',
+      reason: expect.stringMatching(/交付|验收|软件|程序/),
+    });
+    const updatedProgress = structuredClone(original);
+    updatedProgress.progress[task.id].evidence = 'A new answer was saved after the preview.';
+    const refreshed = buildSeasonGoalAdjustmentPreview(updatedProgress, input, { baseRevision: 7 });
+    expect(refreshed.previewId).not.toBe(preview.previewId);
+    expect(() => applySeasonGoalAdjustment(updatedProgress, preview)).toThrow(/内容已变化/);
+  });
+
+  it('does not turn a mathematical tool into an out-of-scope software task', () => {
+    const original = existingState();
+    const task = original.campaign.stages[0].tasks[0];
+    task.title = '线性代数：选择计算工具';
+    task.brief = '比较手算与矩阵计算器的结果。';
+    task.deliverable = '矩阵推导过程和核对结果';
+    task.acceptance = '给出正确特征值并解释核对过程。';
+    original.campaign.goal = '理解线性代数中的特征值';
+
+    const preview = buildSeasonGoalAdjustmentPreview(original, {
+      goal: '理解线性代数中的特征值', desiredArtifact: '一组有推导和验证的练习',
+    });
+
+    expect(preview.tasks[0].action).toBe('keep');
+  });
+
   it('applies the confirmed preview with new IDs, optional legacy evidence, and unchanged economics', () => {
     const original = existingState();
     const input = { goal: '提升雅思听说读写能力，完成可核对的英语练习档案。', desiredArtifact: '完成包含听说读写样本、证据和复盘的雅思训练档案。' };
+    original.schedules = { '2026-10-16': { date: '2026-10-16', theme: '今日主线', items: [{ taskId: 'setup-script', kind: 'lesson', minutes: 20, required: true, deliverable: '脚本证据' }], totalMinutes: 20, outcome: '完成练习', nextUnlock: '继续', revision: 1 } };
     const preview = buildSeasonGoalAdjustmentPreview(original, input);
     const updated = applySeasonGoalAdjustment(original, preview);
     const oldTask = updated.campaign.stages[0].tasks.find(item => item.id === 'setup-script');
@@ -179,6 +237,7 @@ describe('season target adjustment preview', () => {
     expect(updated.progress[replacement!.id]).toMatchObject({ status: 'idle', evidence: '' });
     expect(updated.wallet).toEqual(original.wallet);
     expect(updated.rewardLedger).toEqual(original.rewardLedger);
+    expect(updated.schedules?.['2026-10-16'].items[0]).toMatchObject({ taskId: replacement!.id, deliverable: replacement!.deliverable });
     expect(learningStateSchema.safeParse(updated).success).toBe(true);
   });
 });

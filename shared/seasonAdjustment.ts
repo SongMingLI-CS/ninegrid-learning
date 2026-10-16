@@ -1,4 +1,5 @@
 import type { Campaign, LearningState, Stage, Task } from './types';
+import { analyzeCurriculumGoalScope } from './curriculum';
 
 export type SeasonGoalAdjustmentInput = { goal: string; desiredArtifact: string };
 export type SeasonGoalAdjustmentPreviewTask = {
@@ -6,9 +7,10 @@ export type SeasonGoalAdjustmentPreviewTask = {
   title: string;
   stageId: string;
   stageTitle: string;
-  action: 'keep' | 'replace';
+  action: 'keep' | 'replace' | 'review' | 'blocked';
   originalTaskDisposition?: 'move-to-optional-branch';
   reason: string;
+  evidence?: string[];
   minutes: number;
   preservesEvidence: true;
   replacement?: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance' | 'deliverable' | 'minutes'>;
@@ -24,6 +26,7 @@ export type SeasonGoalAdjustmentPreviewStage = {
 };
 export type SeasonGoalAdjustmentPreview = {
   previewId: string;
+  baseRevision?: number;
   campaignId: string;
   goal: string;
   desiredArtifact: string;
@@ -33,19 +36,16 @@ export type SeasonGoalAdjustmentPreview = {
   notice: string;
 };
 
-const programmingPattern = /\b(?:python|numpy|script|timer|deploy|deployment|environment|code|coding|programming|software|tool)\b|运行环境|脚本|计时器|部署|代码|编程|开发工具|小工具|工具(?:[：:]|数据化|反馈(?:闭环)?|构建|打包|部署|开发|骨架|逻辑|依赖固定)/i;
 const languageGoalPattern = /雅思|ielts|英语|english|听力|口语|阅读|写作|语言能力/i;
 const explicitProgrammingPattern = /学习(?:编程|python|numpy|开发)|同时.{0,8}(?:编程|开发工具)|编写.{0,12}(?:应用|程序|脚本|工具)|build.{0,20}(?:app|tool|software|script)/i;
 
 function fingerprint(value: unknown): string {
   const input = JSON.stringify(value);
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) hash = Math.imul(hash ^ input.charCodeAt(index), 16777619);
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-function isProgrammingTask(task: Task): boolean {
-  return programmingPattern.test([task.title, task.brief, task.deliverable ?? '', task.acceptance, ...task.steps].join(' '));
+  return [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35].map(seed => {
+    let hash = seed;
+    for (let index = 0; index < input.length; index += 1) hash = Math.imul(hash ^ input.charCodeAt(index), 16777619);
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }).join('');
 }
 
 function isLanguageGoal(goal: string): boolean { return languageGoalPattern.test(goal); }
@@ -62,8 +62,7 @@ function targetSchedule(state: LearningState, targetText: string): { days: numbe
   };
 }
 
-function languageStageChange(stage: Stage, stageIndex: number, stageCount: number): SeasonGoalAdjustmentPreviewStage | undefined {
-  if (!programmingPattern.test(`${stage.title} ${stage.description}`)) return undefined;
+function languageStageChange(stage: Stage, stageIndex: number, stageCount: number, finding: string): SeasonGoalAdjustmentPreviewStage {
   const cleanedTitle = stage.title
     .replace(/(?:最小)?(?:小工具|工具)(?:数据化|反馈(?:闭环)?|数据建模|反馈生成|打包(?:与依赖固定)?|依赖固定|骨架)?/gi, '')
     .replace(/(?:应用|软件|脚本|计时器|开发|编程|代码|部署|运行环境)(?:骨架|逻辑|记录|开发|部署|阶段)?/gi, '')
@@ -83,7 +82,7 @@ function languageStageChange(stage: Stage, stageIndex: number, stageCount: numbe
     titleAfter,
     descriptionBefore: stage.description,
     descriptionAfter,
-    reason: '阶段名称或说明仍包含工具开发内容；雅思四科训练应作为本阶段核心。',
+    reason: `${finding}；建议将阶段主旨收回到雅思四科训练。`,
   };
 }
 
@@ -108,6 +107,9 @@ function buildReplacement(campaign: Campaign, stageId: string, task: Task, index
   const objectiveId = `${id}_objective`;
   return {
     id, title: activity.title, brief: activity.brief, kind: task.kind, minutes: task.minutes, xp: 0,
+    ...(task.goalCapabilityIds ? { goalCapabilityIds: task.goalCapabilityIds } : {}),
+    ...(task.goalRelevance ? { goalRelevance: `该练习直接支持“${targetGoal}”中的${skill}能力，并保留可核对的作答证据。` } : {}),
+    action: activity.brief,
     prerequisites: [], objectives: [{ id: objectiveId, text: activity.objective }], curiosity: `怎样把这项英语能力迁移到新的材料中？`,
     steps: activity.steps, acceptance: activity.acceptance, recallQuestion: activity.recall,
     hint: '先确认题目要求，再组织答案并用材料或具体例子支撑。', hints: ['先用自己的话确定题目要你完成什么。', '检查答案是否包含要求的证据和解释。'],
@@ -116,70 +118,91 @@ function buildReplacement(campaign: Campaign, stageId: string, task: Task, index
   };
 }
 
-function eligibleReplacements(state: LearningState, targetGoal = state.campaign.goal, explicitGoal = targetGoal): Map<string, { stageIndex: number; task: Task; replacement: Task }> {
+function eligibleReplacements(state: LearningState, targetGoal: string, explicitGoal: string, findings: ReturnType<typeof analyzeCurriculumGoalScope>): Map<string, { stageIndex: number; task: Task; replacement: Task }> {
   const { campaign } = state;
   const shouldReplace = isLanguageGoal(targetGoal) && !explicitProgrammingPattern.test(explicitGoal);
   const replacements = new Map<string, { stageIndex: number; task: Task; replacement: Task }>();
   if (!shouldReplace) return replacements;
+  const blockingTaskIds = new Set(findings.filter(item => item.severity === 'blocking' && item.taskId).map(item => item.taskId!));
   campaign.stages.forEach((stage, stageIndex) => {
     let replacementIndex = 0;
     const mainlineIds = new Set(stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id));
     for (const task of stage.tasks) {
-      if (!mainlineIds.has(task.id) || !isProgrammingTask(task)) continue;
+      if (!mainlineIds.has(task.id) || !blockingTaskIds.has(task.id)) continue;
       replacements.set(task.id, { stageIndex, task, replacement: buildReplacement(campaign, stage.id, task, replacementIndex++, targetGoal) });
     }
   });
   return replacements;
 }
 
-export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: SeasonGoalAdjustmentInput): SeasonGoalAdjustmentPreview {
+export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: SeasonGoalAdjustmentInput, options: { baseRevision?: number } = {}): SeasonGoalAdjustmentPreview {
   const goal = input.goal.trim();
   const desiredArtifact = input.desiredArtifact.trim();
   if (!goal || !desiredArtifact) throw new Error('请填写学习目标和最终成果。');
   const targetText = `${goal}\n${desiredArtifact}`;
   const schedule = targetSchedule(state, targetText);
-  const replacements = eligibleReplacements(state, targetText, goal);
-  const stageChanges = isLanguageGoal(targetText) && !explicitProgrammingPattern.test(goal)
-    ? state.campaign.stages.flatMap((stage, index) => {
-      const change = languageStageChange(stage, index, state.campaign.stages.length);
-      return change ? [change] : [];
-    })
+  const projectedCampaign: Campaign = { ...state.campaign, goal, desiredArtifact, ultimateReward: desiredArtifact };
+  const scopeFindings = analyzeCurriculumGoalScope(projectedCampaign, { goal, desiredArtifact, ultimateReward: desiredArtifact });
+  const replacements = eligibleReplacements(state, targetText, goal, scopeFindings);
+  const isLanguageAdjustment = isLanguageGoal(targetText) && !explicitProgrammingPattern.test(goal);
+  const stageFindingById = new Map<string, string>();
+  for (const finding of scopeFindings) {
+    if (finding.severity === 'review' && !finding.taskId) stageFindingById.set(finding.stageId, finding.reason);
+    if (finding.severity === 'blocking' && finding.taskId) stageFindingById.set(finding.stageId, '本阶段存在明确偏离目标的必需主线任务，阶段名称和说明需要同步反映调整后的训练重点。');
+  }
+  const stageChanges = isLanguageAdjustment
+    ? state.campaign.stages.flatMap((stage, index) => stageFindingById.has(stage.id)
+      ? [languageStageChange(stage, index, state.campaign.stages.length, stageFindingById.get(stage.id)!)]
+      : [])
     : [];
   const allTasks = state.campaign.stages.flatMap((stage, stageIndex) => {
     const mainline = new Set(stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id));
     return stage.tasks.filter(task => mainline.has(task.id)).map(task => ({ stageIndex, task }));
   });
+  const allTaskRows = state.campaign.stages.flatMap(stage => stage.tasks.map(task => ({ stageId: stage.id, task })));
+  const findingByTaskId = new Map(scopeFindings.filter(item => item.taskId).map(item => [item.taskId!, item]));
   const tasks = allTasks.map(({ stageIndex, task }): SeasonGoalAdjustmentPreviewTask => {
     const stage = state.campaign.stages[stageIndex];
     const match = replacements.get(task.id);
-    const dependentTasks = allTasks.filter(item => item.task.prerequisites.includes(task.id) || (item.task.unlockAfter ?? []).includes(task.id));
+    const finding = findingByTaskId.get(task.id);
+    const needsReview = Boolean(finding && !match);
+    const dependentTasks = allTaskRows.filter(item => item.task.prerequisites.includes(task.id) || (item.task.unlockAfter ?? []).includes(task.id));
     return {
       taskId: task.id, title: task.title, stageId: stage.id, stageTitle: stage.title,
-      action: match ? 'replace' : 'keep',
+      action: match ? 'replace' : finding?.severity === 'blocking' ? 'blocked' : needsReview ? 'review' : 'keep',
       ...(match ? { originalTaskDisposition: 'move-to-optional-branch' as const } : {}),
-      reason: match ? '该主线任务要求脚本、开发或部署，而当前目标是雅思语言训练；原任务将保留为可选支线。' : '与新的学习目标一致，继续保留为主线任务。',
+      reason: match ? `按目标关联校验，该主线任务的必需交付偏离雅思能力训练；原任务保留为可选支线。${finding?.reason ?? ''}` : finding?.severity === 'blocking' ? `该必需主线任务明确偏离新目标，当前没有安全的目标内替代任务，因此不能应用此预览。${finding.reason}` : needsReview ? finding!.reason : '任务行动、交付物和验收没有发现明确的目标外必需内容；保留主线。',
+      ...(finding?.evidence?.length ? { evidence: finding.evidence } : {}),
       minutes: task.minutes, preservesEvidence: true,
       ...(match ? { replacement: { id: match.replacement.id, title: match.replacement.title, brief: match.replacement.brief, acceptance: match.replacement.acceptance, deliverable: match.replacement.deliverable ?? '', minutes: match.replacement.minutes } } : {}),
       dependencyChanges: match ? dependentTasks.map(item => item.task.title) : [],
     };
   });
   const before = allTasks.reduce((sum, item) => sum + item.task.minutes, 0);
+  const after = tasks.reduce((sum, item) => sum + (item.action === 'replace' ? item.replacement!.minutes : item.minutes), 0);
   const moved = [...replacements.values()].reduce((sum, item) => sum + item.task.minutes, 0);
+  const budget = { mainlineMinutesBefore: before, mainlineMinutesAfter: after, movedToOptionalMinutes: moved, dailyMinutesBefore: state.campaign.dailyMinutes, dailyMinutes: schedule.dailyMinutes, daysBefore: state.campaign.days, days: schedule.days };
+  const plan = { campaignId: state.campaign.id, baseRevision: options.baseRevision, goal, desiredArtifact, stageChanges, tasks, budget };
   return {
-    previewId: fingerprint({ campaignId: state.campaign.id, input: { goal, desiredArtifact }, schedule, revisionData: state.campaign.stages.map(stage => [stage.title, stage.description, stage.tasks.map(task => [task.id, task.title, task.minutes, task.prerequisites])]) }),
-    campaignId: state.campaign.id, goal, desiredArtifact, stageChanges, tasks,
-    budget: { mainlineMinutesBefore: before, mainlineMinutesAfter: before, movedToOptionalMinutes: moved, dailyMinutesBefore: state.campaign.dailyMinutes, dailyMinutes: schedule.dailyMinutes, daysBefore: state.campaign.days, days: schedule.days },
-    notice: replacements.size || stageChanges.length || schedule.days !== state.campaign.days || schedule.dailyMinutes !== state.campaign.dailyMinutes
-      ? `预览将修正 ${stageChanges.length} 个阶段信息、替换 ${replacements.size} 个偏离目标的主线任务，并按目标调整周期与每日预算；旧答案、证据、评价和奖励流水保留，新任务不继承旧评价或重复发奖。`
-      : '当前阶段、任务和预算已与新目标一致；本次只更新学习目标和最终成果描述。',
+    previewId: fingerprint({ state, plan }), baseRevision: options.baseRevision,
+    campaignId: state.campaign.id, goal, desiredArtifact, stageChanges, tasks, budget,
+    notice: tasks.some(item => item.action === 'blocked')
+      ? `有 ${tasks.filter(item => item.action === 'blocked').length} 项明确偏离新目标的必需任务尚无安全替代内容；此预览不能应用。请先重新生成目标内任务，再生成调整预览。其余预览仍绑定当前赛季版本。`
+      : replacements.size || stageChanges.length || schedule.days !== state.campaign.days || schedule.dailyMinutes !== state.campaign.dailyMinutes
+      ? `预览将修正 ${stageChanges.length} 个阶段信息、替换 ${replacements.size} 个明确偏离目标的主线任务；另有 ${tasks.filter(item => item.action === 'review').length} 项需人工确认。预算按替换后任务分钟数重算。旧答案、证据、评价和奖励流水保留，新任务不继承旧评价或重复发奖。`
+      : tasks.some(item => item.action === 'review') ? `没有自动替换不确定任务；有 ${tasks.filter(item => item.action === 'review').length} 项需要逐项确认是否符合新目标。`
+        : '当前阶段、任务和预算与新目标一致；本次只更新学习目标和最终成果描述。',
   };
 }
 
 export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonGoalAdjustmentPreview): LearningState {
   if (preview.campaignId !== state.campaign.id) throw new Error('预览不属于当前赛季。');
-  const current = buildSeasonGoalAdjustmentPreview(state, preview);
+  const current = buildSeasonGoalAdjustmentPreview(state, preview, { baseRevision: preview.baseRevision });
   if (current.previewId !== preview.previewId) throw new Error('赛季内容已变化，请重新生成调整预览。');
-  const replacements = eligibleReplacements(state, `${preview.goal}\n${preview.desiredArtifact}`, preview.goal);
+  if (preview.tasks.some(item => item.action === 'blocked')) throw new Error('该调整含有明确偏离目标且尚无替代的主线任务；请重新生成任务后再创建预览。');
+  const projectedCampaign: Campaign = { ...state.campaign, goal: preview.goal, desiredArtifact: preview.desiredArtifact, ultimateReward: preview.desiredArtifact };
+  const scopeFindings = analyzeCurriculumGoalScope(projectedCampaign, { goal: preview.goal, desiredArtifact: preview.desiredArtifact, ultimateReward: preview.desiredArtifact });
+  const replacements = eligibleReplacements(state, `${preview.goal}\n${preview.desiredArtifact}`, preview.goal, scopeFindings);
   const next = structuredClone(state);
   const replacedIds = new Map([...replacements].map(([id, value]) => [id, value.replacement.id]));
   const branchIdsByStage = new Map<number, string[]>();
@@ -251,6 +274,17 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
     if (next.campaign.seasonalCollectible?.finalTaskId === oldId) next.campaign.seasonalCollectible.finalTaskId = newId;
     if (!newTask.objectives.length || oldTask.id === newTask.id) throw new Error('无法安全建立新的主线任务。');
     if (next.reviews.some(card => card.taskId === newId)) next.reviews = next.reviews.filter(card => card.taskId !== newId);
+  }
+  if (next.schedules) {
+    next.schedules = Object.fromEntries(Object.entries(next.schedules).map(([date, schedule]) => [date, {
+      ...schedule,
+      items: schedule.items.map(item => {
+        const replacementId = replacedIds.get(item.taskId);
+        if (!replacementId) return item;
+        const replacement = next.campaign.stages.flatMap(stage => stage.tasks).find(task => task.id === replacementId)!;
+        return { ...item, taskId: replacementId, deliverable: replacement.deliverable ?? replacement.acceptance };
+      }),
+    }]));
   }
   return next;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { NUMPY_DEMO_CAMPAIGN } from '../src/lib/numpyDemo';
 import { campaignSchema } from '../shared/schema';
-import { curriculumOutlineSchema, defaultArtifactForGoal, normalizeGeneratedCurriculumOutline, normalizeLegacyGoalArtifact, normalizeMissingStageGates, validateCurriculumOutline, validateCurriculumGoalScope } from '../shared/curriculum';
+import { analyzeCurriculumGoalScope, curriculumOutlineSchema, defaultArtifactForGoal, normalizeGeneratedCurriculumOutline, normalizeLegacyGoalArtifact, normalizeMissingStageGates, validateCurriculumOutline, validateCurriculumGoalScope } from '../shared/curriculum';
 import { planCurriculumBudget } from '../shared/curriculum';
 import { createProgressForCampaign, isTaskUnlocked, recordGridOutcome } from '../src/lib/engine';
 
@@ -45,6 +45,119 @@ describe('versioned NumPy curriculum', () => {
     expect(validateCurriculumGoalScope(mismatchedOutcome, input)).toBe(false);
 
     expect(validateCurriculumGoalScope(misplaced, { goal: '雅思备考，同时学习 Python 并开发计时工具' })).toBe(true);
+  });
+
+  it('checks task actions and deliverables instead of trusting a normal title or a technology keyword', () => {
+    const input = { goal: '雅思听说读写提升', desiredArtifact: '雅思四科练习证据与复盘' };
+    const hiddenBuild = outlineFixture() as any;
+    hiddenBuild.title = '雅思四科训练路线';
+    hiddenBuild.stages[0].title = '雅思阅读训练';
+    hiddenBuild.stages[0].description = '阅读英文材料并定位证据。';
+    Object.assign(hiddenBuild.stages[0].mainline[0], {
+      title: '雅思阅读：主旨与证据',
+      knowledgePoint: '主旨判断与证据定位',
+      action: '打包并部署一个可运行的雅思练习软件',
+      deliverable: '安装后可用的练习应用',
+      acceptance: '提交应用启动截图和依赖清单。',
+    });
+    expect(validateCurriculumGoalScope(hiddenBuild, input)).toBe(false);
+
+    const mathematicalTool = outlineFixture() as any;
+    mathematicalTool.stages[0].mainline[0].title = '线性代数：选择计算工具';
+    mathematicalTool.stages[0].mainline[0].knowledgePoint = '用矩阵工具核验特征值推导';
+    mathematicalTool.stages[0].mainline[0].action = '选择合适的数学工具计算小矩阵';
+    mathematicalTool.stages[0].mainline[0].deliverable = '计算过程、结果与手算核对';
+    expect(validateCurriculumGoalScope(mathematicalTool, { goal: '理解线性代数中的特征值', desiredArtifact: '一组有推导和验证的练习' })).toBe(true);
+
+    const numpyPractice = outlineFixture() as any;
+    numpyPractice.stages[0].mainline[0].title = 'NumPy：切片与布尔索引';
+    numpyPractice.stages[0].mainline[0].knowledgePoint = '数组索引';
+    numpyPractice.stages[0].mainline[0].action = '运行短代码观察切片结果并解释索引边界';
+    numpyPractice.stages[0].mainline[0].deliverable = '代码片段、输出和解释';
+    expect(validateCurriculumGoalScope(numpyPractice, { goal: '学习 NumPy 数组索引', desiredArtifact: '能够解释数组操作结果' })).toBe(true);
+
+    const contextualMention = outlineFixture() as any;
+    contextualMention.stages[0].mainline[0].title = '雅思阅读：识别论证结构';
+    contextualMention.stages[0].mainline[0].knowledgePoint = '阅读一段介绍软件依赖的文章';
+    contextualMention.stages[0].mainline[0].action = '标出作者主张和两条原文依据';
+    contextualMention.stages[0].mainline[0].deliverable = '主旨句与原文证据';
+    expect(validateCurriculumGoalScope(contextualMention, input)).toBe(true);
+
+    const ambiguousTool = outlineFixture() as any;
+    ambiguousTool.stages[0].mainline[0].title = '小工具数据建模与反馈生成';
+    ambiguousTool.stages[0].mainline[0].action = '分析一组练习结果并说明反馈依据';
+    ambiguousTool.stages[0].mainline[0].deliverable = '正确率变化和薄弱项分析';
+    const findings = analyzeCurriculumGoalScope(ambiguousTool, input);
+    expect(findings.some(item => item.severity === 'blocking')).toBe(false);
+    expect(findings.some(item => item.severity === 'review')).toBe(true);
+  });
+
+  it('distinguishes learning about software terms from being required to build software', () => {
+    const reading = outlineFixture() as any;
+    Object.assign(reading.stages[0].mainline[0], {
+      title: '雅思阅读：软件安装文章的观点与证据',
+      knowledgePoint: '作者如何说明应用安装步骤',
+      action: '阅读一段介绍软件安装方式的英文材料，概括作者观点并定位两处原文证据。',
+      deliverable: '英文主旨概括与两处定位证据',
+      acceptance: '主旨准确，且两处证据都来自材料并能支持判断。',
+    });
+
+    const findings = analyzeCurriculumGoalScope(reading, {
+      goal: '提升雅思阅读理解能力',
+      desiredArtifact: '可核对的阅读练习与证据档案',
+    });
+
+    expect(findings.some(item => item.severity === 'blocking')).toBe(false);
+  });
+
+  it('rejects a required website project for linear algebra while allowing a mathematical calculation tool', () => {
+    const webProject = outlineFixture() as any;
+    Object.assign(webProject.stages[0].mainline[0], {
+      title: '特征值结果与误差分析',
+      knowledgePoint: '数值误差与特征值',
+      action: '开发并部署一个特征值计算网页。',
+      deliverable: '可访问的特征值计算网站',
+      acceptance: '提交网页地址、源代码和部署截图。',
+    });
+    expect(validateCurriculumGoalScope(webProject, {
+      goal: '学习线性代数中的特征值',
+      desiredArtifact: '包含推导过程和核验结果的练习集',
+    })).toBe(false);
+
+    const numpyApp = outlineFixture() as any;
+    Object.assign(numpyApp.stages[0].mainline[0], {
+      title: '数组索引练习应用',
+      knowledgePoint: '数组切片与索引',
+      action: '构建并部署一个数组索引练习应用。',
+      deliverable: '可安装的练习应用与发布包',
+      acceptance: '提交安装包和发布链接。',
+    });
+    expect(validateCurriculumGoalScope(numpyApp, {
+      goal: '学习 NumPy 数组索引',
+      desiredArtifact: '可解释的索引练习与运行结果',
+    })).toBe(false);
+  });
+
+  it('rejects an explicit code-work task title in a non-programming course outside language learning too', () => {
+    const unrelatedTask = outlineFixture() as any;
+    unrelatedTask.stages[0].mainline[0].title = '运行环境与第一个脚本';
+    const findings = analyzeCurriculumGoalScope(unrelatedTask, {
+      goal: '学习中国古典诗词鉴赏',
+      desiredArtifact: '一份有文本证据的诗词分析作品集',
+    });
+
+    expect(findings.some(item => item.severity === 'blocking')).toBe(true);
+  });
+
+  it('does not treat a programming tool mentioned as an IELTS aid as a second programming subject', () => {
+    const outline = outlineFixture() as any;
+    outline.stages[0].mainline[0].title = '运行环境与第一个脚本';
+    const findings = analyzeCurriculumGoalScope(outline, {
+      goal: '雅思听说读写提升，日常用 Python 辅助整理错题。',
+      desiredArtifact: '四科练习证据与个人薄弱项复盘',
+    });
+
+    expect(findings.some(item => item.severity === 'blocking')).toBe(true);
   });
 
   it('provides four dense, verifiable stages with optional branches that do not gate progression', () => {
@@ -108,6 +221,23 @@ describe('versioned NumPy curriculum', () => {
     expect(curriculumOutlineSchema.safeParse(recoveredBranchOnlyGrid).success).toBe(false);
     const shortGoal = { ...underfilled, stages: [{ ...underfilled.stages[0], mainline: [underfilled.stages[0].mainline[0]], gateTaskId: underfilled.stages[0].mainline[0].id, branches: [] }], nineGrid: outline.nineGrid.map(grid => ({ ...grid, taskIds: [`s0-m0`] })), densityRationale:'仅有两天预算，本路线只保留最关键主线能力。' };
     expect(validateCurriculumOutline(shortGoal, { days:2, dailyMinutes:15 })).toBe(false);
+  });
+
+  it('requires version 5 task-to-capability links to point to declared goal outcomes', () => {
+    const outline = outlineFixture() as any;
+    outline.curriculumRulesVersion = 5;
+    outline.goalCapabilities = [{ id: 'reading', title: '雅思阅读证据定位', description: '概括主旨并以原文支持判断。' }];
+    for (const stage of outline.stages) for (const task of [...stage.mainline, ...stage.branches.flatMap((branch: any) => branch.tasks)]) {
+      task.goalCapabilityIds = ['missing-capability'];
+      task.goalRelevance = '该任务直接训练并留下可检查的目标能力证据。';
+      task.action = '完成一项有明确输入和检查步骤的练习。';
+      task.deliverable = '提交练习结果与理由。';
+      task.acceptance = '结果正确，且理由引用了对应证据。';
+    }
+    expect(validateCurriculumOutline(outline, { days: 28, dailyMinutes: 60 })).toBe(false);
+    for (const stage of outline.stages) for (const task of [...stage.mainline, ...stage.branches.flatMap((branch: any) => branch.tasks)]) task.goalCapabilityIds = ['reading'];
+    expect(validateCurriculumOutline(outline, { days: 28, dailyMinutes: 60 })).toBe(true);
+    expect(curriculumOutlineSchema.safeParse(outline).success).toBe(true);
   });
 
   it('binds a clearly named final synthesis task when the model invents a separate gate ID', () => {

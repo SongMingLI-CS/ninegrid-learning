@@ -190,13 +190,14 @@ describe('local entry and account feature discoverability', () => {
   });
 
   it('offers optional goal-level quick diagnostics and saves the self-report before generation', async () => {
+    let assessmentDraftRulesVersion: number | undefined;
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash', accounts: true, accountAvailability: 'enabled' }), { status: 200 });
       if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 'diagnostic-user', email: 'learner@example.test', createdAt: new Date().toISOString() } }), { status: 200 });
       if (url === '/api/seasons') return new Response(JSON.stringify({ seasons: [], currentSeasonId: null, selectionRevision: 0 }), { status: 200 });
       if (url.startsWith('/api/diagnostics?')) return new Response(JSON.stringify({ session: null }), { status: 200 });
-      if (url === '/api/generation-drafts' && init?.method === 'POST') return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: 1 } }), { status: 201 });
+      if (url === '/api/generation-drafts' && init?.method === 'POST') { assessmentDraftRulesVersion=JSON.parse(String(init.body)).rulesVersion; return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: 1 } }), { status: 201 }); }
       if (url === '/api/generation-drafts') return new Response(JSON.stringify({ drafts: [] }), { status: 200 });
       if (url === '/api/generation-drafts/diagnostic-draft' && init?.method === 'PATCH') { const revision=JSON.parse(String(init.body)).revision; return new Response(JSON.stringify({ draft: { id: 'diagnostic-draft', revision: revision + 1 } }), { status: 200 }); }
       return new Response(JSON.stringify({ error: 'unexpected request' }), { status: 404 });
@@ -208,6 +209,7 @@ describe('local entry and account feature discoverability', () => {
     fireEvent.change(screen.getByPlaceholderText(/例如：我刚学 NumPy/), { target: { value: goal } });
     fireEvent.click(screen.getByRole('button', { name: '开始基础自评' }));
     await screen.findAllByRole('button', { name: '能解释' });
+    expect(assessmentDraftRulesVersion).toBe(5);
     fireEvent.click(screen.getAllByRole('button', { name: '能解释' })[0]);
     fireEvent.change(screen.getByRole('textbox', { name: '1 自评回答' }), { target: { value: '我知道数组用整数位置选出一行。' } });
     expect(window.localStorage.getItem('ninegrid.quick-diagnostic.v1.diagnostic-user')).toContain(goal);
@@ -218,9 +220,11 @@ describe('local entry and account feature discoverability', () => {
 
   it('starts course generation when the learner chooses to skip the optional self-assessment', async () => {
     const requests: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    let outlineRulesVersion: number | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input); requests.push(url);
       if (url === '/api/status') return new Response(JSON.stringify({ configured: false, model: 'deepseek-flash' }), { status: 200 });
+      if (url === '/api/generation/outline') outlineRulesVersion=JSON.parse(String(init?.body)).rulesVersion;
       return new Response(JSON.stringify({ error: 'API_KEY_MISSING' }), { status: 503 });
     }));
     render(<App/>);
@@ -231,6 +235,7 @@ describe('local entry and account feature discoverability', () => {
     expect(await screen.findByRole('button', { name: '跳过基础自评，按当前基础生成' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '跳过基础自评，按当前基础生成' }));
     await waitFor(() => expect(requests).toContain('/api/generation/outline'));
+    expect(outlineRulesVersion).toBe(5);
   });
 
   it('starts a new diagnostic idempotency attempt when retry settings differ from the failed attempt', async () => {

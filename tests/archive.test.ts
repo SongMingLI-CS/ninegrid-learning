@@ -73,6 +73,19 @@ function state(): LearningState {
 }
 
 describe('server-owned learning archives', () => {
+  it('persists version 5 curriculum rule drafts and keeps their input fingerprint separate from legacy drafts', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const draftInput = { goal: '学习线性代数', level: '初学', days: 14, dailyMinutes: 30, ultimateReward: '解释特征值和特征向量' };
+    const v5 = await request(app).post('/api/generation-drafts').set('x-test-user', owner).send({ input: draftInput, rulesVersion: 5 }).expect(201);
+    expect(v5.body.draft.rulesVersion).toBe(5);
+    const stored = await pool.query('SELECT rules_version FROM generation_drafts WHERE id=$1', [v5.body.draft.id]);
+    expect(stored.rows[0].rules_version).toBe(5);
+    const resumed = await request(app).post('/api/generation-drafts').set('x-test-user', owner).send({ input: draftInput, rulesVersion: 5 }).expect(200);
+    expect(resumed.body).toMatchObject({ reused: true, draft: { id: v5.body.draft.id, rulesVersion: 5 } });
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
   it('requires an explicit preview revision before applying a season goal change and preserves the old learning/economic record', async () => {
     const { app, pool, directory } = await fixture();
     const owner = '00000000-0000-4000-8000-000000000001';
@@ -96,7 +109,14 @@ describe('server-owned learning archives', () => {
     const before = await pool.query('SELECT state,revision FROM seasons WHERE id=$1', [seasonId]);
     expect(before.rows[0].revision).toBe(1);
 
-    await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: '00000000' }).expect(409);
+    expect(preview.baseRevision).toBe(1);
+    const racedState = structuredClone(archive);
+    racedState.progress[task.id].evidence = 'Changed without a revision bump to exercise full-state preview binding.';
+    await pool.query('UPDATE seasons SET state=$1 WHERE id=$2', [JSON.stringify(racedState), seasonId]);
+    const stale = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId }).expect(409);
+    expect(stale.body.error).toBe('SEASON_PREVIEW_STALE');
+    await pool.query('UPDATE seasons SET state=$1 WHERE id=$2', [JSON.stringify(archive), seasonId]);
+    await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: '0'.repeat(32) }).expect(409);
     const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId }).expect(200);
     expect(applied.body.season.revision).toBe(2);
     expect(applied.body.season.state.campaign.goal).toBe(input.goal);
@@ -113,6 +133,25 @@ describe('server-owned learning archives', () => {
     expect(collectibleRule.rows[0].gate_task_ids).toContain(replacement.id);
     expect(collectibleRule.rows[0].gate_task_ids).not.toContain(task.id);
     expect((await pool.query('SELECT * FROM season_goal_adjustments WHERE season_id=$1', [seasonId])).rowCount).toBe(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('rejects a server-side adjustment when a clearly out-of-scope task has no supported replacement', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const seasonId = randomUUID();
+    const archive = state();
+    const task = archive.campaign.stages[0].tasks.find(item => (item.track ?? 'main') === 'main')!;
+    task.title = '运行环境与第一个脚本';
+    await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [seasonId, owner, archive.campaign.id, archive.campaign.title, JSON.stringify(archive)]);
+
+    const input = { revision: 1, goal: '学习中国古典诗词鉴赏', desiredArtifact: '一份包含文本证据的诗词分析作品集' };
+    const preview = await request(app).post(`/api/seasons/${seasonId}/goal-preview`).set('x-test-user', owner).send(input).expect(200);
+    expect(preview.body.preview.tasks.find((item: any) => item.taskId === task.id).action).toBe('blocked');
+    const denied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.body.preview.previewId }).expect(422);
+    expect(denied.body).toMatchObject({ error: 'SEASON_ADJUSTMENT_REQUIRES_REGENERATION', taskIds: expect.arrayContaining([task.id]) });
+    expect((await pool.query('SELECT revision,state FROM seasons WHERE id=$1', [seasonId])).rows[0]).toMatchObject({ revision: 1, state: archive });
+    expect((await pool.query('SELECT * FROM season_goal_adjustments WHERE season_id=$1', [seasonId])).rowCount).toBe(0);
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 

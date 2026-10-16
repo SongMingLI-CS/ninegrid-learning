@@ -7,6 +7,8 @@ const generated = {
   id: 'server-ignores-this', title: '路径追踪行动', subtitle: '从问题出发找到可运行的答案', goal: input.goal,
   level: input.level, days: 28, dailyMinutes: 45, ultimateReward: input.ultimateReward,
   createdAt: '2026-10-13T00:00:00.000Z', source: 'deepseek',
+  curriculumRulesVersion: 5,
+  goalCapabilities: [{ id: 'cap-file-paths', title: '路径与文件操作', description: '理解路径表示并完成安全文件操作。' }],
   nineGrid: Array.from({ length: 9 }, (_, i) => ({ id: 'grid' + i, title: '能力格' + i, ability: '可验证能力' + i, value: '可展示成果' + i, unlockTaskIds: ['t0'] })),
   stages: ['调查','实战','验收'].map((title, i) => ({ id: 's' + i, title, description: '通过验证进入下一阶段',
     mainlineTaskIds: ['t' + i], gateTaskIds: ['t' + i],
@@ -22,6 +24,7 @@ function mission(id: string, prerequisites: string[] = [], track: 'main' | 'bran
 function missionBase(id: string, prerequisites: string[] = []) {
   return {
     id, title: '调查变量与文件路径', brief: '通过可运行示例调查文件如何被表示。', kind: 'investigate', minutes: 20, xp: 100, prerequisites,
+    goalCapabilityIds: ['cap-file-paths'], goalRelevance: '该任务为文件整理工具提供必要的路径理解。', action: '检查两个文件路径并解释差异。', deliverable: '路径对比结果和说明。',
     objectives: [{ id: id + '-o', text: '输出两个文件的路径并解释差异' }], curiosity: '为什么路径不能被当成普通字符串随意拼接？',
     steps: ['执行一个路径示例', '更换文件名称', '用自己的话解释结果'], acceptance: '展示运行结果和解释',
     recallQuestion: '路径与文件内容有什么区别？', hint: '先区分位置与内容。', resources: [{ title: 'Python 文档', url: 'https://docs.python.org/3/' }],
@@ -187,14 +190,15 @@ describe('YouTube metadata search boundary', () => {
 });
 
 describe('curriculum orchestration endpoints', () => {
-  const shortInput = { ...input, days: 2, dailyMinutes: 15, sourceMaterial: 'NDARRAY NOTES: A nested list with two rows and three columns becomes shape (2, 3).\nINDEX NOTES: Integer row and column coordinates select one value.' };
+  const shortInput = { ...input, goal: 'Learn NumPy array shapes from Python nested lists.', level: 'Knows basic Python lists; new to NumPy.', ultimateReward: 'Explain and verify array dimensions.', desiredArtifact: 'A set of array-shape predictions with code evidence.', days: 2, dailyMinutes: 15, sourceMaterial: 'NDARRAY NOTES: A nested list with two rows and three columns becomes shape (2, 3).\nINDEX NOTES: Integer row and column coordinates select one value.' };
   const shortOutline = {
     title: 'Compact skills course', subtitle: 'A focused practice route', prerequisites: [], densityRationale: 'Two days of budget; focus on a single independently verifiable skill.',
+    curriculumRulesVersion: 5, goalCapabilities: [{ id: 'cap-array-shape', title: 'NumPy 数组形状', description: '从嵌套结构推断并解释数组维度。' }],
     seasonalCollectible: { name: '坐标校准章', story: '记录一次独立完成的数据定位成果。', appearance: '深色金属圆章，刻有抽象坐标纹路。', abilityOutcome: '独立完成并解释最终数据处理成果。' },
     stages: [
       { id: 'stage-one', title: 'Make and explain an array', description: 'Create and verify a small artifact.', gateTaskId: 'task-two', mainline: [
-        { id: 'task-one', title: 'Create one array', knowledgePoint: 'Construct an ndarray from nested data', minutes: 12, prerequisites: [] },
-        { id: 'task-two', title: 'Predict the shape', knowledgePoint: 'Connect nested dimensions to shape', minutes: 12, prerequisites: ['task-one'] },
+        { id: 'task-one', title: 'Create one array', knowledgePoint: 'Construct an ndarray from nested data', minutes: 12, prerequisites: [], goalCapabilityIds: ['cap-array-shape'], goalRelevance: '数组构造为形状推断提供直接输入。', action: '从给定嵌套列表创建 ndarray。', deliverable: 'ndarray 构造代码和结果。', acceptance: '结构与预期一致，并解释行列维度。' },
+        { id: 'task-two', title: 'Predict the shape', knowledgePoint: 'Connect nested dimensions to shape', minutes: 12, prerequisites: ['task-one'], goalCapabilityIds: ['cap-array-shape'], goalRelevance: '练习将输入结构映射到 NumPy shape。', action: '先预测再运行 shape 核对。', deliverable: '预测、输出与解释。', acceptance: '预测准确且解释每个维度的含义。' },
       ], branches: [] },
     ],
     nineGrid: Array.from({ length: 9 }, (_, i) => ({ id: `outcome-${i}`, title: `Outcome ${i}`, ability: 'Make and explain an array', value: 'A runnable array example', taskIds: ['task-one', 'task-two'] })),
@@ -242,7 +246,7 @@ describe('curriculum orchestration endpoints', () => {
     const app = createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
       const payload = JSON.parse(String(options?.body));
       const prompt = payload.messages[0].content as string;
-      if (prompt.includes('concise version-4 curriculum outline')) {
+      if (prompt.includes('Create a version-5 outline')) {
         calls.push('outline');
         expect(payload.max_tokens).toBe(8192);
         const context = JSON.parse(payload.messages[1].content);
@@ -267,7 +271,7 @@ describe('curriculum orchestration endpoints', () => {
     } });
     const outlineResponse = await request(app).post('/api/generation/outline').send({ input: { ...shortInput, quickDiagnostic: { version: 1, source: 'server-assessed', items: [{ id: 'diagnostic-concept', prompt: '解释核心概念', confidence: 'needs-practice' }, { id: 'diagnostic-code', prompt: '读一段代码', confidence: 'unknown' }, { id: 'diagnostic-prerequisite', prompt: '判断先修能力', confidence: 'known' }] } } });
     expect(outlineResponse.status).toBe(200);
-    expect(outlineResponse.body.curriculumRulesVersion).toBe(4);
+    expect(outlineResponse.body.curriculumRulesVersion).toBe(5);
     const stageResponse = await request(app).post('/api/generation/stage').send({ input: shortInput, outline: outlineResponse.body.outline, stageId: 'stage-one', chainId: 'stage-one-main', taskIds: ['task-one','task-two'] });
     expect(stageResponse.status).toBe(200);
     expect(stageResponse.body.generationState).toBe('complete');
@@ -279,7 +283,7 @@ describe('curriculum orchestration endpoints', () => {
     stageResponse.body.tasks[0].title = 'client cannot replace outline title';
     const finalResponse = await request(app).post('/api/generation/finalize').send({ input: shortInput, outline: outlineResponse.body.outline, stages: [{ id: 'stage-one', tasks: stageResponse.body.tasks }] });
     expect(finalResponse.status, JSON.stringify(finalResponse.body)).toBe(200);
-    expect(finalResponse.body.campaign.curriculumRulesVersion).toBe(4);
+    expect(finalResponse.body.campaign.curriculumRulesVersion).toBe(5);
     expect(finalResponse.body.campaign.seasonalCollectible.finalTaskId).toBe(finalResponse.body.campaign.stages.at(-1).gateTaskIds[0]);
     expect(finalResponse.body.campaign.seasonalCollectible.rewardKey).toMatch(/^[a-f0-9]{64}$/);
     const fieldInput = { ...shortInput, goal: 'Learn how to organize and audit a field medical supply inventory', desiredArtifact: 'A reconciled medical supply inventory and audit report' };
@@ -312,7 +316,27 @@ describe('curriculum orchestration endpoints', () => {
       ultimateReward: '把第一个真正能用的小工具部署起来',
     } });
     expect(prompt).toMatch(/Programming, scripts, app\/tool construction, and deployment may appear only in a clearly optional branch/i);
-    expect(response.status).toBe(422);
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.code).toBe('GOAL_SCOPE_MISMATCH');
+  });
+
+  it('rejects a detailed software deliverable added after an otherwise normal IELTS outline', async () => {
+    const outline = structuredClone(shortOutline);
+    outline.title = '雅思阅读短期训练';
+    outline.subtitle = '阅读材料并提交主旨和证据';
+    outline.stages[0].title = '雅思阅读';
+    outline.stages[0].description = '完成阅读理解和证据定位。';
+    outline.stages[0].mainline.forEach(task => { task.title = '雅思阅读：主旨与证据'; task.knowledgePoint = '主旨与证据定位'; });
+    outline.nineGrid.forEach(grid => { grid.title = '阅读成果'; grid.ability = '概括主旨并定位证据'; grid.value = '一份有依据的阅读练习'; });
+    const details = stageDetails(['task-one', 'task-two']);
+    details.tasks = details.tasks.map((task, index) => ({ ...task, title: '雅思阅读：主旨与证据', minutes: 12, xp: 0, prerequisites: index ? ['task-one'] : [], objectives: [{ id: `${task.id}-outcome`, text: task.deliverable }], unlockAfter: [], track: 'main', chainId: 'stage-one-main' }));
+    details.tasks[0] = { ...details.tasks[0], brief: '打包并部署一个可运行的雅思练习应用。', steps: ['配置运行环境和应用依赖。', '打包应用并部署到可用位置。'], acceptance: '提交应用启动截图和依赖清单。', deliverable: '安装后可运行的雅思练习软件。' };
+    const response = await request(createApp({ apiKey: '' })).post('/api/generation/finalize').send({
+      input: { ...shortInput, goal: '雅思阅读提升，练习主旨与证据定位', desiredArtifact: '一份有依据的雅思阅读练习档案' },
+      outline,
+      stages: [{ id: 'stage-one', tasks: details.tasks }],
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
     expect(response.body.code).toBe('GOAL_SCOPE_MISMATCH');
   });
 
@@ -343,7 +367,7 @@ describe('curriculum orchestration endpoints', () => {
     } })).post('/api/generation/stage').send({ input: shortInput, outline, stageId: 'S1', chainId: 'S1-main', taskIds: ['S1T1','S1T2'] });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.tasks.map((task: { id: string }) => task.id)).toEqual(['S1T1','S1T2']);
-    expect(res.body.tasks[0].acceptance).toBe('提交可运行代码。\n核对实际输出。');
+    expect(res.body.tasks[0].acceptance).toBe(shortOutline.stages[0].mainline[0].acceptance);
 
     const reordered = await request(createApp({ apiKey: 'test-only', fetchImpl: async (_url, options) => {
       const tasks = JSON.parse(JSON.parse(String(options?.body)).messages[1].content).stage.tasks;

@@ -534,13 +534,13 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const season=found.rows[0];if(!season){res.status(404).json({error:'NOT_FOUND'});return;}
       if(season.lifecycle_status!=='active'){res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       if(season.revision!==req.body.revision){res.status(409).json({error:'REVISION_CONFLICT',revision:season.revision});return;}
-      res.json({preview:buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact})});
+      res.json({preview:buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},{baseRevision:season.revision})});
     }catch(error){next(error);}
   });
 
   app.post('/api/seasons/:id/goal-adjustment', async(req,res,next)=>{
     const {revision,previewId}=req.body??{};
-    if(!idPattern.test(req.params.id)||!Number.isInteger(revision)||revision<1||typeof previewId!=='string'||!/^[a-f0-9]{8}$/.test(previewId)||typeof req.body?.goal!=='string'||typeof req.body?.desiredArtifact!=='string'){res.status(400).json({error:'INVALID_SEASON_GOAL'});return;}
+    if(!idPattern.test(req.params.id)||!Number.isInteger(revision)||revision<1||typeof previewId!=='string'||!/^[a-f0-9]{32}$/.test(previewId)||typeof req.body?.goal!=='string'||typeof req.body?.desiredArtifact!=='string'){res.status(400).json({error:'INVALID_SEASON_GOAL'});return;}
     const client=await pool.connect();
     try{
       await client.query('BEGIN');
@@ -549,8 +549,10 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const season=found.rows[0];if(!season){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}
       if(season.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       if(season.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',revision:season.revision});return;}
-      const preview=buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact});
+      const preview=buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},{baseRevision:revision});
       if(preview.previewId!==previewId){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE'});return;}
+      const blockedTaskIds=preview.tasks.filter(task=>task.action==='blocked').map(task=>task.taskId);
+      if(blockedTaskIds.length){await client.query('ROLLBACK');res.status(422).json({error:'SEASON_ADJUSTMENT_REQUIRES_REGENERATION',taskIds:blockedTaskIds});return;}
       const state=applySeasonGoalAdjustment(season.state,preview);
       const parsed=learningStateSchema.safeParse(state);
       if(!parsed.success){await client.query('ROLLBACK');res.status(422).json({error:'SEASON_ADJUSTMENT_INVALID'});return;}

@@ -24,6 +24,7 @@ export interface Task {
   acceptance: string; recallQuestion: string; hint: string; resources: Resource[];
   track?: LearningTrack; chainId?: string; unlockAfter?: string[]; reward?: RewardBundle;
   knowledgePoints?: string[]; knownBasis?: string; deliverable?: string; hints?: string[];
+  goalCapabilityIds?: string[]; goalRelevance?: string; action?: string;
   teaching?: LessonContent;
 }
 export interface TaskChain { id: string; title: string; track: LearningTrack; taskIds: string[]; completionReward?: RewardBundle }
@@ -35,6 +36,7 @@ export interface Campaign {
   desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
   quickDiagnostic?: GoalInput['quickDiagnostic'];
   curriculumRulesVersion?: number; densityRationale?: string;
+  goalCapabilities?: { id: string; title: string; description: string }[];
   seasonalCollectible?: {
     id: string; name: string; story: string; appearance: string; abilityOutcome: string;
     rewardKey: string; finalTaskId: string; displayValue: number; imageKey?: string;
