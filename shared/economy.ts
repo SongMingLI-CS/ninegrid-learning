@@ -55,6 +55,8 @@ export function poolExpectedRecovery(pool: RewardPoolEntry[]) { return pool.redu
   if (!rows.length) throw new Error(`Empty reward rarity: ${entry.rarity}`);
   return sum + entry.probability * rows.reduce((value, item) => value + item.sellPrice * entry.quantity, 0) / rows.length;
 }, 0); }
+// Free action success pays a fixed coin value equal to one tenth of the confidential pool's expected recovery.
+export const FREE_CHALLENGE_REWARD_COINS = Math.floor(poolExpectedRecovery(CHALLENGES.confidential.pool) / 10);
 function validatePool(id: string, pool: RewardPoolEntry[]) {
   if (Math.abs(poolTotals(pool) - 1) > 1e-12 || pool.some(entry => entry.probability < 0 || !Number.isFinite(entry.probability) || !Number.isInteger(entry.quantity) || entry.quantity < 1 || !COLLECTION_CATALOG.some(item => item.rarity === entry.rarity && isStandardPoolEligible(item)))) throw new Error(`Invalid probability configuration: ${id}`);
 }

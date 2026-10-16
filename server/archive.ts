@@ -2,18 +2,23 @@ import { createHash, randomInt, randomUUID } from 'node:crypto';
 import type { Express, Request } from 'express';
 import type { Pool } from 'pg';
 import { COLLECTION_CATALOG } from '../shared/catalog';
-import { BOXES, CHALLENGES, ECONOMY_VERSION, EFFECTIVE_REVIEW_COINS, STAGE_COMPLETION_COINS, chainCompletionCoins, isStandardPoolEligible, learningCoinsForMinutes, poolExpectedRecovery, poolTotals, rarityBoxItem, validateEconomy, type BoxId, type ChallengeTier, type RewardPoolEntry } from '../shared/economy';
+import { BOXES, CHALLENGES, ECONOMY_VERSION, EFFECTIVE_REVIEW_COINS, FREE_CHALLENGE_REWARD_COINS, STAGE_COMPLETION_COINS, chainCompletionCoins, isStandardPoolEligible, learningCoinsForMinutes, poolExpectedRecovery, poolTotals, rarityBoxItem, validateEconomy, type BoxId, type ChallengeTier, type RewardPoolEntry } from '../shared/economy';
+import { buildChallengeQuestionSet, calculateChallengeKd, ChallengeQuestionBankError, CHALLENGE_MODE_SETTINGS, type ChallengeMode } from '../shared/challengeRules';
+import { applySeasonGoalAdjustment, buildSeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
 import { evaluationSchema, learningStateSchema } from '../shared/schema';
 import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
 import { completeTask, currentTaskVerification, isTaskUnlocked, rateReview, recordGridOutcome, taskEvidenceText } from '../src/lib/engine';
 
-type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string; lifecycle_status?: 'active'|'paused'|'archived' };
+type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string; lifecycle_status?: 'active'|'paused'|'archived'|'deleted' };
 type Options = { pool: Pool };
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ownerOf = (req: Request) => (req.session as typeof req.session & { userId?: string }).userId;
 const profileAvatars=new Set(['','/assets/avatars/field.svg','/assets/avatars/compass.svg','/assets/avatars/signal.svg']);
 const publicSeason = (row: Row) => ({ id: row.id, campaignId: row.campaign_id, title: row.title, revision: row.revision, state: row.state, lifecycleStatus: row.lifecycle_status ?? 'active', createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() });
+const eligibleChallengeTasks = (row: Row) => row.state.campaign.stages.flatMap(stage => stage.tasks)
+  .filter(task => row.state.progress[task.id]?.status === 'completed' || isTaskUnlocked(row.state.campaign, row.state.progress, task.id))
+  .map(task => ({ ...task, lessonRevision: row.state.content?.[task.id]?.revision ?? task.teaching?.revision ?? 1 }));
 export function taskEvidence(state: LearningState, taskId: string): string {
   const progress = state.progress[taskId];
   if (!progress) return '';
@@ -189,41 +194,121 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); } finally { client.release(); }
   });
   app.get('/api/challenges', async (_req, res) => {
-    res.json({ version: ECONOMY_VERSION, tiers: Object.entries(CHALLENGES).map(([id, tier]) => ({ id, ...tier, rewardExpectedRecovery: poolExpectedRecovery(tier.pool), poolTotal: poolTotals(tier.pool) })) });
+    res.json({ version: ECONOMY_VERSION, tiers: Object.entries(CHALLENGE_MODE_SETTINGS).map(([id, setting]) => ({
+      id,
+      ...setting,
+      ...(id === 'free' ? { pool: [], poolTotal: 0, rewardCoins: FREE_CHALLENGE_REWARD_COINS, rewardExpectedRecovery: FREE_CHALLENGE_REWARD_COINS } : {
+        pool: CHALLENGES[id as ChallengeTier].pool,
+        poolTotal: poolTotals(CHALLENGES[id as ChallengeTier].pool),
+        rewardExpectedRecovery: poolExpectedRecovery(CHALLENGES[id as ChallengeTier].pool),
+      }),
+    })) });
   });
   app.get('/api/challenges/history', async (req,res,next) => {
-    try { const result=await pool.query('SELECT id,season_id,task_id,tier,status,entry_fee,prompt,evidence,evaluation,reward_item,reward_coins,draw_audit,pool_version,started_at,deadline_at,settled_at FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30',[ownerOf(req)]); res.json({challenges:result.rows}); } catch(error){next(error);}
+    try {
+      const [result,stats]=await Promise.all([
+        pool.query('SELECT id,season_id,task_id,tier,status,entry_fee,prompt,evidence,evaluation,reward_item,reward_coins,draw_audit,pool_version,started_at,deadline_at,settled_at,question_count,pass_threshold,questions,answers,correct_answers,question_set_version FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30',[ownerOf(req)]),
+        pool.query<{tier:ChallengeMode;status:string;correct_answers:number}>('SELECT tier,status,correct_answers FROM challenge_runs WHERE user_id=$1',[ownerOf(req)]),
+      ]);
+      res.json({challenges:result.rows,kdStats:calculateChallengeKd(stats.rows.map(row=>({tier:row.tier,status:row.status as any,correctAnswers:Number(row.correct_answers)})))});
+    } catch(error){next(error);}
+  });
+  app.get('/api/challenges/availability', async (req,res,next) => {
+    const seasonId=typeof req.query.seasonId==='string'?req.query.seasonId:'';
+    if(!idPattern.test(seasonId)){res.status(400).json({error:'INVALID_SEASON_ID'});return;}
+    try{
+      const found=await pool.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2',[seasonId,ownerOf(req)]);
+      const row=found.rows[0];if(!row){res.status(404).json({error:'NOT_FOUND'});return;}
+      if(row.lifecycle_status!=='active'){res.status(409).json({error:row.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
+      const candidates=eligibleChallengeTasks(row);
+      const distinct=new Set(candidates.flatMap(task=>task.objectives.map(objective=>`${row.campaign_id}:${task.id}:${objective.id}:r${task.lessonRevision??1}`)));
+      // A challenge can always rotate through alternate prompts and repeat them after the rotation.
+      // Keep this count about eligible learning objectives, not historical exposure rows.
+      const available=distinct.size;
+      res.json({seasonId,byMode:Object.fromEntries(Object.entries(CHALLENGE_MODE_SETTINGS).map(([mode,setting])=>[mode,{available,required:setting.questionCount,ready:available>=setting.questionCount}]))});
+    }catch(error){next(error);}
   });
   app.post('/api/challenges/enter', async (req, res, next) => {
-    const { seasonId, taskId, tier: tierId } = req.body ?? {};
-    if (typeof seasonId !== 'string' || !idPattern.test(seasonId) || typeof taskId !== 'string' || taskId.length > 128 || !Object.hasOwn(CHALLENGES, tierId)) { res.status(400).json({ error: 'INVALID_CHALLENGE' }); return; }
-    const tier = CHALLENGES[tierId as ChallengeTier]; const client = await pool.connect();
+    const { seasonId, taskId, tier: tierId, operationId } = req.body ?? {};
+    if (typeof seasonId !== 'string' || !idPattern.test(seasonId) || typeof taskId !== 'string' || taskId.length > 128 || !idPattern.test(operationId ?? '') || !Object.hasOwn(CHALLENGE_MODE_SETTINGS, tierId)) { res.status(400).json({ error: 'INVALID_CHALLENGE' }); return; }
+    const mode = tierId as ChallengeMode; const setting = CHALLENGE_MODE_SETTINGS[mode]; const client = await pool.connect();
     try {
       await client.query('BEGIN'); await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [ownerOf(req)]);
+      const prior=await client.query<any>('SELECT * FROM challenge_runs WHERE user_id=$1 AND entry_operation_id=$2 FOR UPDATE',[ownerOf(req),operationId]);
+      if(prior.rows[0]){
+        const previous=prior.rows[0];
+        if(previous.season_id!==seasonId||previous.task_id!==taskId||previous.tier!==mode){await client.query('ROLLBACK');res.status(409).json({error:'CHALLENGE_ENTRY_IDEMPOTENCY_CONFLICT'});return;}
+        const wallet=await client.query<{balance:string|number}>('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\'',[ownerOf(req)]);
+        await client.query('COMMIT');
+        res.status(200).json({challenge:{id:previous.id,seasonId:previous.season_id,taskId:previous.task_id,tier:previous.tier,title:setting.title,status:previous.status,entryFee:Number(previous.entry_fee),prompt:previous.prompt,deadlineAt:new Date(previous.deadline_at).toISOString(),hintLimit:setting.hintLimit,questionCount:Number(previous.question_count),correctToPass:Number(previous.pass_threshold),questions:previous.questions,answers:previous.answers,evaluation:previous.evaluation,correctAnswers:Number(previous.correct_answers??0),rewardItem:previous.reward_item,paid:setting.paid,difficulty:setting.difficulty},balance:Number(wallet.rows[0]?.balance??0),idempotent:true});return;
+      }
       const season = await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE', [seasonId, ownerOf(req)]);
       const row = season.rows[0]; const task = row?.state.campaign.stages.flatMap(stage => stage.tasks).find(item => item.id === taskId);
       if (!row || !task) { await client.query('ROLLBACK'); res.status(404).json({ error: 'TASK_NOT_FOUND' }); return; }
       if(row.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:row.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
-      if (row.state.progress[taskId]?.status === 'completed' || !isTaskUnlocked(row.state.campaign, row.state.progress, taskId)) { await client.query('ROLLBACK'); res.status(409).json({ error: 'CHALLENGE_TASK_NOT_AVAILABLE' }); return; }
-      const recent = await client.query('SELECT 1 FROM challenge_runs WHERE user_id=$1 AND started_at>now()-interval \'24 hours\' AND status IN (\'active\',\'evaluating\',\'passed\',\'failed\',\'abandoned\') LIMIT 1', [ownerOf(req)]);
-      if (recent.rowCount) { await client.query('ROLLBACK'); res.status(429).json({ error: 'DAILY_CHALLENGE_LIMIT' }); return; }
-      const debit = await client.query(`UPDATE wallets SET balance=balance-$1 WHERE user_id=$2 AND currency='learning-coin' AND balance >= $1 RETURNING balance`, [tier.entryFee, ownerOf(req)]);
-      if (!debit.rowCount) { await client.query('ROLLBACK'); res.status(409).json({ error: 'INSUFFICIENT_BALANCE', required: tier.entryFee }); return; }
-      const id = randomUUID(); const deadline = new Date(Date.now() + (tier.minutes * 2 + 15) * 60_000);
-      const prompt = `基于已学习任务「${task.title}」独立完成挑战。\n\n任务目标：${task.brief}\n\n提交可检查的解释、步骤或作品证据；先提交，再显示标准。`;
-      await client.query('INSERT INTO challenge_runs(id,user_id,season_id,task_id,tier,status,entry_fee,prompt,deadline_at) VALUES($1,$2,$3,$4,$5,\'active\',$6,$7,$8)', [id, ownerOf(req), seasonId, taskId, tierId, tier.entryFee, prompt, deadline]);
-      await client.query('COMMIT'); res.status(201).json({ challenge: { id, seasonId, taskId, tier: tierId, title: tier.title, status: 'active', entryFee: tier.entryFee, prompt, acceptance: task.acceptance, deadlineAt: deadline.toISOString(), hintLimit: tier.hintLimit }, balance: Number(debit.rows[0].balance) });
+      if (row.state.progress[taskId]?.status !== 'completed' && !isTaskUnlocked(row.state.campaign, row.state.progress, taskId)) { await client.query('ROLLBACK'); res.status(409).json({ error: 'CHALLENGE_TASK_NOT_AVAILABLE' }); return; }
+      if (setting.paid) {
+        const activePaid = await client.query<{id:string}>('SELECT id FROM challenge_runs WHERE user_id=$1 AND entry_fee>0 AND status IN (\'active\',\'evaluating\',\'ready_to_extract\') ORDER BY started_at LIMIT 1', [ownerOf(req)]);
+        if (activePaid.rowCount) { await client.query('ROLLBACK'); res.status(409).json({ error: 'PAID_CHALLENGE_IN_PROGRESS', challengeId: activePaid.rows[0].id }); return; }
+      }
+      if(!setting.paid){const activeFree=await client.query<{id:string}>('SELECT id FROM challenge_runs WHERE user_id=$1 AND tier=\'free\' AND status IN (\'active\',\'evaluating\',\'ready_to_extract\') ORDER BY started_at LIMIT 1',[ownerOf(req)]);if(activeFree.rowCount){await client.query('ROLLBACK');res.status(409).json({error:'FREE_CHALLENGE_IN_PROGRESS',challengeId:activeFree.rows[0].id});return;}}
+      const eligibleTasks = eligibleChallengeTasks(row);
+      const exposureRows=await client.query<{question_id:string}>('SELECT question_id FROM challenge_question_exposures WHERE user_id=$1',[ownerOf(req)]);
+      const excludedQuestionIds=new Set(exposureRows.rows.map(item=>item.question_id));
+      let questions;
+      try { questions = buildChallengeQuestionSet({ tier: mode, namespace: row.campaign_id, variantSeed: operationId, tasks: eligibleTasks, focusTaskId: taskId, excludedQuestionIds }); }
+      catch (error) {
+        if (error instanceof ChallengeQuestionBankError) { await client.query('ROLLBACK'); res.status(409).json({ error: 'CHALLENGE_QUESTION_BANK_INSUFFICIENT', available: error.available, required: error.required }); return; }
+        throw error;
+      }
+      let balance = 0;
+      if (setting.paid) {
+        const wallet = await client.query<{balance:string|number}>('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\' FOR UPDATE', [ownerOf(req)]);
+        const available = Number(wallet.rows[0]?.balance ?? 0);
+        if (!Number.isSafeInteger(available) || available < setting.entryFee) { await client.query('ROLLBACK'); res.status(409).json({ error: 'INSUFFICIENT_BALANCE', required: setting.entryFee }); return; }
+        const debit = await client.query<{balance:string|number}>(`UPDATE wallets SET balance=$1 WHERE user_id=$2 AND currency='learning-coin' AND balance=$3 RETURNING balance`, [available - setting.entryFee, ownerOf(req), available]);
+        if (!debit.rowCount) { await client.query('ROLLBACK'); res.status(409).json({ error: 'WALLET_CHANGED', required: setting.entryFee }); return; }
+        balance = Number(debit.rows[0].balance);
+      } else {
+        const wallet = await client.query<{balance:string|number}>('SELECT balance FROM wallets WHERE user_id=$1 AND currency=\'learning-coin\'', [ownerOf(req)]);
+        balance = Number(wallet.rows[0]?.balance ?? 0);
+      }
+      const id = randomUUID(); const deadline = new Date(Date.now() + (setting.minutes * 2 + 15) * 60_000);
+      const prompt = `${setting.title} · ${questions.length} 题\n${setting.difficulty}\n围绕赛季「${row.title}」的已解锁目标完成本局；每题单独作答，结算后查看逐题反馈。`;
+      const answers = questions.map(question => ({ questionId: question.id, answer: '' }));
+      const questionSetVersion = `delta-challenge-v4-${row.campaign_id}-season-rev-${row.revision}`;
+      await client.query(`INSERT INTO challenge_runs(id,user_id,season_id,task_id,tier,status,entry_fee,prompt,deadline_at,question_count,pass_threshold,questions,answers,question_set_version,entry_operation_id)
+        VALUES($1,$2,$3,$4,$5,'active',$6,$7,$8,$9,$10,$11,$12,$13,$14)`, [id, ownerOf(req), seasonId, taskId, mode, setting.entryFee, prompt, deadline, setting.questionCount, setting.correctToPass, JSON.stringify(questions), JSON.stringify(answers), questionSetVersion,operationId]);
+      for(const question of questions) await client.query('INSERT INTO challenge_question_exposures(user_id,question_id,first_run_id) VALUES($1,$2,$3) ON CONFLICT(user_id,question_id) DO NOTHING',[ownerOf(req),question.id,id]);
+      await client.query('COMMIT'); res.status(201).json({ challenge: { id, seasonId, taskId, tier: mode, title: setting.title, status: 'active', entryFee: setting.entryFee, prompt, acceptance: task.acceptance, deadlineAt: deadline.toISOString(), hintLimit: setting.hintLimit, questionCount: setting.questionCount, correctToPass: setting.correctToPass, questions, answers, paid: setting.paid, difficulty: setting.difficulty }, balance });
     } catch (error) { await client.query('ROLLBACK').catch(() => undefined); next(error); } finally { client.release(); }
+  });
+  app.put('/api/challenges/:id/answers', async(req,res,next)=>{
+    if(!idPattern.test(req.params.id)||!Array.isArray(req.body?.answers)||req.body.answers.length>15||req.body.answers.some((item:any)=>!item||typeof item.questionId!=='string'||typeof item.answer!=='string'||item.answer.length>20_000||!Number.isInteger(item.hintLevelsUsed??0)||(item.hintLevelsUsed??0)<0||(item.hintLevelsUsed??0)>5)){res.status(400).json({error:'INVALID_CHALLENGE_ANSWERS'});return;}
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      const found=await client.query<{status:string;questions:any;tier:ChallengeMode}>('SELECT status,questions,tier FROM challenge_runs WHERE id=$1 AND user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
+      const row=found.rows[0];if(!row){await client.query('ROLLBACK');res.status(404).json({error:'CHALLENGE_NOT_FOUND'});return;}
+      if(row.status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:'CHALLENGE_NOT_ACTIVE'});return;}
+      const questions=Array.isArray(row.questions)?row.questions:[];const knownIds=new Set(questions.map(question=>question.id));const seen=new Set<string>();
+      if(req.body.answers.some((item:any)=>(item.hintLevelsUsed??0)>CHALLENGE_MODE_SETTINGS[row.tier].hintLimit)){await client.query('ROLLBACK');res.status(400).json({error:'CHALLENGE_HINT_LIMIT_EXCEEDED'});return;}
+      for(const item of req.body.answers){if(!knownIds.has(item.questionId)||seen.has(item.questionId)){await client.query('ROLLBACK');res.status(400).json({error:'INVALID_CHALLENGE_ANSWERS'});return;}seen.add(item.questionId);}
+      const answerMap=new Map(req.body.answers.map((item:any)=>[item.questionId,{questionId:item.questionId,answer:item.answer,hintLevelsUsed:item.hintLevelsUsed??0}]));
+      const answers=questions.map(question=>answerMap.get(question.id)??{questionId:question.id,answer:'',hintLevelsUsed:0});
+      await client.query('UPDATE challenge_runs SET answers=$1::jsonb,evidence=$2 WHERE id=$3',[JSON.stringify(answers),JSON.stringify(answers),req.params.id]);
+      await client.query('COMMIT');res.json({challengeId:req.params.id,answers,savedAt:new Date().toISOString()});
+    }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
   app.post('/api/challenges/:id/abandon', async (req, res, next) => {
     if (!idPattern.test(req.params.id)) { res.status(400).json({ error: 'INVALID_CHALLENGE_ID' }); return; }
-    try { const result = await pool.query(`UPDATE challenge_runs SET status='abandoned',settled_at=now() WHERE id=$1 AND user_id=$2 AND status='active' RETURNING id,status,entry_fee`, [req.params.id, ownerOf(req)]); if (!result.rowCount) { res.status(409).json({ error: 'CHALLENGE_NOT_ACTIVE' }); return; } res.json({ challenge: result.rows[0], refunded: false }); }
+    try { const result = await pool.query(`UPDATE challenge_runs SET status='abandoned',settled_at=now() WHERE id=$1 AND user_id=$2 AND status IN ('active','ready_to_extract') RETURNING id,status,entry_fee`, [req.params.id, ownerOf(req)]); if (!result.rowCount) { res.status(409).json({ error: 'CHALLENGE_NOT_ACTIVE' }); return; } res.json({ challenge: result.rows[0], refunded: false }); }
     catch (error) { next(error); }
   });
   app.get('/api/profile', async (req, res, next) => {
     try {
       const userId = ownerOf(req);
-      const [user, profile, seasons, wallet, items, rewards, challenges, seasonalCollectibles, currentSelection] = await Promise.all([
+      const [user, profile, seasons, wallet, items, rewards, challenges, challengeStatsRows, seasonalCollectibles, currentSelection] = await Promise.all([
         pool.query('SELECT email,created_at FROM users WHERE id=$1', [userId]),
         pool.query('SELECT nickname,avatar_url,bio,is_public FROM user_profiles WHERE user_id=$1', [userId]),
         pool.query<{ id:string; title:string; state:LearningState; revision:number; updated_at:Date|string; created_at:Date|string; lifecycle_status:string }>('SELECT id,title,state,revision,updated_at,created_at,lifecycle_status FROM seasons WHERE owner_user_id=$1 ORDER BY updated_at DESC', [userId]),
@@ -231,6 +316,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
         pool.query(`SELECT i.item_id,i.definition,i.quantity,i.acquired_at,COALESCE(p.is_showcased,false) is_showcased,COALESCE(p.showcase_order,0) showcase_order FROM inventory_items i LEFT JOIN inventory_item_preferences p ON p.user_id=i.user_id AND p.item_id=i.item_id WHERE i.user_id=$1 AND i.quantity>0`, [userId]),
         pool.query('SELECT reward FROM reward_ledger WHERE user_id=$1', [userId]),
         pool.query('SELECT id,tier,status,entry_fee,reward_item,reward_coins,draw_audit,pool_version,started_at,settled_at FROM challenge_runs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100', [userId]),
+        pool.query<{tier:ChallengeMode;status:string;correct_answers:number}>('SELECT tier,status,correct_answers FROM challenge_runs WHERE user_id=$1', [userId]),
         pool.query(`SELECT c.season_id,c.item_id,c.reward_key,c.definition,c.final_task_id,c.claimed_at,s.title,
           EXISTS(SELECT 1 FROM season_collectible_claims x WHERE x.owner_user_id=c.owner_user_id AND x.reward_key=c.reward_key) AS claimed,
           s.state->'progress'->c.final_task_id->>'evidence' AS final_evidence
@@ -269,7 +355,8 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       });
       const showcased=items.rows.filter((item:any)=>item.is_showcased).sort((a:any,b:any)=>a.showcase_order-b.showcase_order).slice(0,4).map((item:any)=>({...(COLLECTION_CATALOG.find(def=>def.id===item.item_id)??item.definition),quantity:item.quantity,itemId:item.item_id,showcaseOrder:item.showcase_order}));
       const activity=[...seasons.rows.flatMap((row:any)=>Object.entries(row.state.progress).filter(([,progress]:any)=>progress.status==='completed').map(([taskId,progress]:any)=>({kind:'learning',seasonId:row.id,seasonTitle:row.title,taskId,title:row.state.campaign.stages.flatMap((stage:any)=>stage.tasks).find((task:any)=>task.id===taskId)?.title??taskId,verification:progress.verification??'self',at:progress.completedAt??row.updated_at}))),...challenges.rows.map((run:any)=>({kind:'challenge',id:run.id,tier:run.tier,status:run.status,at:run.settled_at??run.started_at}))].sort((a:any,b:any)=>new Date(b.at).getTime()-new Date(a.at).getTime()).slice(0,40);
-      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), currentSeasonId:currentSelection.rows[0]?.season_id??null,selectionRevision:Number(currentSelection.rows[0]?.revision??0),seasons:profileSeasons, collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, seasonalCollectibles: [...seasonalByTarget.values()], showcased,activity, challenges: challenges.rows, private: !profileData.is_public });
+      const challengeStats=calculateChallengeKd(challengeStatsRows.rows.map(row=>({tier:row.tier,status:row.status as any,correctAnswers:Number(row.correct_answers)})));
+      res.json({ profile: { ...profileData, joinedAt: user.rows[0]?.created_at }, balance: Number(wallet.rows[0]?.balance ?? 0), xp: rewards.rows.reduce((sum: number, row: any) => sum + Number(row.reward?.xp ?? 0), 0), currentSeasonId:currentSelection.rows[0]?.season_id??null,selectionRevision:Number(currentSelection.rows[0]?.revision??0),seasons:profileSeasons, collection: { kinds, total: COLLECTION_CATALOG.length, completion: kinds / COLLECTION_CATALOG.length, byRarity: Object.fromEntries(['small-purple','small-gold','large-gold','small-red','large-red'].map(rarity => [rarity, items.rows.filter((item: any) => COLLECTION_CATALOG.some(def=>def.id===item.item_id&&def.rarity===rarity)).length])) }, seasonalCollectibles: [...seasonalByTarget.values()], showcased,activity, challenges: challenges.rows, challengeStats, private: !profileData.is_public });
     } catch (error) { next(error); }
   });
   app.post('/api/profile', async (req, res, next) => {
@@ -384,10 +471,10 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
 
   app.get('/api/seasons/current', async (req,res,next) => {
     try {
-      const result=await pool.query<{season_id:string|null;revision:number;id?:string;campaign_id?:string;title?:string;season_revision?:number;state?:LearningState;created_at?:Date|string;updated_at?:Date|string;lifecycle_status?:'active'|'paused'|'archived'}>(`SELECT u.season_id,u.revision,s.id,s.campaign_id,s.title,s.revision season_revision,s.state,s.created_at,s.updated_at,s.lifecycle_status
-        FROM user_current_seasons u LEFT JOIN seasons s ON s.id=u.season_id AND s.owner_user_id=u.user_id WHERE u.user_id=$1`,[ownerOf(req)]);
+      const result=await pool.query<{season_id:string|null;revision:number;id?:string;campaign_id?:string;title?:string;season_revision?:number;state?:LearningState;created_at?:Date|string;updated_at?:Date|string;lifecycle_status?:'active'|'paused'|'archived'|'deleted'}>(`SELECT u.season_id,u.revision,s.id,s.campaign_id,s.title,s.revision season_revision,s.state,s.created_at,s.updated_at,s.lifecycle_status
+        FROM user_current_seasons u LEFT JOIN seasons s ON s.id=u.season_id AND s.owner_user_id=u.user_id AND s.lifecycle_status NOT IN ('archived','deleted') WHERE u.user_id=$1`,[ownerOf(req)]);
       const row=result.rows[0];
-      res.json({currentSeasonId:row?.season_id??null,selectionRevision:Number(row?.revision??0),...(row?.id?{season:publicSeason({id:row.id,campaign_id:row.campaign_id!,title:row.title!,revision:row.season_revision!,state:row.state!,created_at:row.created_at!,updated_at:row.updated_at!,lifecycle_status:row.lifecycle_status})}:{})});
+      res.json({currentSeasonId:row?.id?row.season_id:null,selectionRevision:Number(row?.revision??0),...(row?.id?{season:publicSeason({id:row.id,campaign_id:row.campaign_id!,title:row.title!,revision:row.season_revision!,state:row.state!,created_at:row.created_at!,updated_at:row.updated_at!,lifecycle_status:row.lifecycle_status})}:{})});
     }catch(error){next(error);}
   });
 
@@ -401,7 +488,7 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const current=await client.query<{revision:number}>('SELECT revision FROM user_current_seasons WHERE user_id=$1 FOR UPDATE',[ownerOf(req)]);
       const actual=current.rows[0]?.revision??0;
       if(actual!==revision){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_SELECTION_CONFLICT',revision:actual});return;}
-      const target=await client.query<{id:string}>('SELECT id FROM seasons WHERE id=$1 AND owner_user_id=$2 AND lifecycle_status<>\'archived\' FOR UPDATE',[seasonId,ownerOf(req)]);
+      const target=await client.query<{id:string}>('SELECT id FROM seasons WHERE id=$1 AND owner_user_id=$2 AND lifecycle_status NOT IN (\'archived\',\'deleted\') FOR UPDATE',[seasonId,ownerOf(req)]);
       if(!target.rowCount){await client.query('ROLLBACK');res.status(404).json({error:'SEASON_NOT_AVAILABLE'});return;}
       const updated=await client.query<{revision:number}>('INSERT INTO user_current_seasons(user_id,season_id,revision) VALUES($1,$2,1) ON CONFLICT(user_id) DO UPDATE SET season_id=EXCLUDED.season_id,revision=user_current_seasons.revision+1,updated_at=now() RETURNING revision',[ownerOf(req),seasonId]);
       await client.query('UPDATE seasons SET updated_at=now() WHERE id=$1',[seasonId]);
@@ -410,8 +497,8 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   });
 
   app.patch('/api/seasons/:id/lifecycle', async(req,res,next)=>{
-    const {status,revision,selectionRevision}=req.body??{};
-    if(!idPattern.test(req.params.id)||!['active','paused','archived'].includes(status)||!Number.isInteger(revision)||revision<1||!Number.isInteger(selectionRevision)||selectionRevision<0){res.status(400).json({error:'INVALID_SEASON_LIFECYCLE'});return;}
+    const {status,revision,selectionRevision,restore}=req.body??{};
+    if(!idPattern.test(req.params.id)||!['active','paused','archived','deleted'].includes(status)||!Number.isInteger(revision)||revision<1||!Number.isInteger(selectionRevision)||selectionRevision<0||(restore!==undefined&&typeof restore!=='boolean')){res.status(400).json({error:'INVALID_SEASON_LIFECYCLE'});return;}
     const client=await pool.connect();
     try{
       await client.query('BEGIN');
@@ -422,11 +509,13 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
       const old=found.rows[0];if(!old){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}
       if(old.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',season:publicSeason(old)});return;}
-      if(old.lifecycle_status==='archived'&&status!=='archived'){await client.query('ROLLBACK');res.status(409).json({error:'ARCHIVED_SEASON_READ_ONLY'});return;}
+      if((old.lifecycle_status==='archived'||old.lifecycle_status==='deleted')&&status==='active'&&restore!==true){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_RESTORE_CONFIRMATION_REQUIRED'});return;}
+      if(old.lifecycle_status==='deleted'&&status!=='deleted'&&status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:'DELETED_SEASON_READ_ONLY'});return;}
+      if(old.lifecycle_status==='archived'&&status==='paused'){await client.query('ROLLBACK');res.status(409).json({error:'ARCHIVED_SEASON_READ_ONLY'});return;}
       if(old.lifecycle_status===status){await client.query('COMMIT');res.json({season:publicSeason(old),currentSeasonId:current.rows[0]?.season_id??null,selectionRevision:actualSelectionRevision,idempotent:true});return;}
       const updated=await client.query<Row>(`UPDATE seasons SET lifecycle_status=$1,revision=revision+1,updated_at=now() WHERE id=$2 AND owner_user_id=$3 RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`,[status,req.params.id,ownerOf(req)]);
       let currentSeasonId=current.rows[0]?.season_id??null;let nextSelectionRevision=actualSelectionRevision;
-      if(status==='archived'){
+      if(status==='archived'||status==='deleted'){
         if(currentSeasonId===req.params.id){
           const fallback=await client.query<{id:string}>('SELECT id FROM seasons WHERE owner_user_id=$1 AND id<>$2 AND lifecycle_status=\'active\' ORDER BY updated_at DESC,id LIMIT 1',[ownerOf(req),req.params.id]);
           currentSeasonId=fallback.rows[0]?.id??null;
@@ -435,6 +524,51 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
         }
       }
       await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0]),currentSeasonId,selectionRevision:nextSelectionRevision});
+    }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
+  });
+
+  app.post('/api/seasons/:id/goal-preview', async(req,res,next)=>{
+    if(!idPattern.test(req.params.id)||!Number.isInteger(req.body?.revision)||req.body.revision<1||typeof req.body?.goal!=='string'||req.body.goal.trim().length<1||req.body.goal.length>8000||typeof req.body?.desiredArtifact!=='string'||req.body.desiredArtifact.trim().length<1||req.body.desiredArtifact.length>2000){res.status(400).json({error:'INVALID_SEASON_GOAL'});return;}
+    try{
+      const found=await pool.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2',[req.params.id,ownerOf(req)]);
+      const season=found.rows[0];if(!season){res.status(404).json({error:'NOT_FOUND'});return;}
+      if(season.lifecycle_status!=='active'){res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
+      if(season.revision!==req.body.revision){res.status(409).json({error:'REVISION_CONFLICT',revision:season.revision});return;}
+      res.json({preview:buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact})});
+    }catch(error){next(error);}
+  });
+
+  app.post('/api/seasons/:id/goal-adjustment', async(req,res,next)=>{
+    const {revision,previewId}=req.body??{};
+    if(!idPattern.test(req.params.id)||!Number.isInteger(revision)||revision<1||typeof previewId!=='string'||!/^[a-f0-9]{8}$/.test(previewId)||typeof req.body?.goal!=='string'||typeof req.body?.desiredArtifact!=='string'){res.status(400).json({error:'INVALID_SEASON_GOAL'});return;}
+    const client=await pool.connect();
+    try{
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[ownerOf(req)]);
+      const found=await client.query<Row>('SELECT id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status FROM seasons WHERE id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
+      const season=found.rows[0];if(!season){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}
+      if(season.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
+      if(season.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',revision:season.revision});return;}
+      const preview=buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact});
+      if(preview.previewId!==previewId){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE'});return;}
+      const state=applySeasonGoalAdjustment(season.state,preview);
+      const parsed=learningStateSchema.safeParse(state);
+      if(!parsed.success){await client.query('ROLLBACK');res.status(422).json({error:'SEASON_ADJUSTMENT_INVALID'});return;}
+      const updated=await client.query<Row>(`UPDATE seasons SET state=$1,title=$2,revision=revision+1,updated_at=now()
+        WHERE id=$3 AND owner_user_id=$4 AND revision=$5
+        RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`,[JSON.stringify(parsed.data),parsed.data.campaign.title,req.params.id,ownerOf(req),revision]);
+      if(!updated.rows[0]){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT'});return;}
+      const collectible=parsed.data.campaign.seasonalCollectible;
+      if(collectible){
+        const rule=await client.query<{item_id:string;claimed_at:Date|null}>('SELECT item_id,claimed_at FROM season_collectibles WHERE season_id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
+        if(rule.rows[0]?.item_id===collectible.id&&!rule.rows[0].claimed_at){
+          const gateTaskIds=parsed.data.campaign.stages.flatMap(stage=>stage.gateTaskIds??[]);
+          await client.query('UPDATE season_collectibles SET final_task_id=$1,gate_task_ids=$2 WHERE season_id=$3 AND owner_user_id=$4 AND claimed_at IS NULL',[collectible.finalTaskId,gateTaskIds,req.params.id,ownerOf(req)]);
+        }
+      }
+      await client.query(`INSERT INTO season_goal_adjustments(id,owner_user_id,season_id,revision_before,revision_after,previous_goal,next_goal,previous_artifact,next_artifact,preview)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[randomUUID(),ownerOf(req),req.params.id,revision,updated.rows[0].revision,season.state.campaign.goal,parsed.data.campaign.goal,season.state.campaign.desiredArtifact??season.state.campaign.ultimateReward,parsed.data.campaign.desiredArtifact??parsed.data.campaign.ultimateReward,JSON.stringify(preview)]);
+      await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0]),preview});
     }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
 

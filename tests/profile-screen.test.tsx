@@ -16,6 +16,9 @@ beforeEach(()=>{
   if(url==='/api/profile')return reply(data);
   if(url==='/api/inventory')return reply({items:stock});
   if(url.endsWith('/lifecycle')){const body=JSON.parse(String(init?.body));data.seasons[0]={...data.seasons[0],status:body.status,revision:9};return reply({season:{id:'a',revision:9,lifecycleStatus:body.status,state:{}},currentSeasonId:'a',selectionRevision:3});}
+  if(url==='/api/seasons/a')return reply({season:{id:'a',revision:8,lifecycleStatus:'active',state:{campaign:{goal:'Build a timer',desiredArtifact:'Timer tool',ultimateReward:'Timer tool'}}}});
+  if(url.endsWith('/goal-preview'))return reply({preview:{previewId:'1234abcd',campaignId:'campaign-a',goal:'IELTS goal',desiredArtifact:'IELTS archive',tasks:[{taskId:'tool',title:'Build timer',stageId:'stage-a',stageTitle:'第一阶段',action:'replace',originalTaskDisposition:'move-to-optional-branch',reason:'编程偏题',minutes:20,preservesEvidence:true,replacement:{id:'new-task',title:'雅思阅读：主旨与证据定位',brief:'阅读',acceptance:'主旨和证据',deliverable:'阅读证据',minutes:20},dependencyChanges:['阅读证据']}],budget:{mainlineMinutesBefore:60,mainlineMinutesAfter:60,movedToOptionalMinutes:20,dailyMinutes:80,days:28},notice:'旧答案和奖励流水保留。'}});
+  if(url.endsWith('/goal-adjustment')){const body=JSON.parse(String(init?.body));data.seasons[0]={...data.seasons[0],goal:body.goal,desiredArtifact:body.desiredArtifact,revision:9};return reply({season:{id:'a',revision:9,lifecycleStatus:'active',state:{campaign:{goal:body.goal,desiredArtifact:body.desiredArtifact}}}});}
   if(url==='/api/inventory/preferences')return reply({saved:2});
   throw Error(url);
  });
@@ -53,5 +56,37 @@ describe('server profile actions',()=>{
   await waitFor(()=>expect(api.mock.calls.some(call=>call[0]==='/api/inventory/preferences')).toBe(true));
   const request=api.mock.calls.find(call=>call[0]==='/api/inventory/preferences')!;
   expect(JSON.parse(String(request[1].body)).items.map((item:any)=>[item.itemId,item.showcased,item.showcaseOrder])).toEqual([[stock[0].item_id,true,1],[stock[1].item_id,true,0]]);
+ });
+ it('requires a visible preview and a separate apply action before changing a season goal',async()=>{
+  const flush=vi.fn(async()=>8),adjusted=vi.fn(async()=>{});
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}} onFlushSeason={flush} onSeasonAdjusted={adjusted}/>);
+  fireEvent.click((await screen.findAllByRole('button',{name:'调整目标'}))[0]);
+  await screen.findByRole('dialog',{name:'调整赛季目标'});
+  fireEvent.change(screen.getByLabelText('学习目标'),{target:{value:'IELTS goal'}});
+  fireEvent.change(screen.getByLabelText('最终成果'),{target:{value:'IELTS archive'}});
+  fireEvent.click(screen.getByRole('button',{name:'生成调整预览'}));
+  expect(await screen.findByText(/移入可选支线并替换/)).toBeTruthy();
+  expect(adjusted).not.toHaveBeenCalled();
+  const previewRequest=api.mock.calls.find(call=>String(call[0]).endsWith('/goal-preview'))!;
+  expect(JSON.parse(String(previewRequest[1].body))).toMatchObject({revision:8,goal:'IELTS goal',desiredArtifact:'IELTS archive'});
+  fireEvent.click(screen.getByRole('button',{name:'确认并应用此预览'}));
+  await waitFor(()=>expect(adjusted).toHaveBeenCalled());
+  expect(api.mock.calls.some(call=>String(call[0]).endsWith('/goal-adjustment'))).toBe(true);
+ });
+ it('moves a season to the recoverable bin without a permanent delete action',async()=>{
+  const confirm=vi.spyOn(window,'confirm').mockReturnValue(true);
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  fireEvent.click((await screen.findAllByRole('button',{name:/移入回收站/}))[0]);
+  await waitFor(()=>expect(api.mock.calls.some(call=>String(call[0]).endsWith('/lifecycle')&&JSON.parse(String(call[1].body)).status==='deleted')).toBe(true));
+  expect(await screen.findByText('赛季已移入回收站；答案、证据和奖励记录仍保留。')).toBeTruthy();
+  expect(screen.queryByRole('button',{name:/永久删除/})).toBeNull();
+  confirm.mockRestore();
+ });
+ it('allows a completed season to be moved to the recoverable bin',async()=>{
+  data.seasons[0]={...data.seasons[0],status:'completed'};
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  await screen.findByRole('heading',{name:'个人学习档案'});
+  const completedCard=document.querySelector('.profile-season-card') as HTMLElement;
+  expect(within(completedCard).getByRole('button',{name:'移入回收站'})).toBeTruthy();
  });
 });

@@ -31,7 +31,7 @@ interface InventoryData {
 }
 type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; data: InventoryData };
 const rarityNames: Record<string, string> = { common: '普通', rare: '稀有', legendary: '传说' };
-const rewardNames: Record<string, string> = { mission: '任务', verification: '核验', chain: '任务链', stage: '阶段', season: '赛季', review: '复习' };
+const rewardNames: Record<string, string> = { mission: '任务', verification: '核验', chain: '任务链', stage: '阶段', season: '赛季', review: '复习', challenge: '免费行动' };
 const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 function AcquisitionTime({ value }: { value: string }) {
   const date = new Date(value);

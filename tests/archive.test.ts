@@ -29,8 +29,20 @@ async function fixture() {
   await pool.query("INSERT INTO users (id) VALUES ('00000000-0000-4000-8000-000000000001'),('00000000-0000-4000-8000-000000000002')");
   await pool.query("CREATE TABLE seasons (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, campaign_id text NOT NULL, title text NOT NULL, revision integer NOT NULL DEFAULT 1, state jsonb NOT NULL, lifecycle_status text NOT NULL DEFAULT 'active', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,campaign_id))");
   await pool.query('CREATE TABLE user_current_seasons(user_id uuid PRIMARY KEY,season_id uuid,revision integer NOT NULL DEFAULT 1,updated_at timestamptz NOT NULL DEFAULT now())');
+  await pool.query('CREATE TABLE season_goal_adjustments(id uuid PRIMARY KEY,owner_user_id uuid NOT NULL,season_id uuid NOT NULL,revision_before integer NOT NULL,revision_after integer NOT NULL,previous_goal text NOT NULL,next_goal text NOT NULL,previous_artifact text NOT NULL,next_artifact text NOT NULL,preview jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('CREATE TABLE reward_ledger (id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, kind text NOT NULL, idempotency_key text NOT NULL, reward jsonb NOT NULL, economy_version text NOT NULL DEFAULT \'2026-10-v1\', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))');
   await pool.query('CREATE TABLE wallets (user_id uuid NOT NULL, currency text NOT NULL, balance bigint NOT NULL DEFAULT 0, PRIMARY KEY(user_id,currency))');
+  await pool.query(`CREATE TABLE challenge_runs (
+    id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL,
+    tier text NOT NULL, status text NOT NULL, entry_fee integer NOT NULL, prompt text NOT NULL,
+    evidence text, evaluation jsonb, reward_item jsonb, reward_coins integer NOT NULL DEFAULT 0,
+    draw_audit jsonb, pool_version text NOT NULL DEFAULT 'test', deadline_at timestamptz NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT now(), settled_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+    question_count integer NOT NULL DEFAULT 1, pass_threshold integer NOT NULL DEFAULT 1, entry_operation_id uuid,
+    questions jsonb NOT NULL DEFAULT '[]', answers jsonb NOT NULL DEFAULT '[]',
+    correct_answers integer NOT NULL DEFAULT 0, question_set_version text NOT NULL DEFAULT 'legacy'
+  )`);
+  await pool.query('CREATE TABLE challenge_question_exposures(user_id uuid NOT NULL,question_id text NOT NULL,first_run_id uuid,exposed_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,question_id))');
   await pool.query('CREATE TABLE inventory_items (user_id uuid NOT NULL, item_id text NOT NULL, definition jsonb NOT NULL, quantity integer NOT NULL DEFAULT 0, acquired_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(user_id,item_id))');
   await pool.query('CREATE TABLE inventory_acquisitions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL,item_id text NOT NULL,quantity integer NOT NULL,source_type text NOT NULL,source_id text NOT NULL,season_id uuid,task_id text,created_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('CREATE TABLE season_collectibles (season_id uuid PRIMARY KEY,owner_user_id uuid NOT NULL,item_id text NOT NULL,reward_key text NOT NULL,definition jsonb NOT NULL,final_task_id text NOT NULL,gate_task_ids text[] NOT NULL,reward_version integer NOT NULL DEFAULT 1,claimed_at timestamptz,evidence_sha256 text,created_at timestamptz NOT NULL DEFAULT now())');
@@ -61,6 +73,140 @@ function state(): LearningState {
 }
 
 describe('server-owned learning archives', () => {
+  it('requires an explicit preview revision before applying a season goal change and preserves the old learning/economic record', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const seasonId = randomUUID();
+    const archive = state();
+    archive.campaign.goal = 'Build an IELTS timer and tracking tool.';
+    archive.campaign.desiredArtifact = 'A deployed study timer.';
+    const finalStage = archive.campaign.stages.at(-1)!;
+    const task = finalStage.tasks.find(item => (item.track ?? 'main') === 'main')!;
+    finalStage.gateTaskIds = [task.id];
+    task.title = '运行环境与第一个脚本'; task.brief = 'Create the timer script.'; task.steps = ['Write code and deploy a tool.'];
+    archive.campaign.seasonalCollectible = { id: 'seasonal-ielts-proof', name: '雅思能力章', story: '完成阶段成果。', appearance: '深色金属章。', abilityOutcome: '完成目标相关成果。', rewardKey: 'a'.repeat(64), finalTaskId: task.id, displayValue: 1_000_000 };
+    archive.progress[task.id] = { completedObjectives: [], evidence: 'Unsubmitted notes to preserve.', status: 'active' };
+    await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [seasonId, owner, archive.campaign.id, archive.campaign.title, JSON.stringify(archive)]);
+    await pool.query('INSERT INTO season_collectibles(season_id,owner_user_id,item_id,reward_key,definition,final_task_id,gate_task_ids) VALUES($1,$2,$3,$4,$5,$6,$7)', [seasonId, owner, archive.campaign.seasonalCollectible.id, archive.campaign.seasonalCollectible.rewardKey, JSON.stringify(archive.campaign.seasonalCollectible), task.id, [task.id]]);
+
+    const input = { revision: 1, goal: '提升雅思听说读写能力，完成可核对的英语练习档案。', desiredArtifact: '完成包含听说读写样本、证据和复盘的雅思训练档案。' };
+    const previewResponse = await request(app).post(`/api/seasons/${seasonId}/goal-preview`).set('x-test-user', owner).send(input).expect(200);
+    const preview = previewResponse.body.preview;
+    expect(preview.tasks.some((item: any) => item.title === '运行环境与第一个脚本' && item.action === 'replace')).toBe(true);
+    const before = await pool.query('SELECT state,revision FROM seasons WHERE id=$1', [seasonId]);
+    expect(before.rows[0].revision).toBe(1);
+
+    await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: '00000000' }).expect(409);
+    const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId }).expect(200);
+    expect(applied.body.season.revision).toBe(2);
+    expect(applied.body.season.state.campaign.goal).toBe(input.goal);
+    const oldTask = applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks).find((item: any) => item.id === task.id);
+    const replacementId = preview.tasks.find((item: any) => item.taskId === task.id).replacement.id;
+    const replacement = applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks).find((item: any) => item.id === replacementId);
+    expect(oldTask.track).toBe('branch');
+    expect(applied.body.season.state.progress[task.id].evidence).toBe('Unsubmitted notes to preserve.');
+    expect(applied.body.season.state.progress[replacement.id].status).toBe('idle');
+    expect(applied.body.season.state.wallet).toEqual(archive.wallet);
+    expect(applied.body.season.state.rewardLedger).toEqual(archive.rewardLedger);
+    const collectibleRule = await pool.query('SELECT final_task_id,gate_task_ids FROM season_collectibles WHERE season_id=$1', [seasonId]);
+    expect(collectibleRule.rows[0].final_task_id).toBe(replacement.id);
+    expect(collectibleRule.rows[0].gate_task_ids).toContain(replacement.id);
+    expect(collectibleRule.rows[0].gate_task_ids).not.toContain(task.id);
+    expect((await pool.query('SELECT * FROM season_goal_adjustments WHERE season_id=$1', [seasonId])).rowCount).toBe(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('soft deletes a season without removing its evidence and only restores through the explicit restore flag', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const firstId = randomUUID(); const secondId = randomUUID();
+    const first = state(); const second = state(); second.campaign.id = 'second-season';
+    first.progress[first.campaign.stages[0].tasks[0].id] = { completedObjectives: [], evidence: 'Saved answers and evidence remain intact.', status: 'active' };
+    for (const [id, item] of [[firstId, first], [secondId, second]] as const) await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [id, owner, item.campaign.id, item.campaign.title, JSON.stringify(item)]);
+    await pool.query('INSERT INTO user_current_seasons(user_id,season_id,revision) VALUES($1,$2,1)', [owner, firstId]);
+    const remove = await request(app).patch(`/api/seasons/${firstId}/lifecycle`).set('x-test-user', owner).send({ status: 'deleted', revision: 1, selectionRevision: 1 }).expect(200);
+    expect(remove.body.season.lifecycleStatus).toBe('deleted');
+    expect(remove.body.currentSeasonId).toBe(secondId);
+    expect((await pool.query('SELECT state->\'progress\' AS progress FROM seasons WHERE id=$1', [firstId])).rows[0].progress[first.campaign.stages[0].tasks[0].id].evidence).toBe('Saved answers and evidence remain intact.');
+    await request(app).put('/api/seasons/current').set('x-test-user', owner).send({ seasonId: firstId, revision: 2 }).expect(404);
+    await request(app).patch(`/api/seasons/${firstId}/lifecycle`).set('x-test-user', owner).send({ status: 'active', revision: 2, selectionRevision: 2 }).expect(409);
+    const restore = await request(app).patch(`/api/seasons/${firstId}/lifecycle`).set('x-test-user', owner).send({ status: 'active', revision: 2, selectionRevision: 2, restore: true }).expect(200);
+    expect(restore.body.season.lifecycleStatus).toBe('active');
+    expect(restore.body.currentSeasonId).toBe(secondId);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('deduplicates a retried challenge-entry request before applying another fee or drawing another set', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const seasonId = randomUUID();
+    const archived = state();
+    const allTasks = archived.campaign.stages.flatMap(stage => stage.tasks);
+    for (const task of allTasks) archived.progress[task.id].status = 'completed';
+    allTasks[0].objectives.push({ id: 'extra-one', text: 'Explain a second objective.' }, { id: 'extra-two', text: 'Explain a third objective.' });
+    await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [seasonId, owner, archived.campaign.id, archived.campaign.title, JSON.stringify(archived)]);
+    await pool.query("INSERT INTO wallets(user_id,currency,balance) VALUES($1,'learning-coin',500000)", [owner]);
+    const operationId = '20000000-0000-4000-8000-000000000001';
+    const input = { seasonId, taskId: allTasks[0].id, tier: 'ordinary', operationId };
+    const first = await request(app).post('/api/challenges/enter').set('x-test-user', owner).send(input).expect(201);
+    const retry = await request(app).post('/api/challenges/enter').set('x-test-user', owner).send(input).expect(200);
+    expect(retry.body.challenge.id).toBe(first.body.challenge.id);
+    expect(retry.body.idempotent).toBe(true);
+    expect(Number(retry.body.balance)).toBe(400000);
+    const wallet = await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [owner]);
+    expect(Number(wallet.rows[0].balance)).toBe(400000);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('offers free practice with confidential-pool one-tenth EV and unlimited versioned action entries', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const seasonId = randomUUID();
+    const archived = state();
+    for (const task of archived.campaign.stages.flatMap(stage => stage.tasks)) archived.progress[task.id].status = 'completed';
+    for (const task of archived.campaign.stages.flatMap(stage => stage.tasks)) {
+      task.objectives.push({ id: `${task.id}-extra-a`, text: `Apply ${task.title} in a second situation.` }, { id: `${task.id}-extra-b`, text: `Check a boundary for ${task.title}.` });
+    }
+    await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [seasonId, owner, archived.campaign.id, archived.campaign.title, JSON.stringify(archived)]);
+    await pool.query("INSERT INTO wallets(user_id,currency,balance) VALUES($1,'learning-coin',1000000)", [owner]);
+    const taskId = archived.campaign.stages[0].tasks[0].id;
+    const modes = await request(app).get('/api/challenges').expect(200);
+    expect(modes.body.tiers.map((item: any) => [item.id, item.questionCount, item.correctToPass])).toEqual([
+      ['free', 5, 3], ['ordinary', 5, 3], ['confidential', 10, 7], ['top-secret', 15, 12],
+    ]);
+    expect(modes.body.tiers[0]).toMatchObject({ entryFee: 0, paid: false });
+    expect(modes.body.tiers[0].rewardCoins).toBeGreaterThan(0);
+    expect(modes.body.tiers[0].rewardExpectedRecovery).toBe(modes.body.tiers[0].rewardCoins);
+
+    const enter = (tier: string) => request(app).post('/api/challenges/enter').set('x-test-user', owner).send({ seasonId, taskId, tier, operationId: randomUUID() });
+    const free = await enter('free').expect(201);
+    expect(free.body.challenge.questions).toHaveLength(5);
+    expect(free.body.challenge.questions[0].hints.length).toBeGreaterThan(0);
+    expect(JSON.stringify(free.body.challenge.questions)).not.toContain('referenceAnswer');
+    await enter('free').expect(409);
+    expect((await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [owner])).rows[0].balance).toBe(1000000);
+    const savedAnswers = free.body.challenge.questions.map((question: any, index: number) => ({ questionId: question.id, answer: `Saved response ${index}`, hintLevelsUsed: 0 }));
+    await request(app).put(`/api/challenges/${free.body.challenge.id}/answers`).set('x-test-user', owner).send({ answers: savedAnswers }).expect(200);
+    const restored = await request(app).get('/api/challenges/history').set('x-test-user', owner).expect(200);
+    expect(restored.body.challenges.find((run: any) => run.id === free.body.challenge.id).answers).toEqual(savedAnswers);
+    expect(restored.body.kdStats.free).toEqual({ correctAnswers: 0, settledRounds: 0, kd: null });
+    await request(app).post(`/api/challenges/${free.body.challenge.id}/abandon`).set('x-test-user', owner).expect(200);
+    const freeAgain = await enter('free').expect(201);
+    expect(freeAgain.body.challenge.questions.every((question: any) => !free.body.challenge.questions.some((previous: any) => previous.id === question.id))).toBe(true);
+    await request(app).post(`/api/challenges/${freeAgain.body.challenge.id}/abandon`).set('x-test-user', owner).expect(200);
+
+    const ordinary = await enter('ordinary').expect(201);
+    expect(ordinary.body.challenge.questions).toHaveLength(5);
+    expect(ordinary.body.challenge.correctToPass).toBe(3);
+    expect(ordinary.body.challenge.questions[0].requiredCriteria).toHaveLength(2);
+    expect((await pool.query('SELECT question_set_version FROM challenge_runs WHERE id=$1', [ordinary.body.challenge.id])).rows[0].question_set_version).toMatch(/^delta-challenge-v4-/);
+    await request(app).post(`/api/challenges/${ordinary.body.challenge.id}/abandon`).set('x-test-user', owner).expect(200);
+    await enter('ordinary').expect(201);
+    const balance = await pool.query("SELECT balance FROM wallets WHERE user_id=$1 AND currency='learning-coin'", [owner]);
+    expect(Number(balance.rows[0].balance)).toBe(800000);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
   it('defines the complete catalog by distinct rarity counts, separate from owned inventory', () => {
     expect(COLLECTION_CATALOG).toHaveLength(155);
     expect(CATALOG_RARITY_COUNTS).toEqual({ 'small-purple': 45, 'small-gold': 35, 'large-gold': 15, 'small-red': 35, 'large-red': 25 });

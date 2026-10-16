@@ -219,3 +219,78 @@
   .profile-season-actions button { flex:1 1 calc(50% - 7px); min-height:42px; font-size:13px; }
   .profile-showcase article { width:calc(50% - 5px); }
 }
+
+/* Multi-question action rounds and compact K/D record. */
+.challenge-kd { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin:18px 0; }
+.challenge-kd>div,.profile-kd-grid article { display:grid; align-content:start; gap:5px; min-width:0; padding:13px 15px; border:1px solid #35433d; background:#151d1b; }
+.challenge-kd>div:first-child { border-color:#687357; background:#1c2520; }
+.challenge-kd span,.profile-kd-grid span { color:#c2cdc3; font-size:14px; }
+.challenge-kd strong,.profile-kd-grid strong { color:#e1ddb4; font:700 23px ui-monospace,monospace; }
+.challenge-kd small,.profile-kd-grid small { color:#aab8ae; font-size:13px; line-height:1.5; }
+.challenge-entry { width:min(100%,1900px); }
+.challenge-tiers { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.challenge-tiers>button:disabled { opacity:.6; cursor:not-allowed; }
+.challenge-answer-status { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:14px 0; padding:10px 12px; border-left:3px solid #8bac8d; background:#19231d; color:#d3dfd2; font-size:14px; }
+.challenge-question-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.challenge-question { min-width:0; padding:16px; border:1px solid #35433d; background:#141c1b; }
+.challenge-question-heading { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:6px 12px; margin-bottom:10px; }
+.challenge-question-heading span { color:#d5c68e; font:600 13px ui-monospace,monospace; }
+.challenge-question-heading strong { color:#e1e8df; font-size:15px; }
+.challenge-question>p { white-space:pre-wrap; overflow-wrap:anywhere; color:#d0d9d1; font-size:15px; line-height:1.7; }
+.challenge-question label { display:grid; gap:7px; color:#c9d4ca; font-size:14px; }
+.challenge-question textarea { min-height:135px; width:100%; box-sizing:border-box; padding:11px; resize:vertical; background:#0f1515; border:1px solid #43524a; color:#edf1e9; font:15px/1.6 Inter,ui-sans-serif,system-ui,sans-serif; }
+.challenge-question textarea:focus-visible { outline:2px solid #9cba89; outline-offset:2px; }
+.challenge-rubric { margin:10px 0; padding:8px 10px; border-left:2px solid #596d60; background:#111817; color:#c8d3ca; font-size:13px; line-height:1.55; }
+.challenge-rubric summary { width:fit-content; cursor:pointer; color:#dae3da; }
+.challenge-rubric ul { display:grid; gap:4px; margin:8px 0 2px; padding-left:20px; }
+.challenge-question-results { display:grid; gap:8px; padding-left:22px; }
+.challenge-question-results li { display:grid; gap:3px; padding:9px 10px; background:#111817; border-left:2px solid #8fac83; }
+.challenge-question-results li b { color:#e2e6db; }
+.challenge-question-results li span { color:#bac7bd; }
+.profile-challenge-kd { display:grid; grid-template-columns:minmax(240px,.8fr) minmax(0,2fr); gap:18px; margin:20px 0; padding:17px; border:1px solid #34423b; background:#141c1b; }
+.profile-challenge-kd h2 { margin:3px 0 8px; font-size:21px; }
+.profile-challenge-kd p { color:#b9c6bd; font-size:14px; line-height:1.6; }
+.profile-kd-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; }
+.challenge-hints { display:grid; gap:7px; margin:10px 0; }
+.challenge-hints>button { justify-self:start; }
+.challenge-hints>p { margin:0; padding:9px 11px; border-left:2px solid #8fac83; color:#d0d9d1; line-height:1.55; }
+.challenge-extraction { display:grid; justify-items:start; gap:10px; padding:clamp(14px,2vw,22px); border:1px solid #829e73; border-radius:7px; background:#1c2922; }
+.challenge-extraction h3,.challenge-extraction p { margin:0; }
+.challenge-extraction .econ-secondary { margin-left:6px; }
+@media (max-width:1100px) {
+  .challenge-kd { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .challenge-tiers { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .profile-challenge-kd { grid-template-columns:1fr; }
+  .profile-kd-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@media (max-width:650px) {
+  .challenge-kd { grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+  .challenge-kd>div { padding:10px; }
+  .challenge-kd span,.profile-kd-grid span { font-size:12px; }
+  .challenge-kd strong,.profile-kd-grid strong { font-size:20px; }
+  .challenge-kd small,.profile-kd-grid small { font-size:12px; }
+  .challenge-tiers,.challenge-question-list { grid-template-columns:1fr; }
+  .challenge-question { padding:12px; }
+  .challenge-question textarea { min-height:110px; }
+  .profile-kd-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .profile-challenge-kd { padding:12px; }
+}
+.profile-current-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.profile-season-actions button{min-height:38px}
+.season-status.status-deleted{color:#d8ae9b;border-color:#765345;background:rgba(93,48,34,.24)}
+.season-adjustment-backdrop{position:fixed;inset:0;z-index:1200;display:grid;place-items:center;padding:24px;background:rgba(3,8,12,.78);backdrop-filter:blur(5px)}
+.season-adjustment-dialog{width:min(920px,100%);max-height:min(90vh,1000px);overflow:auto;padding:clamp(20px,3vw,34px);border:1px solid #465b58;border-radius:14px;background:#111b1b;color:#e8eeea;box-shadow:0 24px 80px rgba(0,0,0,.5);outline:none}
+.season-adjustment-dialog>header,.season-adjustment-dialog>footer{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.season-adjustment-dialog h2{margin:.35rem 0 1rem;font-size:clamp(1.3rem,2vw,1.7rem)}
+.season-adjustment-dialog>label{display:grid;gap:8px;margin:16px 0;color:#dce6df;font-weight:600}
+.season-adjustment-dialog input,.season-adjustment-dialog textarea{width:100%;min-height:76px;padding:12px;border:1px solid #435552;border-radius:8px;background:#0b1415;color:#f4f5ef;font:inherit;line-height:1.6;resize:vertical}
+.season-adjustment-dialog>p,.season-adjustment-preview>p{color:#b8c5bf;line-height:1.65}
+.season-adjustment-preview{display:grid;gap:14px;margin:18px 0;padding:16px;border:1px solid #40544e;border-radius:10px;background:#0e1716}
+.season-adjustment-preview h3{margin:0;font-size:1.1rem}
+.season-adjustment-budget{display:flex;gap:10px 18px;flex-wrap:wrap;color:#d3dfd8;font-size:.9rem}
+.season-adjustment-tasks{display:grid;gap:10px;max-height:38vh;overflow:auto;padding-right:4px}
+.season-adjustment-tasks article{display:grid;gap:6px;padding:12px 14px;border-left:3px solid #638f77;background:#15201d}
+.season-adjustment-tasks article>span,.season-adjustment-tasks article>small{color:#bdc9c1;line-height:1.55}
+.season-adjustment-tasks article>strong{font-size:1rem}
+.season-adjustment-dialog>footer{justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid #34423f}
+@media(max-width:680px){.season-adjustment-backdrop{padding:10px}.season-adjustment-dialog{max-height:94dvh;padding:16px}.season-adjustment-budget{display:grid;gap:6px}.season-adjustment-dialog>footer{position:sticky;bottom:-16px;padding:12px 0 4px;background:#111b1b}}

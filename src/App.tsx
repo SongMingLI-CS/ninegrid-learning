@@ -109,7 +109,7 @@ function App() {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [scopedUserId, setScopedUserId] = useState<string>();
-  const [serverSeasons, setServerSeasons] = useState<Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?: string; updatedAt?: string; lifecycleStatus?: 'active'|'paused'|'archived' }>>([]);
+  const [serverSeasons, setServerSeasons] = useState<Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?: string; updatedAt?: string; lifecycleStatus?: 'active'|'paused'|'archived'|'deleted' }>>([]);
   const [currentSeasonId, setCurrentSeasonId] = useState('');
   const [, setSeasonSelectionRevision] = useState(0);
   const [serverWallet, setServerWallet] = useState(0);
@@ -143,7 +143,7 @@ function App() {
   const [gridDrafts, setGridDrafts] = useState<Record<string, string>>({});
   const activeRequest = useRef<AbortController | null>(null);
   const archiveRequest = useRef<AbortController | null>(null);
-  const serverArchive = useRef<{ id: string; revision: number; userId: string; conflicted?: boolean; lifecycleStatus?: 'active'|'paused'|'archived' } | null>(null);
+  const serverArchive = useRef<{ id: string; revision: number; userId: string; conflicted?: boolean; lifecycleStatus?: 'active'|'paused'|'archived'|'deleted' } | null>(null);
   const archiveWriteQueue = useRef<Promise<void>>(Promise.resolve());
   const seasonSwitchSequence = useRef(0);
   const seasonSelectionQueue = useRef<Promise<void>>(Promise.resolve());
@@ -210,7 +210,7 @@ function App() {
   }, [tab, selectedTaskId, selectedStage, activeChainId]);
 
   const update = useCallback((next: LearningState) => {
-    if (currentAccountId.current && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived')) return;
+    if (currentAccountId.current && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived' || serverArchive.current.lifecycleStatus === 'deleted')) return;
     setState(next);
   }, []);
   const flash = useCallback((value: Notification) => setNotification(value), []);
@@ -232,7 +232,7 @@ function App() {
     return pending;
   };
   const writeServerArchive = async (archive: NonNullable<typeof serverArchive.current>, snapshot: LearningState): Promise<void> => {
-    if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived') throw new Error('此赛季为只读，请在个人主页恢复或创建新赛季');
+    if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived' || archive.lifecycleStatus === 'deleted') throw new Error('此赛季为只读，请在个人主页恢复或创建新赛季');
     if (archive.conflicted) throw new Error('档案存在版本冲突，请导出草稿或明确选择服务器版本');
     if (snapshot.campaign.id !== currentState.current.campaign.id) throw new DOMException('赛季已切换', 'AbortError');
     setSyncStatus('saving');
@@ -259,7 +259,7 @@ function App() {
         if (!accountArchiveLoaded.current || scopedUserId !== accountUser.id) throw new Error('账号档案尚未完成载入；请取消退出并等待同步状态恢复。');
         if (archive) {
           if (!serverHydrated.current || archive.userId !== accountUser.id) throw new Error('账号赛季尚未完成载入；请取消退出并等待同步状态恢复。');
-          if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived') throw new Error('当前赛季为只读；已保存的内容仍在本机缓存，请取消退出后核对档案状态。');
+          if (archive.lifecycleStatus === 'paused' || archive.lifecycleStatus === 'archived' || archive.lifecycleStatus === 'deleted') throw new Error('当前赛季为只读；已保存的内容仍在本机缓存，请取消退出后核对档案状态。');
           savePendingDraft({ userId: accountUser.id, seasonId: archive.id, revision: archive.revision, state: snapshot, updatedAt: new Date().toISOString() });
           await putServerArchive(snapshot);
           await archiveWriteQueue.current;
@@ -340,7 +340,7 @@ function App() {
       try {
         const response = await apiFetch('/api/seasons', { signal: controller.signal });
         if (!response.ok) throw new Error('服务器档案读取失败');
-        const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?:string; updatedAt?:string; lifecycleStatus?:'active'|'paused'|'archived' }>; currentSeasonId?:string|null; selectionRevision?:number };
+        const payload = await response.json() as { seasons?: Array<{ id: string; revision: number; title: string; state: LearningState; createdAt?:string; updatedAt?:string; lifecycleStatus?:'active'|'paused'|'archived'|'deleted' }>; currentSeasonId?:string|null; selectionRevision?:number };
         if (controller.signal.aborted) return;
         // Generation drafts belong to the account, not to an activated season.
         // Load them before the first-season early returns so onboarding can recover
@@ -356,7 +356,7 @@ function App() {
         } catch {
           if (!controller.signal.aborted) setGenerationDraftLoadError('账号已连接，但课程草稿暂不可读取。请重试后再继续。');
         }
-        let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived');
+        let season = payload.seasons?.find(item=>item.id===payload.currentSeasonId&&item.lifecycleStatus!=='archived'&&item.lifecycleStatus!=='deleted');
         if (!season && payload.seasons?.length) {
           setServerSeasons(payload.seasons); setCurrentSeasonId(''); seasonSelectionRevisionRef.current = payload.selectionRevision ?? 0; setSeasonSelectionRevision(seasonSelectionRevisionRef.current);
           setAccountNeedsSeason(true); accountArchiveLoaded.current = true; setScopedUserId(accountUser.id); setSyncStatus('saved'); setSaveError(''); setTab('today');
@@ -410,7 +410,7 @@ function App() {
   }, [accountUser?.id]);
   useEffect(() => {
     const current = serverArchive.current;
-    if (!accountUser || !serverHydrated.current || !current || current.userId !== accountUser.id || current.lifecycleStatus === 'paused' || current.lifecycleStatus === 'archived') return;
+    if (!accountUser || !serverHydrated.current || !current || current.userId !== accountUser.id || current.lifecycleStatus === 'paused' || current.lifecycleStatus === 'archived' || current.lifecycleStatus === 'deleted') return;
     const timer = window.setTimeout(() => {
       void putServerArchive(state).then(() => { if (serverArchive.current === current) setSaveError(''); })
         .catch(error => { if (serverArchive.current === current && !(error instanceof DOMException && error.name === 'AbortError')) setSaveError(`尚未同步到服务器：${error instanceof Error ? error.message : '网络错误'}。本机缓存仍保留。`); });
@@ -437,7 +437,7 @@ function App() {
   }, [campaign.id, localDate]);
 
   const beginTask = async (nextTask: Task, options: { diagnostic?: boolean; regenerate?: boolean; transfer?: boolean } = {}) => {
-    if (accountUser && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived')) {
+    if (accountUser && (!serverArchive.current || serverArchive.current.lifecycleStatus === 'paused' || serverArchive.current.lifecycleStatus === 'archived' || serverArchive.current.lifecycleStatus === 'deleted')) {
       setSelectedTaskId(nextTask.id); setTab('workspace'); setSaveError('赛季暂停或归档后仅可预览。请在个人主页恢复赛季后继续学习。'); return;
     }
     const unlocked = isTaskUnlocked(campaign, state.progress, nextTask.id);
@@ -518,12 +518,12 @@ function App() {
     const sequence=++seasonSwitchSequence.current;
     let controller: AbortController | undefined;
     try {
-      if (serverArchive.current && !serverArchive.current.conflicted && serverArchive.current.lifecycleStatus !== 'paused' && serverArchive.current.lifecycleStatus !== 'archived') await putServerArchive(currentState.current);
+      if (serverArchive.current && !serverArchive.current.conflicted && serverArchive.current.lifecycleStatus !== 'paused' && serverArchive.current.lifecycleStatus !== 'archived' && serverArchive.current.lifecycleStatus !== 'deleted') await putServerArchive(currentState.current);
       if (serverArchive.current?.conflicted) throw new Error('当前赛季有版本冲突，请先导出草稿或加载服务器版本');
       const response = await apiFetch(`/api/seasons/${id}`);
       if (!response.ok) throw new Error('无法读取该学习赛季');
-      const season = (await response.json() as { season: { id: string; revision: number; state: LearningState; lifecycleStatus?:'active'|'paused'|'archived' } }).season;
-      if(season.lifecycleStatus==='archived') throw new Error('该赛季已归档，只能在主页查看');
+      const season = (await response.json() as { season: { id: string; revision: number; state: LearningState; lifecycleStatus?:'active'|'paused'|'archived'|'deleted' } }).season;
+      if(season.lifecycleStatus==='archived'||season.lifecycleStatus==='deleted') throw new Error('该赛季为只读；请先在个人主页恢复赛季');
       if(sequence!==seasonSwitchSequence.current) return false;
       const select=async()=>{
         if(sequence!==seasonSwitchSequence.current)return;
@@ -991,15 +991,15 @@ function App() {
   const flushProfileSeason = async (id: string): Promise<number | undefined> => {
     const archive = serverArchive.current;
     if (archive?.id !== id) return undefined;
-    if (archive.lifecycleStatus !== 'paused' && archive.lifecycleStatus !== 'archived') await putServerArchive(currentState.current);
+    if (archive.lifecycleStatus !== 'paused' && archive.lifecycleStatus !== 'archived' && archive.lifecycleStatus !== 'deleted') await putServerArchive(currentState.current);
     return archive.revision;
   };
-  const applyLifecycle = async (payload: {season:{id:string;revision:number;lifecycleStatus:'active'|'paused'|'archived';state:LearningState};currentSeasonId:string|null;selectionRevision:number}) => {
+  const applyLifecycle = async (payload: {season:{id:string;revision:number;lifecycleStatus:'active'|'paused'|'archived'|'deleted';state:LearningState};currentSeasonId:string|null;selectionRevision:number}) => {
     const userId = accountUser!.id; const sequence = ++seasonSwitchSequence.current;
     setServerSeasons(previous => previous.map(item => item.id === payload.season.id ? {...item, ...payload.season} : item));
     seasonSelectionRevisionRef.current = payload.selectionRevision; setSeasonSelectionRevision(payload.selectionRevision); setCurrentSeasonId(payload.currentSeasonId ?? '');
     if (serverArchive.current?.id === payload.season.id) { serverArchive.current.revision = payload.season.revision; serverArchive.current.lifecycleStatus = payload.season.lifecycleStatus; }
-    if (payload.season.lifecycleStatus !== 'archived' || serverArchive.current?.id !== payload.season.id) return;
+    if ((payload.season.lifecycleStatus !== 'archived' && payload.season.lifecycleStatus !== 'deleted') || serverArchive.current?.id !== payload.season.id) return;
     serverHydrated.current = false; serverArchive.current = null; activeRequest.current?.abort();
     if (!payload.currentSeasonId) return;
     const response = await apiFetch(`/api/seasons/${payload.currentSeasonId}`);
@@ -1008,6 +1008,14 @@ function App() {
     if (currentAccountId.current !== userId || sequence !== seasonSwitchSequence.current) return;
     serverArchive.current = {id:season.id,revision:season.revision,userId,lifecycleStatus:season.lifecycleStatus}; serverHydrated.current = true;
     currentState.current = season.state; setState(season.state); setSelectedTaskId(season.state.lastTaskId ?? season.state.campaign.stages[0].tasks[0].id); setHintLevels({}); setDiagnosticMode(false); setAdaptation(null); setSaveError('');
+  };
+  const applySeasonAdjusted = async (payload:{season:{id:string;revision:number;lifecycleStatus:'active'|'paused'|'archived'|'deleted';state:LearningState}}) => {
+    setServerSeasons(previous=>previous.map(item=>item.id===payload.season.id?{...item,...payload.season}:item));
+    if(serverArchive.current?.id!==payload.season.id)return;
+    serverArchive.current.revision=payload.season.revision;
+    currentState.current=payload.season.state;setState(payload.season.state);
+    const next=payload.season.state.lastTaskId??payload.season.state.campaign.stages[0]?.tasks[0]?.id??'';
+    setSelectedTaskId(next);setSelectedStage(0);serverHydrated.current=true;setSaveError('');setSyncStatus('saved');
   };
   const continueProfileSeason = async (id: string, taskId?: string) => {
     if (!await switchServerSeason(id)) return;
@@ -1022,7 +1030,7 @@ function App() {
       {tab==='inventory' ? <WarehouseScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
        tab==='shop' ? <ShopScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
        tab==='challenges' ? <ChallengesScreen account={accountUser.email} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute}/> :
-       <ProfileScreen key={accountUser.id} account={accountUser.email} currentSeasonId={currentSeasonId} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute} onCreateSeason={()=>{navigateRoute('/');setGoalOpen(true);}} onSelectSeason={switchServerSeason} onContinueSeason={continueProfileSeason} onFlushSeason={flushProfileSeason} onLifecycleChanged={applyLifecycle}/>}</Suspense>;
+       <ProfileScreen key={accountUser.id} account={accountUser.email} currentSeasonId={currentSeasonId} onExit={exitStandalone} onLogout={()=>void logout()} onNavigate={navigateRoute} onCreateSeason={()=>{navigateRoute('/');setGoalOpen(true);}} onSelectSeason={switchServerSeason} onContinueSeason={continueProfileSeason} onFlushSeason={flushProfileSeason} onLifecycleChanged={applyLifecycle} onSeasonAdjusted={applySeasonAdjusted}/>}</Suspense>;
   }
 
   return (
@@ -1340,13 +1348,13 @@ function SettingsModal({ apiKey, model, connection, onApiKey, onModel, onClose, 
   return <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="modal-topline"><span><KeyRound size={15}/> CONNECTION SETTINGS</span><button className="icon-button" onClick={onClose} aria-label="关闭"><X size={18}/></button></div><h2 id="settings-title">连接学习引擎</h2><p>使用官方 DeepSeek API 为本次行动生成任务和核对成果。也可在本机 <code>.env</code> 文件设置服务密钥。</p><div className="connection-state"><span className={`connection-dot ${connection.configured || apiKey ? 'online' : ''}`}/>{connection.configured ? `服务器已配置 · ${connection.model}` : apiKey ? '仅此会话有效 · 离开页面后清除' : '尚未连接 · 可先体验预置赛季'}</div><label className="form-field"><span>DeepSeek API Key</span><input type="password" value={apiKey} autoComplete="off" onChange={event => onApiKey(event.target.value)} placeholder={connection.configured ? '留空即使用本机已配置密钥' : '粘贴本次使用的密钥'}/></label><label className="form-field"><span>模型</span><select value={model} onChange={event => onModel(event.target.value)}><option value="deepseek-flash">DeepSeek Flash · 高效部署</option><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select></label><p className="key-privacy"><ShieldCheck size={13}/> 密钥不存入 localStorage、备份文件或 Git。</p><div className="modal-actions"><button className="text-button" onClick={onClose}>返回任务大厅</button><button className="modal-submit" onClick={onApply}><Check size={15}/>应用设置</button></div></section></div>;
 }
 
-function AccountSeasonStart({ onCreateGoal, onExample, seasons, onSelectSeason }: { onCreateGoal:()=>void; onExample:()=>void; seasons:Array<{id:string;title:string;lifecycleStatus?:'active'|'paused'|'archived'}>; onSelectSeason:(id:string)=>void }) {
+function AccountSeasonStart({ onCreateGoal, onExample, seasons, onSelectSeason }: { onCreateGoal:()=>void; onExample:()=>void; seasons:Array<{id:string;title:string;lifecycleStatus?:'active'|'paused'|'archived'|'deleted'}>; onSelectSeason:(id:string)=>void }) {
   return <section className="account-season-start">
     <span className="micro-label">NINEGRID · YOUR LEARNING ARCHIVE</span>
     <h1>创建你的第一个学习赛季</h1>
     <p>账号已连接，但还没有当前赛季。先写下自己想掌握的目标，再生成课程；不会自动塞入示例内容，也不会创建虚假进度或余额。</p>
     <div className="account-season-actions"><button className="modal-submit" onClick={onCreateGoal}><Target size={17}/>开始设定学习目标</button><button className="secondary-button" onClick={onExample}><BookOpen size={16}/>预览 NumPy 示例</button></div>
-    {seasons.length>0&&<div className="account-saved-seasons"><h2>已保存的赛季</h2>{seasons.map(season=><button key={season.id} onClick={()=>onSelectSeason(season.id)}>{season.title}<small>{season.lifecycleStatus==='archived'?'已归档':'已暂停'} · 打开赛季</small></button>)}</div>}
+    {seasons.length>0&&<div className="account-saved-seasons"><h2>已保存的赛季</h2>{seasons.filter(season=>season.lifecycleStatus!=='deleted'&&season.lifecycleStatus!=='archived').map(season=><button key={season.id} onClick={()=>onSelectSeason(season.id)}>{season.title}<small>{season.lifecycleStatus==='paused'?'已暂停':'进行中'} · 打开赛季</small></button>)}</div>}
   </section>;
 }
 
