@@ -19,7 +19,7 @@ export const rewardBundleSchema = z.object({
   xp: z.number().int().min(0).max(10000), coins: z.number().int().min(0).max(MAX_HAFVER_COINS),
   items: z.array(z.object({ itemId: idSchema, name: text(120), description: text(500), rarity: z.enum(['common', 'rare', 'legendary']), icon: text(40), quantity: z.number().int().min(1).max(99) })).max(10),
 });
-const lessonContentShapeSchema = z.object({
+export const lessonContentShapeSchema = z.object({
   purpose: text(2000), explanation: text(12000), terms: z.array(z.object({ en: text(100), zh: text(100), context: text(500) })).max(30),
   example: z.object({ kind: z.enum(['code','text']), prompt: text(2000), content: text(12000), walkthrough: text(4000) }),
   guidedPractice: z.object({ prompt: text(3000), expected: text(2000), hint: text(1000) }),
@@ -27,6 +27,7 @@ const lessonContentShapeSchema = z.object({
   sourceBasis: z.enum(['none','material','mixed']).optional(), sourceNotes: z.array(text(1000)).max(10).optional(),
   language: z.enum(['en', 'zh', 'mixed']), generatedAt: dateSchema, revision: z.number().int().min(1).max(1000),
 });
+export const lessonContentDraftSchema = lessonContentShapeSchema.omit({ generatedAt: true, revision: true });
 export const lessonContentSchema = z.preprocess(value => {
   if (!value || typeof value !== 'object') return value;
   const lesson = value as Record<string, any>;

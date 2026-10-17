@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 import { COLLECTION_CATALOG } from '../shared/catalog';
 import { BOXES, CHALLENGES, ECONOMY_VERSION, EFFECTIVE_REVIEW_COINS, FREE_CHALLENGE_REWARD_COINS, STAGE_COMPLETION_COINS, chainCompletionCoins, isStandardPoolEligible, learningCoinsForMinutes, poolExpectedRecovery, poolTotals, rarityBoxItem, validateEconomy, type BoxId, type ChallengeTier, type RewardPoolEntry } from '../shared/economy';
 import { buildChallengeQuestionSet, calculateChallengeKd, ChallengeQuestionBankError, CHALLENGE_MODE_SETTINGS, type ChallengeMode } from '../shared/challengeRules';
-import { applySeasonGoalAdjustment, buildAssessedSeasonGoalAdjustmentPreview, buildSeasonGoalAdjustmentPreview, type SeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
+import { applySeasonGoalAdjustment, buildAssessedSeasonGoalAdjustmentPreview, buildSeasonGoalAdjustmentPreview, SEASON_ADJUSTMENT_ASSESSMENT_VERSION, type SeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
 import { evaluationSchema, learningStateSchema } from '../shared/schema';
 import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
@@ -16,8 +16,20 @@ type Options = { pool: Pool; assessGoalAdjustment?: (req: Request, res: Response
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ownerOf = (req: Request) => (req.session as typeof req.session & { userId?: string }).userId;
 const profileAvatars=new Set(['','/assets/avatars/field.svg','/assets/avatars/compass.svg','/assets/avatars/signal.svg']);
+const redactLessonAnswer = <T extends { challenge: { referenceAnswer: string } }>(lesson: T): T => ({ ...lesson, challenge: { ...lesson.challenge, referenceAnswer: '' } });
 const publicSeason = (row: Row) => ({ id: row.id, campaignId: row.campaign_id, title: row.title, revision: row.revision, state: row.state, lifecycleStatus: row.lifecycle_status ?? 'active', createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() });
-const publicGoalAdjustmentDraft = (row: GoalAdjustmentDraftRow) => ({ id: row.id, seasonId: row.season_id, revision: row.revision, goal: row.goal, desiredArtifact: row.desired_artifact, status: row.status, progressStep: row.progress_step, previewId: row.preview_id, preview: row.preview, errorCode: row.error_code, attemptCount: row.attempt_count, startedAt: row.started_at ? new Date(row.started_at).toISOString() : null, updatedAt: new Date(row.updated_at).toISOString() });
+const publicGoalAdjustmentPreview = (preview: SeasonGoalAdjustmentPreview) => ({
+  ...preview,
+  tasks: preview.tasks.map(task => ({
+    ...task,
+    ...(task.replacementTask?.teaching ? { replacementTask: { ...task.replacementTask, teaching: redactLessonAnswer(task.replacementTask.teaching) } } : {}),
+  })),
+  ...(preview.assessment ? { assessment: { ...preview.assessment, tasks: preview.assessment.tasks.map(task => ({
+    ...task,
+    ...(task.lesson ? { lesson: redactLessonAnswer(task.lesson) } : {}),
+  })) } } : {}),
+});
+const publicGoalAdjustmentDraft = (row: GoalAdjustmentDraftRow) => ({ id: row.id, seasonId: row.season_id, revision: row.revision, goal: row.goal, desiredArtifact: row.desired_artifact, status: row.status, progressStep: row.progress_step, previewId: row.preview_id, preview: row.preview ? publicGoalAdjustmentPreview(row.preview) : null, errorCode: row.error_code, attemptCount: row.attempt_count, startedAt: row.started_at ? new Date(row.started_at).toISOString() : null, updatedAt: new Date(row.updated_at).toISOString() });
 const eligibleChallengeTasks = (row: Row) => row.state.campaign.stages.flatMap(stage => stage.tasks)
   .filter(task => row.state.progress[task.id]?.status === 'completed' || isTaskUnlocked(row.state.campaign, row.state.progress, task.id))
   .map(task => ({ ...task, lessonRevision: row.state.content?.[task.id]?.revision ?? task.teaching?.revision ?? 1 }));
@@ -544,7 +556,13 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
       await pool.query(`UPDATE season_goal_adjustment_drafts SET status='interrupted',error_code='GENERATION_INTERRUPTED',updated_at=now()
         WHERE owner_user_id=$1 AND season_id=$2 AND status='generating' AND updated_at < now()-interval '20 seconds'`,[ownerOf(req),req.params.id]);
       const found=await pool.query<GoalAdjustmentDraftRow>('SELECT * FROM season_goal_adjustment_drafts WHERE owner_user_id=$1 AND season_id=$2',[ownerOf(req),req.params.id]);
-      res.json({seasonRevision:season.rows[0].revision,draft:found.rows[0]?publicGoalAdjustmentDraft(found.rows[0]):null});
+      let draft=found.rows[0];
+      if(draft?.status==='preview-ready'&&draft.preview?.assessmentVersion!==SEASON_ADJUSTMENT_ASSESSMENT_VERSION){
+        const invalidated=await pool.query<GoalAdjustmentDraftRow>(`UPDATE season_goal_adjustment_drafts SET status='failed',progress_step='saved',preview_id=NULL,preview=NULL,error_code='GOAL_ADJUSTMENT_RULES_UPDATED',updated_at=now()
+          WHERE id=$1 AND owner_user_id=$2 AND season_id=$3 AND status='preview-ready' RETURNING *`,[draft.id,ownerOf(req),req.params.id]);
+        draft=invalidated.rows[0]??draft;
+      }
+      res.json({seasonRevision:season.rows[0].revision,draft:draft?publicGoalAdjustmentDraft(draft):null});
     }catch(error){next(error);}
   });
 
@@ -582,7 +600,11 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
         const foundDraft=await pool.query<GoalAdjustmentDraftRow>('SELECT * FROM season_goal_adjustment_drafts WHERE id=$1 AND owner_user_id=$2 AND season_id=$3',[draftId,ownerOf(req),req.params.id]);
         const draft=foundDraft.rows[0];
         if(!draft||draft.revision!==season.revision||draft.goal!==input.goal||draft.desired_artifact!==input.desiredArtifact){res.status(409).json({error:'GOAL_ADJUSTMENT_DRAFT_STALE'});return;}
-        if(draft.status==='preview-ready'&&draft.preview){res.json({preview:draft.preview,draft:publicGoalAdjustmentDraft(draft)});return;}
+        if(draft.status==='preview-ready'&&draft.preview?.assessmentVersion===SEASON_ADJUSTMENT_ASSESSMENT_VERSION){res.json({preview:publicGoalAdjustmentPreview(draft.preview),draft:publicGoalAdjustmentDraft(draft)});return;}
+        if(draft.status==='preview-ready'&&draft.preview?.assessmentVersion!==SEASON_ADJUSTMENT_ASSESSMENT_VERSION){
+          await pool.query(`UPDATE season_goal_adjustment_drafts SET status='editing',progress_step='saved',preview_id=NULL,preview=NULL,error_code='GOAL_ADJUSTMENT_RULES_UPDATED',updated_at=now()
+            WHERE id=$1 AND owner_user_id=$2 AND season_id=$3 AND status='preview-ready'`,[draft.id,ownerOf(req),req.params.id]);
+        }
         if(draft.status==='generating'){res.status(409).json({error:'GOAL_ADJUSTMENT_IN_PROGRESS'});return;}
         const started=await pool.query<GoalAdjustmentDraftRow>(`UPDATE season_goal_adjustment_drafts SET status='generating',progress_step='assessment',preview_id=NULL,preview=NULL,error_code=NULL,attempt_count=attempt_count+1,started_at=now(),updated_at=now()
           WHERE id=$1 AND owner_user_id=$2 AND season_id=$3 AND status<>'generating' RETURNING *`,[draftId,ownerOf(req),req.params.id]);
@@ -593,12 +615,20 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
       let preview:SeasonGoalAdjustmentPreview;
       if(assessGoalAdjustment){
         const campaign=season.state.campaign;
+        const allTasks=campaign.stages.flatMap(stage=>stage.tasks);
+        const taskById=new Map(allTasks.map(task=>[task.id,task]));
+        const prerequisiteContext=(taskId:string)=>{
+          const prerequisite=taskById.get(taskId);
+          return prerequisite?{taskId,title:prerequisite.title,brief:prerequisite.brief,objectives:prerequisite.objectives.map(item=>item.text),acceptance:prerequisite.acceptance,deliverable:prerequisite.deliverable??'',progress:season.state.progress[taskId]?.status??'idle'}:{taskId,missing:true};
+        };
         const taskRows=campaign.stages.flatMap(stage=>{
           const mainlineIds=new Set(stage.mainlineTaskIds??stage.tasks.filter(task=>(task.track??'main')==='main').map(task=>task.id));
           return stage.tasks.filter(task=>mainlineIds.has(task.id)).map(task=>({
-            taskId:task.id,stageId:stage.id,stageTitle:stage.title,title:task.title,brief:task.brief,action:task.action??'',deliverable:task.deliverable??'',acceptance:task.acceptance,prerequisites:task.prerequisites,
+            taskId:task.id,stageId:stage.id,stageTitle:stage.title,track:task.track??'main',chainId:task.chainId??'',title:task.title,brief:task.brief,
+            contract:{action:task.action??'',objectives:task.objectives.map(item=>({id:item.id,text:item.text})),steps:task.steps,acceptance:task.acceptance,deliverable:task.deliverable??'',recallQuestion:task.recallQuestion,hint:task.hint,hints:task.hints??[]},
+            prerequisites:task.prerequisites.map(prerequisiteContext),unlockAfter:(task.unlockAfter??[]).map(prerequisiteContext),
             currentGoalCapabilities:task.goalCapabilityIds??[],goalRelevance:task.goalRelevance??'',progress:season.state.progress[task.id]?.status??'idle',hasSavedEvidence:Boolean(season.state.progress[task.id]?.evidence?.trim()),
-            lesson:season.state.content?.[task.id]?{purpose:season.state.content[task.id].purpose,challenge:season.state.content[task.id].challenge.prompt}:undefined,
+            hasCurrentLesson:Boolean(season.state.content?.[task.id]??task.teaching),lesson:season.state.content?.[task.id]??task.teaching??null,
           }));
         });
         const raw=await assessGoalAdjustment(req,res,{
@@ -610,7 +640,7 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
         });
         if(raw===undefined){if(activeDraftId)await pool.query(`UPDATE season_goal_adjustment_drafts SET status='failed',error_code='GOAL_ASSESSMENT_UNAVAILABLE',updated_at=now() WHERE id=$1 AND owner_user_id=$2`,[activeDraftId,ownerOf(req)]);if(!res.headersSent)res.status(502).json({error:'GOAL_ASSESSMENT_UNAVAILABLE'});return;}
         if(activeDraftId)await pool.query(`UPDATE season_goal_adjustment_drafts SET progress_step='validation',updated_at=now() WHERE id=$1 AND owner_user_id=$2 AND status='generating'`,[activeDraftId,ownerOf(req)]);
-        try{preview=buildAssessedSeasonGoalAdjustmentPreview(season.state,input,raw,{baseRevision:season.revision});}
+        try{preview=buildAssessedSeasonGoalAdjustmentPreview(season.state,input,raw,{baseRevision:season.revision,assessedAt:new Date().toISOString()});}
         catch(error){if(activeDraftId)await pool.query(`UPDATE season_goal_adjustment_drafts SET status='failed',error_code='GOAL_ASSESSMENT_INVALID',updated_at=now() WHERE id=$1 AND owner_user_id=$2`,[activeDraftId,ownerOf(req)]);res.status(502).json({error:'GOAL_ASSESSMENT_INVALID',detail:error instanceof Error?error.message:'返回结构无效'});return;}
         const ownerId=String(ownerOf(req));
         for(const [key,value]of goalPreviews)if(value.expiresAt<Date.now())goalPreviews.delete(key);
@@ -620,7 +650,7 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
       }else preview=buildSeasonGoalAdjustmentPreview(season.state,input,{baseRevision:season.revision});
       if(activeDraftId)await pool.query(`UPDATE season_goal_adjustment_drafts SET status='preview-ready',progress_step='review',preview_id=$1,preview=$2,error_code=NULL,updated_at=now()
         WHERE id=$3 AND owner_user_id=$4 AND status='generating'`,[preview.previewId,JSON.stringify(preview),activeDraftId,ownerOf(req)]);
-      res.json({preview});
+      res.json({preview:publicGoalAdjustmentPreview(preview)});
     }catch(error){
       if(activeDraftId)await pool.query(`UPDATE season_goal_adjustment_drafts SET status='failed',error_code='GOAL_ASSESSMENT_FAILED',updated_at=now() WHERE id=$1 AND owner_user_id=$2 AND status='generating'`,[activeDraftId,ownerOf(req)]).catch(()=>undefined);
       next(error);
@@ -652,9 +682,9 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
           if(stored&&stored.expiresAt>=Date.now()&&stored.ownerId===String(ownerOf(req))&&stored.seasonId===req.params.id&&stored.revision===revision&&stored.goal===req.body.goal&&stored.desiredArtifact===req.body.desiredArtifact)storedPreview=stored.preview;
           else goalPreviews.delete(key);
         }
-        if(!storedPreview){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE',message:'评估预览已过期或与当前目标不一致，请重新生成。'});return;}
+        if(!storedPreview||storedPreview.assessmentVersion!==SEASON_ADJUSTMENT_ASSESSMENT_VERSION){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE',message:'课程同步规则已更新或评估预览已过期，请重新生成预览。'});return;}
         preview=storedPreview;
-        try{const verified=buildAssessedSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},preview.assessment,{baseRevision:revision});if(verified.previewId!==previewId)throw new Error('stale');}
+        try{const verified=buildAssessedSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},preview.assessment,{baseRevision:revision,assessedAt:preview.assessedAt});if(verified.previewId!==previewId)throw new Error('stale');}
         catch{await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE'});return;}
       }else{
         preview=buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},{baseRevision:revision});
@@ -681,7 +711,7 @@ export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }:
       await client.query(`INSERT INTO season_goal_adjustments(id,owner_user_id,season_id,revision_before,revision_after,previous_goal,next_goal,previous_artifact,next_artifact,preview)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[randomUUID(),ownerOf(req),req.params.id,revision,updated.rows[0].revision,season.state.campaign.goal,parsed.data.campaign.goal,season.state.campaign.desiredArtifact??season.state.campaign.ultimateReward,parsed.data.campaign.desiredArtifact??parsed.data.campaign.ultimateReward,JSON.stringify(preview)]);
       if(draftId)await client.query(`UPDATE season_goal_adjustment_drafts SET status='applied',progress_step='complete',preview_id=NULL,preview=NULL,error_code=NULL,updated_at=now() WHERE id=$1 AND owner_user_id=$2 AND season_id=$3`,[draftId,ownerOf(req),req.params.id]);
-      await client.query('COMMIT');goalPreviews.delete(`${String(ownerOf(req))}:${previewId}`);res.json({season:publicSeason(updated.rows[0]),preview});
+      await client.query('COMMIT');goalPreviews.delete(`${String(ownerOf(req))}:${previewId}`);res.json({season:publicSeason(updated.rows[0]),preview:publicGoalAdjustmentPreview(preview)});
     }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
 

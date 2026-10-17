@@ -1,14 +1,17 @@
 import type { Campaign, LearningState, Stage, Task } from './types';
 import { analyzeCurriculumGoalScope } from './curriculum';
 import { seasonGoalAdjustmentAssessmentSchema, type SeasonGoalAdjustmentAssessment } from './seasonAdjustmentAssessment';
+import { lessonContentSchema } from './schema';
+import { lessonExposesReferenceAnswer, taskChallengeContract, usesCodeExample } from './learningChallenge';
 
 export type SeasonGoalAdjustmentInput = { goal: string; desiredArtifact: string };
+export const SEASON_ADJUSTMENT_ASSESSMENT_VERSION = 2;
 export type SeasonGoalAdjustmentPreviewTask = {
   taskId: string;
   title: string;
   stageId: string;
   stageTitle: string;
-  action: 'keep' | 'replace' | 'review' | 'blocked';
+  action: 'keep' | 'refresh' | 'replace' | 'review' | 'blocked';
   originalTaskDisposition?: 'move-to-optional-branch';
   reason: string;
   evidence?: string[];
@@ -16,6 +19,7 @@ export type SeasonGoalAdjustmentPreviewTask = {
   preservesEvidence: true;
   replacement?: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance' | 'deliverable' | 'minutes'>;
   replacementTask?: Task;
+  contentReview?: SeasonGoalAdjustmentAssessment['tasks'][number]['contentReview'];
   dependencyChanges: string[];
 };
 export type SeasonGoalAdjustmentPreviewStage = {
@@ -28,6 +32,8 @@ export type SeasonGoalAdjustmentPreviewStage = {
 };
 export type SeasonGoalAdjustmentPreview = {
   previewId: string;
+  assessmentVersion?: number;
+  assessedAt?: string;
   baseRevision?: number;
   campaignId: string;
   goal: string;
@@ -209,10 +215,10 @@ export function buildAssessedSeasonGoalAdjustmentPreview(
   state: LearningState,
   input: SeasonGoalAdjustmentInput,
   rawAssessment: unknown,
-  options: { baseRevision?: number } = {},
+  options: { baseRevision?: number; assessedAt?: string } = {},
 ): SeasonGoalAdjustmentPreview {
   const parsed = seasonGoalAdjustmentAssessmentSchema.safeParse(rawAssessment);
-  if (!parsed.success) throw new Error('课程目标评估返回了不完整或无效的结构。');
+  if (!parsed.success) throw new Error(`课程目标评估返回了不完整或无效的结构：${parsed.error.issues.map(issue => `${issue.path.join('.')} ${issue.message}`).join('；')}`);
   const assessment = parsed.data;
   const stages = state.campaign.stages;
   const currentCollectible = state.campaign.seasonalCollectible;
@@ -239,20 +245,22 @@ export function buildAssessedSeasonGoalAdjustmentPreview(
   const allTaskRows = stages.flatMap(stage => stage.tasks.map(task => ({ stage, task })));
   const capabilityIds = new Set(assessment.capabilities.map(capability => capability.id));
   const assessedTasks = new Map(assessment.tasks.map(item => [item.taskId, item]));
+  const assessedAt = options.assessedAt ?? state.campaign.createdAt;
   const tasks: SeasonGoalAdjustmentPreviewTask[] = mainline.map(({ stage, task }) => {
     const reviewed = assessedTasks.get(task.id)!;
     const staticFinding = staticRows.get(task.id);
     const hardMismatch = staticFinding?.action === 'blocked';
     const action: SeasonGoalAdjustmentPreviewTask['action'] = hardMismatch && reviewed.action === 'keep' ? 'blocked' : reviewed.action;
+    if (reviewed.action === 'keep' && !(state.content?.[task.id] ?? task.teaching)) throw new Error(`任务「${task.title}」尚无已保存讲解；必须生成并审阅新教学内容后才能确认同步。`);
     if (reviewed.goalCapabilityIds.some(id => !capabilityIds.has(id))) throw new Error(`任务 ${task.title} 引用了未声明的目标能力。`);
     const dependents = allTaskRows.filter(row => row.task.prerequisites.includes(task.id) || (row.task.unlockAfter ?? []).includes(task.id));
     let replacementTask: Task | undefined;
-    if (action === 'replace' && reviewed.replacement) {
-      const replacementId = `goal_${fingerprint([state.campaign.id, stage.id, task.id, goal, desiredArtifact, reviewed.replacement])}`;
+    if ((action === 'refresh' || action === 'replace') && reviewed.replacement && reviewed.lesson) {
+      const replacementId = `goal_${fingerprint([state.campaign.id, stage.id, task.id, goal, desiredArtifact, reviewed.replacement, reviewed.lesson])}`;
       replacementTask = {
         id: replacementId, title: reviewed.replacement.title, brief: reviewed.replacement.brief,
         kind: task.kind, minutes: task.minutes, xp: 0, prerequisites: [...task.prerequisites],
-        objectives: [{ id: `${replacementId}_objective`, text: reviewed.replacement.objective }],
+        objectives: reviewed.replacement.objectives.map((text, index) => ({ id: `${replacementId}_objective_${index + 1}`, text })),
         curiosity: reviewed.replacement.curiosity, steps: [...reviewed.replacement.steps],
         acceptance: reviewed.replacement.acceptance, recallQuestion: reviewed.replacement.recallQuestion,
         hint: reviewed.replacement.hint, hints: [...reviewed.replacement.hints], resources: [],
@@ -260,21 +268,33 @@ export function buildAssessedSeasonGoalAdjustmentPreview(
         goalRelevance: reviewed.goalRelevance, action: reviewed.replacement.action,
         deliverable: reviewed.replacement.deliverable, reward: { xp: 0, coins: 0, items: [] },
       };
+      const contract = taskChallengeContract(replacementTask);
+      const lesson = lessonContentSchema.safeParse({
+        ...reviewed.lesson,
+        example: { ...reviewed.lesson.example, kind: usesCodeExample(replacementTask) ? 'code' : 'text' },
+        challenge: { ...reviewed.lesson.challenge, prompt: contract.prompt, rubric: contract.rubric },
+        language: state.campaign.language ?? reviewed.lesson.language,
+        generatedAt: assessedAt,
+        revision: 1,
+      });
+      if (!lesson.success || lessonExposesReferenceAnswer(lesson.data)) throw new Error(`任务「${task.title}」的新讲解或独立挑战未通过结构与答案隔离校验，不能应用预览。`);
+      replacementTask.teaching = lesson.data;
     }
     const deterministicConflict = hardMismatch && reviewed.action === 'keep';
     return {
       taskId: task.id, title: task.title, stageId: stage.id, stageTitle: stage.title, action,
-      ...(action === 'replace' ? { originalTaskDisposition: 'move-to-optional-branch' as const } : {}),
+      ...(action === 'refresh' || action === 'replace' ? { originalTaskDisposition: 'move-to-optional-branch' as const } : {}),
       reason: deterministicConflict
         ? `确定性规则发现该任务包含目标外的必需内容；评估建议保留，不能自动应用。${staticFinding?.reason ?? ''}`
         : reviewed.reason,
       evidence: reviewed.evidence.length ? reviewed.evidence : staticFinding?.evidence,
       minutes: task.minutes, preservesEvidence: true,
+      contentReview: reviewed.contentReview,
       ...(replacementTask ? {
         replacement: { id: replacementTask.id, title: replacementTask.title, brief: replacementTask.brief, acceptance: replacementTask.acceptance, deliverable: replacementTask.deliverable ?? '', minutes: replacementTask.minutes },
         replacementTask,
       } : {}),
-      dependencyChanges: action === 'replace' ? dependents.map(row => row.task.title) : [],
+      dependencyChanges: action === 'refresh' || action === 'replace' ? dependents.map(row => row.task.title) : [],
     };
   });
 
@@ -300,26 +320,28 @@ export function buildAssessedSeasonGoalAdjustmentPreview(
     reason: assessedCollectible.reason,
   } : undefined;
   const mainlineMinutes = mainline.reduce((sum, row) => sum + row.task.minutes, 0);
-  const replacementMinutes = tasks.filter(row => row.action === 'replace').reduce((sum, row) => sum + row.minutes, 0);
-  const budget = { ...base.budget, mainlineMinutesBefore: mainlineMinutes, mainlineMinutesAfter: mainlineMinutes, movedToOptionalMinutes: replacementMinutes };
-  const plan = { campaignId: state.campaign.id, baseRevision: options.baseRevision, goal, desiredArtifact, campaignChange, seasonalCollectibleChange, assessment, stageChanges, tasks, budget };
+  const replacementMinutes = tasks.filter(row => row.action === 'replace' || row.action === 'refresh').reduce((sum, row) => sum + row.minutes, 0);
+  const mainlineMinutesAfter = tasks.reduce((sum, row) => sum + ((row.action === 'replace' || row.action === 'refresh') ? row.replacement?.minutes ?? row.minutes : row.minutes), 0);
+  const budget = { ...base.budget, mainlineMinutesBefore: mainlineMinutes, mainlineMinutesAfter, movedToOptionalMinutes: replacementMinutes };
+  const assessmentVersion = SEASON_ADJUSTMENT_ASSESSMENT_VERSION;
+  const plan = { assessmentVersion, campaignId: state.campaign.id, baseRevision: options.baseRevision, assessedAt, goal, desiredArtifact, campaignChange, seasonalCollectibleChange, assessment, stageChanges, tasks, budget };
   const blockedCount = tasks.filter(row => row.action === 'blocked').length;
   const reviewCount = tasks.filter(row => row.action === 'review').length;
   return {
-    previewId: fingerprint({ state, plan }), baseRevision: options.baseRevision, campaignId: state.campaign.id,
+    previewId: fingerprint({ state, plan }), assessmentVersion, assessedAt, baseRevision: options.baseRevision, campaignId: state.campaign.id,
     goal, desiredArtifact, campaignChange, seasonalCollectibleChange, assessment, stageChanges, tasks, budget,
     notice: blockedCount
       ? `有 ${blockedCount} 项主线任务与新目标存在明确冲突，此预览不能应用。`
       : reviewCount
         ? `有 ${reviewCount} 项任务的目标关联仍不确定；补充目标或材料后重新评估，不能默认作为必需主线。`
-        : `评估覆盖了赛季名称、${stageChanges.length} 个阶段、${tasks.length} 项主线任务、${assessment.capabilities.length} 项目标能力和九格成果${seasonalCollectibleChange ? '及赛季收藏说明' : ''}。旧任务、答案、证据及奖励流水保留；替换任务使用新 ID 和空进度。未领取收藏会同步更新；已领取收藏保留历史描述。`,
+        : `评估覆盖了赛季名称、${stageChanges.length} 个阶段、${tasks.length} 项主线任务的任务合同与讲解内容、${assessment.capabilities.length} 项目标能力和九格成果${seasonalCollectibleChange ? '及赛季收藏说明' : ''}。需要更新的任务以新版本进入主线，旧任务、答案、证据、评价和奖励流水保留在原任务记录中；新版本不继承旧验收。未领取收藏会同步更新；已领取收藏保留历史描述。`,
   };
 }
 
 export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonGoalAdjustmentPreview): LearningState {
   if (preview.campaignId !== state.campaign.id) throw new Error('预览不属于当前赛季。');
   const current = preview.assessment
-    ? buildAssessedSeasonGoalAdjustmentPreview(state, preview, preview.assessment, { baseRevision: preview.baseRevision })
+    ? buildAssessedSeasonGoalAdjustmentPreview(state, preview, preview.assessment, { baseRevision: preview.baseRevision, assessedAt: preview.assessedAt })
     : buildSeasonGoalAdjustmentPreview(state, preview, { baseRevision: preview.baseRevision });
   if (current.previewId !== preview.previewId) throw new Error('赛季内容已变化，请重新生成调整预览。');
   if (preview.tasks.some(item => item.action === 'blocked')) throw new Error('该调整含有明确偏离目标且尚无替代的主线任务；请重新生成任务后再创建预览。');
@@ -327,7 +349,7 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
   const projectedCampaign: Campaign = { ...state.campaign, goal: preview.goal, desiredArtifact: preview.desiredArtifact, ultimateReward: preview.desiredArtifact };
   const scopeFindings = analyzeCurriculumGoalScope(projectedCampaign, { goal: preview.goal, desiredArtifact: preview.desiredArtifact, ultimateReward: preview.desiredArtifact });
   const replacements = preview.assessment
-    ? new Map(preview.tasks.filter(item => item.action === 'replace').map(item => {
+    ? new Map(preview.tasks.filter(item => item.action === 'replace' || item.action === 'refresh').map(item => {
       const row = state.campaign.stages.flatMap((stage, stageIndex) => stage.tasks.map(task => ({ stageIndex, task }))).find(candidate => candidate.task.id === item.taskId)!;
       if (!item.replacementTask) throw new Error('替换任务内容缺失，请重新生成预览。');
       return [item.taskId, { stageIndex: row.stageIndex, task: row.task, replacement: item.replacementTask }] as const;
@@ -349,11 +371,11 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
     const assessedTasks = new Map(preview.assessment.tasks.map(item => [item.taskId, item]));
     for (const stage of next.campaign.stages) for (const task of stage.tasks) {
       const assessed = assessedTasks.get(task.id);
-      if (!assessed || assessed.action === 'replace') continue;
+      if (!assessed || assessed.action === 'replace' || assessed.action === 'refresh') continue;
       task.goalCapabilityIds = [...assessed.goalCapabilityIds];
       task.goalRelevance = assessed.goalRelevance;
     }
-    const replacementIds = new Map(preview.tasks.filter(item => item.action === 'replace' && item.replacement).map(item => [item.taskId, item.replacement!.id]));
+    const replacementIds = new Map(preview.tasks.filter(item => (item.action === 'replace' || item.action === 'refresh') && item.replacement).map(item => [item.taskId, item.replacement!.id]));
     next.campaign.nineGrid = preview.assessment.nineGrid.map(slot => ({
       id: slot.id, title: slot.title, ability: slot.ability, value: slot.value,
       unlockTaskIds: slot.taskIds.map(id => replacementIds.get(id) ?? id),
@@ -436,6 +458,7 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
     const oldTask = state.campaign.stages.flatMap(stage => stage.tasks).find(task => task.id === oldId)!;
     const newTask = next.campaign.stages.flatMap(stage => stage.tasks).find(task => task.id === newId)!;
     next.progress[newId] = { completedObjectives: [], evidence: '', status: 'idle' };
+    if (newTask.teaching) next.content = { ...(next.content ?? {}), [newId]: structuredClone(newTask.teaching) };
     if (next.lastTaskId === oldId) next.lastTaskId = newId;
     for (const grid of next.campaign.nineGrid ?? []) grid.unlockTaskIds = grid.unlockTaskIds.map(id => id === oldId ? newId : id);
     if (next.campaign.seasonalCollectible?.finalTaskId === oldId) next.campaign.seasonalCollectible.finalTaskId = newId;

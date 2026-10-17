@@ -315,6 +315,14 @@
 .season-adjustment-tasks article{display:grid;gap:6px;padding:12px 14px;border-left:3px solid #638f77;background:#15201d}
 .season-adjustment-tasks article>span,.season-adjustment-tasks article>small{color:#bdc9c1;line-height:1.55}
 .season-adjustment-tasks article>strong{font-size:1rem}
+.season-adjustment-review,.season-adjustment-lesson{margin-top:8px;padding:10px 12px;border-top:1px solid #34443e;color:#d4ded8}
+.season-adjustment-review summary,.season-adjustment-lesson summary{cursor:pointer;font-weight:650}
+.season-adjustment-review>div{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:5px 16px;margin-top:10px}
+.season-adjustment-review>div>strong{grid-column:1/-1;margin-top:4px}
+.season-adjustment-review>div>span{font-size:.9rem;line-height:1.5}
+.season-adjustment-lesson h5{margin:14px 0 4px;color:#e8eee9}
+.season-adjustment-lesson p,.season-adjustment-lesson li{max-width:90ch;line-height:1.65;overflow-wrap:anywhere}
+.season-adjustment-lesson ul{margin:6px 0 10px;padding-left:22px}
 .season-adjustment-dialog>footer{justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid #34423f}
 @media(max-width:680px){.season-adjustment-dialog{width:calc(100vw - 20px);max-height:calc(100dvh - 24px);padding:16px}.season-adjustment-budget{display:grid;gap:6px}.season-adjustment-dialog>footer{position:sticky;bottom:-16px;padding:12px 0 4px;background:#111b1b}}
 

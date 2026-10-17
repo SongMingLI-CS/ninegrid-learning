@@ -28,6 +28,7 @@ async function fixture(assessGoalAdjustment?: (req: any, res: any, payload: unkn
   await pool.query('CREATE TABLE users (id uuid PRIMARY KEY)');
   await pool.query("INSERT INTO users (id) VALUES ('00000000-0000-4000-8000-000000000001'),('00000000-0000-4000-8000-000000000002')");
   await pool.query("CREATE TABLE seasons (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, campaign_id text NOT NULL, title text NOT NULL, revision integer NOT NULL DEFAULT 1, state jsonb NOT NULL, lifecycle_status text NOT NULL DEFAULT 'active', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,campaign_id))");
+  await pool.query('CREATE TABLE season_goal_adjustment_drafts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),owner_user_id uuid NOT NULL,season_id uuid NOT NULL,revision integer NOT NULL,goal text NOT NULL,desired_artifact text NOT NULL,status text NOT NULL,progress_step text NOT NULL,preview_id text,preview jsonb,error_code text,attempt_count integer NOT NULL DEFAULT 0,started_at timestamptz,updated_at timestamptz NOT NULL DEFAULT now(),created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(owner_user_id,season_id))');
   await pool.query('CREATE TABLE user_current_seasons(user_id uuid PRIMARY KEY,season_id uuid,revision integer NOT NULL DEFAULT 1,updated_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('CREATE TABLE user_profiles(user_id uuid PRIMARY KEY,nickname text NOT NULL DEFAULT \'行动者\',avatar_url text NOT NULL DEFAULT \'\',bio text NOT NULL DEFAULT \'\',is_public boolean NOT NULL DEFAULT false,updated_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('CREATE TABLE profile_avatars(id uuid PRIMARY KEY,owner_user_id uuid NOT NULL UNIQUE,storage_key text NOT NULL UNIQUE,mime_type text NOT NULL,byte_size integer NOT NULL,width integer NOT NULL,height integer NOT NULL,sha256 text NOT NULL,created_at timestamptz NOT NULL DEFAULT now())');
@@ -72,6 +73,11 @@ async function fixture(assessGoalAdjustment?: (req: any, res: any, payload: unkn
 
 function state(): LearningState {
   return { version: 2, campaign: structuredClone(DEMO_CAMPAIGN), progress: createProgressForCampaign(DEMO_CAMPAIGN), reviews: [], notes: {}, wallet: { currency: 'learning-coin', balance: 0 }, inventory: {}, rewardLedger: [] };
+}
+
+const mismatchedReview = { contract: { objective: 'mismatch', action: 'mismatch', deliverable: 'mismatch', acceptance: 'mismatch', prerequisites: 'aligned' }, lesson: { purpose: 'mismatch', explanation: 'mismatch', example: 'mismatch', guidedPractice: 'mismatch', independentChallenge: 'mismatch', scoring: 'mismatch' }, summary: '旧任务合同和教学内容与新目标不符，需要更新。' };
+function lessonDraft(purpose: string, referenceAnswer = 'blue whale 41') {
+  return { purpose, explanation: '先识别目标所需的证据，再使用证据完成任务。'.repeat(8), terms: [{ en: 'evidence', zh: '证据', context: '支持判断的材料。' }], example: { kind: 'text', prompt: '示例材料', content: '一段独立于挑战的示例。', walkthrough: '提取证据并解释它与结论的关系。' }, guidedPractice: { prompt: '给定新材料后标出相关句。', expected: '能够指出文本依据。', hint: '先找与目标直接相关的内容。' }, challenge: { prompt: '独立分析一段新材料并提交依据。', rubric: ['结论切题', '证据来自材料', '解释证据关系'], referenceAnswer, hints: ['先确定判断对象。'] }, sourceBasis: 'none' as const, sourceNotes: [], language: 'zh' as const };
 }
 
 describe('server-owned learning archives', () => {
@@ -141,9 +147,11 @@ describe('server-owned learning archives', () => {
 
   it('uses one owner-bound assessment for preview and apply, updating the season name and replacing task content', async () => {
     let assessmentCalls = 0;
+    let assessmentPayload: any;
     const { app, pool, directory } = await fixture(async (_req, _res, raw) => {
       assessmentCalls += 1;
       const payload = raw as any;
+      assessmentPayload = payload;
       const taskIds = payload.tasks.map((task: any) => task.taskId);
       const stages = payload.stages.map((stage: any) => ({ stageId: stage.id, title: `新目标 · ${stage.title}`, description: '围绕用户目标开展循序渐进的学习和验收。', reason: '阶段标题、说明均已按新目标重评。' }));
       return {
@@ -155,7 +163,9 @@ describe('server-owned learning archives', () => {
         tasks: payload.tasks.map((task: any) => ({
           taskId: task.taskId, action: 'replace', reason: '原任务需要按新目标重写。', evidence: ['旧交付要求与新目标不一致。'],
           goalCapabilityIds: ['target-skill'], goalRelevance: '直接训练新目标核心能力。',
-          replacement: { title: `新目标任务：${task.title}`, brief: '完成一项与新目标直接相关的学习活动。', action: '独立完成并提交学习证据。', objective: '准确完成目标能力练习。', steps: ['理解目标。', '独立练习并核对。'], acceptance: '提交答案并满足全部必需标准。', deliverable: '可核对的练习证据', recallQuestion: '你使用了什么证据？', hint: '先明确题目要求。', hints: ['检查每个必需项。'], curiosity: '如何把方法迁移到新材料？' },
+          contentReview: mismatchedReview,
+          replacement: { title: `新目标任务：${task.title}`, brief: '完成一项与新目标直接相关的学习活动。', action: '独立完成并提交学习证据。', objectives: ['准确完成目标能力练习。','提交证据并满足全部验收标准。'], steps: ['理解目标。', '独立练习并核对。'], acceptance: '提交答案并满足全部必需标准。', deliverable: '可核对的练习证据', recallQuestion: '你使用了什么证据？', hint: '先明确题目要求。', hints: ['检查每个必需项。'], curiosity: '如何把方法迁移到新材料？' },
+          lesson: lessonDraft('新目标下围绕实际目标能力的完整学习讲解。'),
         })),
         nineGrid: Array.from({ length: 9 }, (_, index) => ({ id: payload.nineGrid[index]?.id ?? `grid-${index + 1}`, title: `新能力 ${index + 1}`, ability: '运用新目标核心能力', value: '可通过后续任务验证', taskIds: [taskIds[index % taskIds.length]] })),
       };
@@ -163,6 +173,9 @@ describe('server-owned learning archives', () => {
     const owner = '00000000-0000-4000-8000-000000000001';
     const seasonId = randomUUID();
     const archive = state();
+    const sampledTask = archive.campaign.stages.flatMap((stage: any) => stage.tasks).find((task: any) => (task.track ?? 'main') === 'main')!;
+    archive.content = { [sampledTask.id]: { ...lessonDraft('旧目标下的完整教学内容。', 'old answer 7'), generatedAt: '2026-10-01T00:00:00.000Z', revision: 3 } as any };
+    archive.progress[sampledTask.id].evidence = 'private learner evidence must not be sent to the evaluator';
     const finalTask = archive.campaign.stages.at(-1)!.tasks.find((task: any) => (task.track ?? 'main') === 'main')!;
     archive.campaign.stages.at(-1)!.gateTaskIds = [finalTask.id];
     archive.campaign.seasonalCollectible = { id: 'season-award', name: '旧目标工具章', story: '旧目标说明。', appearance: '旧工具造型。', abilityOutcome: '制作旧工具。', rewardKey: 'b'.repeat(64), finalTaskId: finalTask.id, displayValue: 1_600_000 };
@@ -171,20 +184,38 @@ describe('server-owned learning archives', () => {
     await pool.query('INSERT INTO season_collectibles(season_id,owner_user_id,item_id,reward_key,definition,final_task_id,gate_task_ids) VALUES($1,$2,$3,$4,$5,$6,$7)', [seasonId, owner, archive.campaign.seasonalCollectible.id, archive.campaign.seasonalCollectible.rewardKey, JSON.stringify(archive.campaign.seasonalCollectible), archive.campaign.seasonalCollectible.finalTaskId, [archive.campaign.seasonalCollectible.finalTaskId]]);
 
     const input = { revision: 1, goal: '完成一套新的领域学习目标。', desiredArtifact: '形成可验证的核心能力证据。' };
-    const previewResponse = await request(app).post(`/api/seasons/${seasonId}/goal-preview`).set('x-test-user', owner).send(input).expect(200);
+    const draftResponse = await request(app).put(`/api/seasons/${seasonId}/goal-adjustment-draft`).set('x-test-user', owner).send(input).expect(200);
+    const draftId = draftResponse.body.draft.id;
+    const previewResponse = await request(app).post(`/api/seasons/${seasonId}/goal-preview`).set('x-test-user', owner).send({ ...input, draftId }).expect(200);
     const preview = previewResponse.body.preview;
     expect(assessmentCalls).toBe(1);
+    expect(assessmentPayload.tasks.find((task: any) => task.taskId === sampledTask.id)).toMatchObject({
+      hasCurrentLesson: true,
+      lesson: { purpose: '旧目标下的完整教学内容。', example: { content: '一段独立于挑战的示例。' }, challenge: { referenceAnswer: 'old answer 7' } },
+      hasSavedEvidence: true,
+    });
+    expect(assessmentPayload.tasks.find((task: any) => task.taskId === sampledTask.id)).not.toHaveProperty('evidence');
+    expect(JSON.stringify(assessmentPayload)).not.toContain('private learner evidence must not be sent to the evaluator');
+    expect(previewResponse.body.preview.tasks[0].replacementTask.teaching.challenge.referenceAnswer).toBe('');
+    expect(previewResponse.body.preview.assessment.tasks[0].lesson.challenge.referenceAnswer).toBe('');
+    const recoveredDraft = await request(app).get(`/api/seasons/${seasonId}/goal-adjustment-draft`).set('x-test-user', owner).expect(200);
+    expect(recoveredDraft.body.draft.preview.tasks[0].replacementTask.teaching.challenge.referenceAnswer).toBe('');
+    const storedDraft = await pool.query('SELECT preview FROM season_goal_adjustment_drafts WHERE id=$1', [draftId]);
+    expect(storedDraft.rows[0].preview.tasks[0].replacementTask.teaching.challenge.referenceAnswer).toBe('blue whale 41');
     expect(preview).toMatchObject({ campaignChange: { titleBefore: oldTitle, titleAfter: '本地课程一致性回归' }, assessment: { rationale: expect.stringMatching(/旧赛季名称/) } });
     expect(preview.seasonalCollectibleChange.after.name).toBe('新目标成果章');
     expect(preview.tasks.every((task: any) => task.action === 'replace' && task.replacementTask)).toBe(true);
 
-    const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId });
+    const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, draftId, previewId: preview.previewId });
     expect(applied.status, JSON.stringify(applied.body)).toBe(200);
     expect(assessmentCalls).toBe(1);
     expect(applied.body.season.title).toBe('本地课程一致性回归');
     expect(applied.body.season.state.campaign.title).toBe('本地课程一致性回归');
     expect(applied.body.season.state.campaign.subtitle).toBe('更新后的赛季摘要。');
     expect(applied.body.season.state.campaign.seasonalCollectible.name).toBe('新目标成果章');
+    expect(applied.body.season.state.content[preview.tasks[0].replacement.id].challenge.referenceAnswer).toBe('blue whale 41');
+    const persisted = await pool.query('SELECT state FROM seasons WHERE id=$1', [seasonId]);
+    expect(persisted.rows[0].state.content[preview.tasks[0].replacement.id].challenge.referenceAnswer).toBe('blue whale 41');
     const collectible = await pool.query('SELECT definition,final_task_id FROM season_collectibles WHERE season_id=$1', [seasonId]);
     expect(collectible.rows[0].definition.name).toBe('新目标成果章');
     expect(collectible.rows[0].definition.description).toContain('记录新目标下的独立成果。');
@@ -196,6 +227,23 @@ describe('server-owned learning archives', () => {
     const mainline = applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks.filter((task: any) => (task.track ?? 'main') === 'main'));
     expect(mainline.every((task: any) => task.title.startsWith('新目标任务：') && task.goalCapabilityIds.includes('target-skill'))).toBe(true);
     expect(applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks).filter((task: any) => task.track === 'branch').length).toBe(preview.tasks.length);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('invalidates a persisted adjustment preview created with older synchronization rules', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const seasonId = randomUUID();
+    const archive = state();
+    await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [seasonId, owner, archive.campaign.id, archive.campaign.title, JSON.stringify(archive)]);
+    const draftId = randomUUID();
+    await pool.query(`INSERT INTO season_goal_adjustment_drafts(id,owner_user_id,season_id,revision,goal,desired_artifact,status,progress_step,preview_id,preview)
+      VALUES($1,$2,$3,1,'New target','New artifact','preview-ready','review',$4,$5)`, [draftId, owner, seasonId, '1'.repeat(32), JSON.stringify({ assessmentVersion: 1, previewId: '1'.repeat(32) })]);
+
+    const response = await request(app).get(`/api/seasons/${seasonId}/goal-adjustment-draft`).set('x-test-user', owner).expect(200);
+    expect(response.body.draft).toMatchObject({ status: 'failed', preview: null, errorCode: 'GOAL_ADJUSTMENT_RULES_UPDATED' });
+    const stored = await pool.query('SELECT status,preview_id,preview FROM season_goal_adjustment_drafts WHERE id=$1', [draftId]);
+    expect(stored.rows[0]).toMatchObject({ status: 'failed', preview_id: null, preview: null });
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 
