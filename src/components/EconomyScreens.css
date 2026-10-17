@@ -317,3 +317,26 @@
 .season-adjustment-tasks article>strong{font-size:1rem}
 .season-adjustment-dialog>footer{justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid #34423f}
 @media(max-width:680px){.season-adjustment-dialog{width:calc(100vw - 20px);max-height:calc(100dvh - 24px);padding:16px}.season-adjustment-budget{display:grid;gap:6px}.season-adjustment-dialog>footer{position:sticky;bottom:-16px;padding:12px 0 4px;background:#111b1b}}
+
+.goal-adjustment-save-status{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;min-height:28px;color:#d2ddd5;font-size:.875rem}
+.goal-adjustment-save-status small{flex-basis:100%;color:#f1b7ad;line-height:1.5}
+.goal-adjustment-progress{display:grid;gap:12px;margin:14px 0;padding:14px 16px;border:1px solid #40544e;border-radius:8px;background:#101a18}
+.goal-adjustment-progress-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.goal-adjustment-progress-heading strong{font-size:1rem;color:#edf3ee}
+.goal-adjustment-progress-heading span,.goal-adjustment-progress>p{color:#c3d0c8;font-size:.875rem;line-height:1.55}
+.goal-adjustment-progress>p{margin:0}
+.goal-adjustment-progress-track{height:9px;overflow:hidden;border-radius:999px;background:#263630}
+.goal-adjustment-progress-track>span{display:block;height:100%;border-radius:inherit;background:#58bca6}
+.goal-adjustment-progress-track>span.indeterminate{width:34%;animation:goal-adjustment-progress-slide 1.5s ease-in-out infinite alternate}
+.goal-adjustment-progress-track>span.complete{width:100%;background:#91ad7d}
+.goal-adjustment-progress.status-failed .goal-adjustment-progress-track>span,.goal-adjustment-progress.status-interrupted .goal-adjustment-progress-track>span{width:100%;background:#bd806e}
+.goal-adjustment-progress-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none}
+.goal-adjustment-progress-steps li{display:flex;align-items:center;gap:7px;min-width:0;color:#aab9b1;font-size:.8125rem;line-height:1.4}
+.goal-adjustment-progress-steps li>span{display:grid;place-items:center;flex:0 0 22px;width:22px;height:22px;border:1px solid #53645c;border-radius:50%;font-size:.75rem}
+.goal-adjustment-progress-steps li.complete{color:#bce2ce}
+.goal-adjustment-progress-steps li.complete>span{border-color:#5e987a;background:#1e382c;color:#d5f1df}
+.goal-adjustment-progress-steps li.current{color:#f0d59b}
+.goal-adjustment-progress-steps li.current>span{border-color:#d4b574;color:#f0d59b}
+@keyframes goal-adjustment-progress-slide{from{transform:translateX(0)}to{transform:translateX(190%)}}
+@media(max-width:680px){.goal-adjustment-progress-steps{grid-template-columns:repeat(2,minmax(0,1fr))}.goal-adjustment-progress{padding:12px}}
+@media(prefers-reduced-motion:reduce){.goal-adjustment-progress-track>span.indeterminate{width:34%;animation:none;margin-left:33%}}
