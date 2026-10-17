@@ -1,6 +1,6 @@
 import { COLLECTION_CATALOG, type CollectionRarity } from './catalog';
 
-export type BoxId = 'small-safe' | 'large-safe';
+export type BoxId = 'training-cache' | 'small-safe' | 'large-safe';
 export type ChallengeTier = 'ordinary' | 'confidential' | 'top-secret';
 export interface RewardPoolEntry { rarity: CollectionRarity; probability: number; quantity: number }
 export const ECONOMY_VERSION = '2026-10-v2';
@@ -30,6 +30,7 @@ export function chainCompletionCoins(track: 'main' | 'branch') {
 export function formatHafverCoins(value: number | string | bigint): string {
   const amount = typeof value === 'bigint' ? Number(value) : Number(value);
   if (!Number.isSafeInteger(amount) || amount < 0) return '金额超出安全范围';
+  if (amount < 10_000) return amount.toLocaleString('zh-CN');
   const compact = amount >= 1_000_000 ? `${(amount / 10_000).toLocaleString('zh-CN', { maximumFractionDigits: amount % 10_000 ? 2 : 0 })}万`
     : amount >= 10_000 ? `${(amount / 10_000).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}万`
     : amount.toLocaleString('zh-CN');
@@ -37,6 +38,9 @@ export function formatHafverCoins(value: number | string | bigint): string {
 }
 
 export const BOXES: Record<BoxId, { id: BoxId; title: string; price: number; pulls: number; pool: RewardPoolEntry[]; description: string }> = {
+  'training-cache': { id: 'training-cache', title: '训练补给箱', price: 80_000, pulls: 1, description: '低门槛入门补给，固定从小紫收藏池中抽取一件。', pool: [
+    { rarity: 'small-purple', probability: 1, quantity: 1 },
+  ] },
   'small-safe': { id: 'small-safe', title: '小保险', price: 200_000, pulls: 1, description: '一次随机回收，小紫为主，也可能出现高稀有度藏品。', pool: [
     { rarity: 'small-purple', probability: 0.52, quantity: 1 }, { rarity: 'small-gold', probability: 0.32, quantity: 1 }, { rarity: 'large-gold', probability: 0.12, quantity: 1 }, { rarity: 'small-red', probability: 0.035, quantity: 1 }, { rarity: 'large-red', probability: 0.005, quantity: 1 },
   ] },

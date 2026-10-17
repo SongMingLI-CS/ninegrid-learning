@@ -34,6 +34,8 @@ describe('versioned economy rules',()=>{
   },15_000);
   it('validates exact full-pool recovery expectation below each box price',()=>{
     const result=validateEconomy();
+    expect(Object.keys(BOXES)).toHaveLength(3);
+    expect(BOXES['training-cache']).toMatchObject({ title: '训练补给箱', price: 80_000, pulls: 1 });
     for(const box of Object.values(BOXES)){
       expect(poolTotals(box.pool)).toBeCloseTo(1, 12);
       expect(result.boxes[box.id].expectedRecovery).toBe(poolExpectedRecovery(box.pool));
@@ -70,6 +72,8 @@ describe('versioned economy rules',()=>{
     expect(chainCompletionCoins('branch')).toBe(0);
     expect(formatHafverCoins(130_000)).toBe('13万（130,000）');
     expect(formatHafverCoins(1_200_000)).toBe('120万（1,200,000）');
+    expect(formatHafverCoins(0)).toBe('0');
+    expect(formatHafverCoins(9_500)).toBe('9,500');
     expect(learningCoinsForMinutes(60)).toBeLessThan(BOXES['large-safe'].price);
   });
 });

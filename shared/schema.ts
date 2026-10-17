@@ -90,7 +90,7 @@ export const taskSchema = z.object({
 export const goalInputSchema = z.object({
   goal: text(8000), level: text(200), days: z.number().int().min(1).max(365),
   dailyMinutes: z.number().int().min(1).max(1440), ultimateReward: text(2000),
-  desiredArtifact: text(2000).optional(), language: z.enum(['en','zh','mixed']).optional(), sourceMaterial: z.string().max(20000).optional(),
+  desiredArtifact: text(2000).optional(), language: z.enum(['en','zh','mixed']).optional(), sourceMaterial: z.string().max(20000).optional(), learnerContext: z.string().max(8000).optional(),
   quickDiagnostic: z.object({ version: z.literal(1), source: z.enum(['self-report','server-assessed']).optional(), items: z.array(z.object({ id: idSchema, prompt: text(1000), confidence: z.enum(['known','needs-practice','unknown']), response: z.string().max(2000).optional() })).min(3).max(5) }).optional(),
 });
 
@@ -118,9 +118,9 @@ export const campaignSchema = z.object({
     const capabilities = new Set(campaign.goalCapabilities?.map(capability => capability.id) ?? []);
     if (!capabilities.size || capabilities.size !== (campaign.goalCapabilities?.length ?? 0)) issue('课程版本 5 必须声明唯一的目标能力');
     const covered = new Set<string>();
-    for (const task of tasks) {
+    for (const task of tasks.filter(item => declaredMainline.has(item.id))) {
       if (!task.goalCapabilityIds?.length || task.goalCapabilityIds.some(id => !capabilities.has(id)) || !task.goalRelevance?.trim() || !task.action?.trim() || !task.deliverable?.trim() || !task.acceptance?.trim()) issue(`任务 ${task.id} 缺少目标关联、实际行动、交付物或验收标准`);
-      if (declaredMainline.has(task.id)) task.goalCapabilityIds?.forEach(id => covered.add(id));
+      task.goalCapabilityIds?.forEach(id => covered.add(id));
     }
     if ([...capabilities].some(id => !covered.has(id))) issue('课程版本 5 的每项目标能力都必须由主线任务覆盖');
   }

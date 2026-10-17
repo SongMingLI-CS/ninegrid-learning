@@ -20,7 +20,7 @@ import { completeTask, markSelfChecked, setEvidence, setEvaluation } from '../sr
 import { curriculumOutlineSchema } from '../shared/curriculum';
 import type { LearningState } from '../shared/types';
 
-async function fixture() {
+async function fixture(assessGoalAdjustment?: (req: any, res: any, payload: unknown) => Promise<unknown | undefined>) {
   const memory = newDb();
   memory.public.registerFunction({ name: 'gen_random_uuid', returns: DataType.uuid, implementation: randomUUID });
   const adapter = memory.adapters.createPg();
@@ -29,6 +29,8 @@ async function fixture() {
   await pool.query("INSERT INTO users (id) VALUES ('00000000-0000-4000-8000-000000000001'),('00000000-0000-4000-8000-000000000002')");
   await pool.query("CREATE TABLE seasons (id uuid PRIMARY KEY, owner_user_id uuid NOT NULL, campaign_id text NOT NULL, title text NOT NULL, revision integer NOT NULL DEFAULT 1, state jsonb NOT NULL, lifecycle_status text NOT NULL DEFAULT 'active', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(owner_user_id,campaign_id))");
   await pool.query('CREATE TABLE user_current_seasons(user_id uuid PRIMARY KEY,season_id uuid,revision integer NOT NULL DEFAULT 1,updated_at timestamptz NOT NULL DEFAULT now())');
+  await pool.query('CREATE TABLE user_profiles(user_id uuid PRIMARY KEY,nickname text NOT NULL DEFAULT \'行动者\',avatar_url text NOT NULL DEFAULT \'\',bio text NOT NULL DEFAULT \'\',is_public boolean NOT NULL DEFAULT false,updated_at timestamptz NOT NULL DEFAULT now())');
+  await pool.query('CREATE TABLE profile_avatars(id uuid PRIMARY KEY,owner_user_id uuid NOT NULL UNIQUE,storage_key text NOT NULL UNIQUE,mime_type text NOT NULL,byte_size integer NOT NULL,width integer NOT NULL,height integer NOT NULL,sha256 text NOT NULL,created_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('CREATE TABLE season_goal_adjustments(id uuid PRIMARY KEY,owner_user_id uuid NOT NULL,season_id uuid NOT NULL,revision_before integer NOT NULL,revision_after integer NOT NULL,previous_goal text NOT NULL,next_goal text NOT NULL,previous_artifact text NOT NULL,next_artifact text NOT NULL,preview jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('CREATE TABLE reward_ledger (id uuid PRIMARY KEY, user_id uuid NOT NULL, season_id uuid NOT NULL, task_id text NOT NULL, kind text NOT NULL, idempotency_key text NOT NULL, reward jsonb NOT NULL, economy_version text NOT NULL DEFAULT \'2026-10-v1\', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))');
   await pool.query('CREATE TABLE wallets (user_id uuid NOT NULL, currency text NOT NULL, balance bigint NOT NULL DEFAULT 0, PRIMARY KEY(user_id,currency))');
@@ -56,7 +58,7 @@ async function fixture() {
   const app = express(); app.use(express.json({ limit: '10mb' }));
   app.use(session({ secret: 'archive-test-secret-that-is-long-enough', resave: false, saveUninitialized: true }));
   app.use((req, _res, next) => { (req.session as typeof req.session & { userId?: string }).userId = req.header('x-test-user') ?? '00000000-0000-4000-8000-000000000001'; next(); });
-  mountArchiveRoutes(app, { pool });
+  mountArchiveRoutes(app, { pool, ...(assessGoalAdjustment ? { assessGoalAdjustment } : {}) });
   mountGenerationDraftRoutes(app, { pool });
   const directory = await mkdtemp(join(tmpdir(), 'ninegrid-attachments-'));
   mountAttachmentRoutes(app, { pool, directory, apiKey: 'vision-test-only', fetchImpl: async (_url, init) => {
@@ -117,7 +119,8 @@ describe('server-owned learning archives', () => {
     expect(stale.body.error).toBe('SEASON_PREVIEW_STALE');
     await pool.query('UPDATE seasons SET state=$1 WHERE id=$2', [JSON.stringify(archive), seasonId]);
     await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: '0'.repeat(32) }).expect(409);
-    const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId }).expect(200);
+    const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
     expect(applied.body.season.revision).toBe(2);
     expect(applied.body.season.state.campaign.goal).toBe(input.goal);
     const oldTask = applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks).find((item: any) => item.id === task.id);
@@ -133,6 +136,66 @@ describe('server-owned learning archives', () => {
     expect(collectibleRule.rows[0].gate_task_ids).toContain(replacement.id);
     expect(collectibleRule.rows[0].gate_task_ids).not.toContain(task.id);
     expect((await pool.query('SELECT * FROM season_goal_adjustments WHERE season_id=$1', [seasonId])).rowCount).toBe(1);
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('uses one owner-bound assessment for preview and apply, updating the season name and replacing task content', async () => {
+    let assessmentCalls = 0;
+    const { app, pool, directory } = await fixture(async (_req, _res, raw) => {
+      assessmentCalls += 1;
+      const payload = raw as any;
+      const taskIds = payload.tasks.map((task: any) => task.taskId);
+      const stages = payload.stages.map((stage: any) => ({ stageId: stage.id, title: `新目标 · ${stage.title}`, description: '围绕用户目标开展循序渐进的学习和验收。', reason: '阶段标题、说明均已按新目标重评。' }));
+      return {
+        campaign: { title: '本地课程一致性回归', subtitle: '更新后的赛季摘要。' },
+        rationale: '旧赛季名称已与目标脱节，需同步更新。',
+        capabilities: [{ id: 'target-skill', title: '新目标核心能力', description: '使用独立任务证据验证。' }],
+        stages,
+        seasonalCollectible: { name: '新目标成果章', story: '记录新目标下的独立成果。', appearance: '深石墨色珐琅章，呈现目标对应的学习符号。', abilityOutcome: '通过新目标的独立验收。', reason: '旧收藏说明仍绑定原目标。' },
+        tasks: payload.tasks.map((task: any) => ({
+          taskId: task.taskId, action: 'replace', reason: '原任务需要按新目标重写。', evidence: ['旧交付要求与新目标不一致。'],
+          goalCapabilityIds: ['target-skill'], goalRelevance: '直接训练新目标核心能力。',
+          replacement: { title: `新目标任务：${task.title}`, brief: '完成一项与新目标直接相关的学习活动。', action: '独立完成并提交学习证据。', objective: '准确完成目标能力练习。', steps: ['理解目标。', '独立练习并核对。'], acceptance: '提交答案并满足全部必需标准。', deliverable: '可核对的练习证据', recallQuestion: '你使用了什么证据？', hint: '先明确题目要求。', hints: ['检查每个必需项。'], curiosity: '如何把方法迁移到新材料？' },
+        })),
+        nineGrid: Array.from({ length: 9 }, (_, index) => ({ id: payload.nineGrid[index]?.id ?? `grid-${index + 1}`, title: `新能力 ${index + 1}`, ability: '运用新目标核心能力', value: '可通过后续任务验证', taskIds: [taskIds[index % taskIds.length]] })),
+      };
+    });
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const seasonId = randomUUID();
+    const archive = state();
+    const finalTask = archive.campaign.stages.at(-1)!.tasks.find((task: any) => (task.track ?? 'main') === 'main')!;
+    archive.campaign.stages.at(-1)!.gateTaskIds = [finalTask.id];
+    archive.campaign.seasonalCollectible = { id: 'season-award', name: '旧目标工具章', story: '旧目标说明。', appearance: '旧工具造型。', abilityOutcome: '制作旧工具。', rewardKey: 'b'.repeat(64), finalTaskId: finalTask.id, displayValue: 1_600_000 };
+    const oldTitle = archive.campaign.title;
+    await pool.query('INSERT INTO seasons(id,owner_user_id,campaign_id,title,state,revision,lifecycle_status) VALUES($1,$2,$3,$4,$5,1,\'active\')', [seasonId, owner, archive.campaign.id, oldTitle, JSON.stringify(archive)]);
+    await pool.query('INSERT INTO season_collectibles(season_id,owner_user_id,item_id,reward_key,definition,final_task_id,gate_task_ids) VALUES($1,$2,$3,$4,$5,$6,$7)', [seasonId, owner, archive.campaign.seasonalCollectible.id, archive.campaign.seasonalCollectible.rewardKey, JSON.stringify(archive.campaign.seasonalCollectible), archive.campaign.seasonalCollectible.finalTaskId, [archive.campaign.seasonalCollectible.finalTaskId]]);
+
+    const input = { revision: 1, goal: '完成一套新的领域学习目标。', desiredArtifact: '形成可验证的核心能力证据。' };
+    const previewResponse = await request(app).post(`/api/seasons/${seasonId}/goal-preview`).set('x-test-user', owner).send(input).expect(200);
+    const preview = previewResponse.body.preview;
+    expect(assessmentCalls).toBe(1);
+    expect(preview).toMatchObject({ campaignChange: { titleBefore: oldTitle, titleAfter: '本地课程一致性回归' }, assessment: { rationale: expect.stringMatching(/旧赛季名称/) } });
+    expect(preview.seasonalCollectibleChange.after.name).toBe('新目标成果章');
+    expect(preview.tasks.every((task: any) => task.action === 'replace' && task.replacementTask)).toBe(true);
+
+    const applied = await request(app).post(`/api/seasons/${seasonId}/goal-adjustment`).set('x-test-user', owner).send({ ...input, previewId: preview.previewId });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+    expect(assessmentCalls).toBe(1);
+    expect(applied.body.season.title).toBe('本地课程一致性回归');
+    expect(applied.body.season.state.campaign.title).toBe('本地课程一致性回归');
+    expect(applied.body.season.state.campaign.subtitle).toBe('更新后的赛季摘要。');
+    expect(applied.body.season.state.campaign.seasonalCollectible.name).toBe('新目标成果章');
+    const collectible = await pool.query('SELECT definition,final_task_id FROM season_collectibles WHERE season_id=$1', [seasonId]);
+    expect(collectible.rows[0].definition.name).toBe('新目标成果章');
+    expect(collectible.rows[0].definition.description).toContain('记录新目标下的独立成果。');
+    expect(collectible.rows[0].definition.description).toContain('深石墨色珐琅章');
+    expect(collectible.rows[0].definition.description).toContain('通过新目标的独立验收。');
+    expect(collectible.rows[0].final_task_id).toBe(applied.body.season.state.campaign.seasonalCollectible.finalTaskId);
+    expect(applied.body.season.state.campaign.goalCapabilities[0].id).toBe('target-skill');
+    expect(applied.body.season.state.campaign.stages.every((stage: any) => stage.title.startsWith('新目标'))).toBe(true);
+    const mainline = applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks.filter((task: any) => (task.track ?? 'main') === 'main'));
+    expect(mainline.every((task: any) => task.title.startsWith('新目标任务：') && task.goalCapabilityIds.includes('target-skill'))).toBe(true);
+    expect(applied.body.season.state.campaign.stages.flatMap((stage: any) => stage.tasks).filter((task: any) => task.track === 'branch').length).toBe(preview.tasks.length);
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 
@@ -535,6 +598,21 @@ describe('server-owned learning archives', () => {
     expect(ledgerAfter.rows.length).toBeGreaterThanOrEqual(ledgerBefore.rows.length);
     expect(ledgerAfter.rows.filter((row: { kind: string }) => row.kind === 'mission').length).toBe(ledgerBefore.rows.filter((row: { kind: string }) => row.kind === 'mission').length);
     expect(first.body.season.state.progress[taskId].verification).toBe('self'); expect(afterSelf.body.season.state.progress[taskId].verification).toBe('self');
+    await pool.end(); await rm(directory, { recursive: true, force: true });
+  });
+
+  it('stores compressed custom avatars for their owner and keeps the private image isolated', async () => {
+    const { app, pool, directory } = await fixture();
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const other = '00000000-0000-4000-8000-000000000002';
+    const image = await sharp({ create: { width: 32, height: 24, channels: 3, background: '#4a8b71' } }).png().toBuffer();
+    const uploaded = await request(app).post('/api/profile/avatar').set('x-test-user', owner).attach('image', image, { filename: 'avatar.png', contentType: 'image/png' }).expect(201);
+    expect(uploaded.body).toMatchObject({ width: 512, height: 512, avatarUrl: expect.stringMatching(/^\/api\/profile\/avatar\//) });
+    const profile = await pool.query('SELECT avatar_url FROM user_profiles WHERE user_id=$1', [owner]);
+    expect(profile.rows[0].avatar_url).toBe(uploaded.body.avatarUrl);
+    const imageResponse = await request(app).get(uploaded.body.avatarUrl).set('x-test-user', owner).expect(200);
+    expect(imageResponse.headers['content-type']).toContain('image/webp');
+    await request(app).get(uploaded.body.avatarUrl).set('x-test-user', other).expect(404);
     await pool.end(); await rm(directory, { recursive: true, force: true });
   });
 

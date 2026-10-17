@@ -92,9 +92,9 @@ describe('InventoryScreen', () => {
     const history = await screen.findByRole('region', { name: '奖励记录' });
     const rows = within(history).getAllByRole('listitem');
     expect(rows[0].textContent).toContain('复习');
-    expect(rows[0].textContent).toContain('−2（2） 哈弗币');
+    expect(rows[0].textContent).toContain('−2 哈弗币');
     expect(rows[1].textContent).toContain('+20 XP');
-    expect(rows[1].textContent).toContain('+5（5） 哈弗币');
+    expect(rows[1].textContent).toContain('+5 哈弗币');
     expect(rows[1].textContent).toContain('方向罗盘 ×2');
     expect(rows[0].querySelector('time')?.dateTime).toBe(secondDate);
   });

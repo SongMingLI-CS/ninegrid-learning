@@ -1,17 +1,17 @@
 import { createHash, randomInt, randomUUID } from 'node:crypto';
-import type { Express, Request } from 'express';
+import type { Express, Request, Response } from 'express';
 import type { Pool } from 'pg';
 import { COLLECTION_CATALOG } from '../shared/catalog';
 import { BOXES, CHALLENGES, ECONOMY_VERSION, EFFECTIVE_REVIEW_COINS, FREE_CHALLENGE_REWARD_COINS, STAGE_COMPLETION_COINS, chainCompletionCoins, isStandardPoolEligible, learningCoinsForMinutes, poolExpectedRecovery, poolTotals, rarityBoxItem, validateEconomy, type BoxId, type ChallengeTier, type RewardPoolEntry } from '../shared/economy';
 import { buildChallengeQuestionSet, calculateChallengeKd, ChallengeQuestionBankError, CHALLENGE_MODE_SETTINGS, type ChallengeMode } from '../shared/challengeRules';
-import { applySeasonGoalAdjustment, buildSeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
+import { applySeasonGoalAdjustment, buildAssessedSeasonGoalAdjustmentPreview, buildSeasonGoalAdjustmentPreview, type SeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
 import { evaluationSchema, learningStateSchema } from '../shared/schema';
 import type { LearningState, TaskProgress } from '../shared/types';
 import type { Evaluation } from '../shared/types';
 import { completeTask, currentTaskVerification, isTaskUnlocked, rateReview, recordGridOutcome, taskEvidenceText } from '../src/lib/engine';
 
 type Row = { id: string; campaign_id: string; title: string; revision: number; state: LearningState; created_at: Date | string; updated_at: Date | string; lifecycle_status?: 'active'|'paused'|'archived'|'deleted' };
-type Options = { pool: Pool };
+type Options = { pool: Pool; assessGoalAdjustment?: (req: Request, res: Response, payload: unknown) => Promise<unknown | undefined> };
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ownerOf = (req: Request) => (req.session as typeof req.session & { userId?: string }).userId;
 const profileAvatars=new Set(['','/assets/avatars/field.svg','/assets/avatars/compass.svg','/assets/avatars/signal.svg']);
@@ -127,7 +127,8 @@ function drawCatalogItem(pool: RewardPoolEntry[]) {
   return { item:{ itemId: item.id, name: item.name, description: item.description, rarity: item.rarity, icon: '✦', quantity: chosen.quantity }, audit:{version:ECONOMY_VERSION,ticket:ticketInteger,ticketScale:1_000_000_000,rarity:chosen.rarity,probability:chosen.probability,itemId:item.id,quantity:chosen.quantity} };
 }
 
-export function mountArchiveRoutes(app: Express, { pool }: Options): void {
+export function mountArchiveRoutes(app: Express, { pool, assessGoalAdjustment }: Options): void {
+  const goalPreviews = new Map<string, { seasonId: string; ownerId: string; revision: number; goal: string; desiredArtifact: string; preview: SeasonGoalAdjustmentPreview; expiresAt: number }>();
   app.get('/api/wallet', async (req, res, next) => {
     try {
       const [wallet, ledger] = await Promise.all([
@@ -361,8 +362,14 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
   });
   app.post('/api/profile', async (req, res, next) => {
     const body = req.body ?? {};
-    if (typeof body.nickname !== 'string' || body.nickname.trim().length < 1 || body.nickname.trim().length > 32 || typeof body.avatarUrl !== 'string' || !profileAvatars.has(body.avatarUrl) || typeof body.bio !== 'string' || body.bio.length > 240 || body.isPublic !== false) { res.status(400).json({ error: 'INVALID_PROFILE' }); return; }
+    const avatarPath = typeof body.avatarUrl === 'string' ? body.avatarUrl : '';
+    const customAvatar = avatarPath.match(/^\/api\/profile\/avatar\/([0-9a-f-]{36})$/i);
+    if (typeof body.nickname !== 'string' || body.nickname.trim().length < 1 || body.nickname.trim().length > 32 || typeof body.avatarUrl !== 'string' || (!profileAvatars.has(avatarPath) && !customAvatar) || typeof body.bio !== 'string' || body.bio.length > 240 || body.isPublic !== false) { res.status(400).json({ error: 'INVALID_PROFILE' }); return; }
     try {
+      if (customAvatar) {
+        const ownedAvatar = await pool.query('SELECT id FROM profile_avatars WHERE id=$1 AND owner_user_id=$2', [customAvatar[1], ownerOf(req)]);
+        if (!ownedAvatar.rows[0]) { res.status(400).json({ error: 'INVALID_PROFILE_AVATAR' }); return; }
+      }
       const result = await pool.query(`INSERT INTO user_profiles(user_id,nickname,avatar_url,bio,is_public) VALUES($1,$2,$3,$4,false) ON CONFLICT(user_id) DO UPDATE SET nickname=EXCLUDED.nickname,avatar_url=EXCLUDED.avatar_url,bio=EXCLUDED.bio,updated_at=now() RETURNING nickname,avatar_url,bio,is_public`, [ownerOf(req), body.nickname.trim(), body.avatarUrl, body.bio.trim()]);
       res.json({ profile: result.rows[0] });
     } catch (error) { next(error); }
@@ -534,7 +541,35 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const season=found.rows[0];if(!season){res.status(404).json({error:'NOT_FOUND'});return;}
       if(season.lifecycle_status!=='active'){res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       if(season.revision!==req.body.revision){res.status(409).json({error:'REVISION_CONFLICT',revision:season.revision});return;}
-      res.json({preview:buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},{baseRevision:season.revision})});
+      const input={goal:req.body.goal,desiredArtifact:req.body.desiredArtifact};
+      let preview:SeasonGoalAdjustmentPreview;
+      if(assessGoalAdjustment){
+        const campaign=season.state.campaign;
+        const taskRows=campaign.stages.flatMap(stage=>{
+          const mainlineIds=new Set(stage.mainlineTaskIds??stage.tasks.filter(task=>(task.track??'main')==='main').map(task=>task.id));
+          return stage.tasks.filter(task=>mainlineIds.has(task.id)).map(task=>({
+            taskId:task.id,stageId:stage.id,stageTitle:stage.title,title:task.title,brief:task.brief,action:task.action??'',deliverable:task.deliverable??'',acceptance:task.acceptance,prerequisites:task.prerequisites,
+            currentGoalCapabilities:task.goalCapabilityIds??[],goalRelevance:task.goalRelevance??'',progress:season.state.progress[task.id]?.status??'idle',hasSavedEvidence:Boolean(season.state.progress[task.id]?.evidence?.trim()),
+            lesson:season.state.content?.[task.id]?{purpose:season.state.content[task.id].purpose,challenge:season.state.content[task.id].challenge.prompt}:undefined,
+          }));
+        });
+        const raw=await assessGoalAdjustment(req,res,{
+          oldGoal:campaign.goal,oldArtifact:campaign.desiredArtifact??campaign.ultimateReward,goal:input.goal,desiredArtifact:input.desiredArtifact,learnerContext:campaign.learnerContext??'',
+          campaign:{title:campaign.title,subtitle:campaign.subtitle,level:campaign.level,days:campaign.days,dailyMinutes:campaign.dailyMinutes},
+          capabilities:campaign.goalCapabilities??[],stages:campaign.stages.map(stage=>({id:stage.id,title:stage.title,description:stage.description})),tasks:taskRows,
+          ...(campaign.seasonalCollectible?{seasonalCollectible:{name:campaign.seasonalCollectible.name,story:campaign.seasonalCollectible.story,appearance:campaign.seasonalCollectible.appearance,abilityOutcome:campaign.seasonalCollectible.abilityOutcome}}:{}),
+          nineGrid:(campaign.nineGrid??[]).map(slot=>({id:slot.id,title:slot.title,ability:slot.ability,value:slot.value,taskIds:slot.unlockTaskIds})),
+        });
+        if(raw===undefined){if(!res.headersSent)res.status(502).json({error:'GOAL_ASSESSMENT_UNAVAILABLE'});return;}
+        try{preview=buildAssessedSeasonGoalAdjustmentPreview(season.state,input,raw,{baseRevision:season.revision});}
+        catch(error){res.status(502).json({error:'GOAL_ASSESSMENT_INVALID',detail:error instanceof Error?error.message:'返回结构无效'});return;}
+        const ownerId=String(ownerOf(req));
+        for(const [key,value] of goalPreviews)if(value.expiresAt<Date.now())goalPreviews.delete(key);
+        const key=`${ownerId}:${preview.previewId}`;
+        goalPreviews.set(key,{seasonId:req.params.id,ownerId,revision:season.revision,goal:input.goal,desiredArtifact:input.desiredArtifact,preview,expiresAt:Date.now()+15*60_000});
+        while(goalPreviews.size>64)goalPreviews.delete(goalPreviews.keys().next().value!);
+      }else preview=buildSeasonGoalAdjustmentPreview(season.state,input,{baseRevision:season.revision});
+      res.json({preview});
     }catch(error){next(error);}
   });
 
@@ -549,28 +584,41 @@ export function mountArchiveRoutes(app: Express, { pool }: Options): void {
       const season=found.rows[0];if(!season){await client.query('ROLLBACK');res.status(404).json({error:'NOT_FOUND'});return;}
       if(season.lifecycle_status!=='active'){await client.query('ROLLBACK');res.status(409).json({error:season.lifecycle_status==='paused'?'SEASON_PAUSED':'ARCHIVED_SEASON_READ_ONLY'});return;}
       if(season.revision!==revision){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT',revision:season.revision});return;}
-      const preview=buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},{baseRevision:revision});
-      if(preview.previewId!==previewId){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE'});return;}
-      const blockedTaskIds=preview.tasks.filter(task=>task.action==='blocked').map(task=>task.taskId);
+      let preview:SeasonGoalAdjustmentPreview;
+      if(assessGoalAdjustment){
+        const key=`${String(ownerOf(req))}:${previewId}`;
+        const stored=goalPreviews.get(key);
+        if(!stored||stored.expiresAt<Date.now()||stored.ownerId!==String(ownerOf(req))||stored.seasonId!==req.params.id||stored.revision!==revision||stored.goal!==req.body.goal||stored.desiredArtifact!==req.body.desiredArtifact){
+          goalPreviews.delete(key);await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE',message:'评估预览已过期或与当前目标不一致，请重新生成。'});return;
+        }
+        preview=stored.preview;
+        try{const verified=buildAssessedSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},preview.assessment,{baseRevision:revision});if(verified.previewId!==previewId)throw new Error('stale');}
+        catch{await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE'});return;}
+      }else{
+        preview=buildSeasonGoalAdjustmentPreview(season.state,{goal:req.body.goal,desiredArtifact:req.body.desiredArtifact},{baseRevision:revision});
+        if(preview.previewId!==previewId){await client.query('ROLLBACK');res.status(409).json({error:'SEASON_PREVIEW_STALE'});return;}
+      }
+      const blockedTaskIds=preview.tasks.filter(task=>task.action==='blocked'||(Boolean(preview.assessment)&&task.action==='review')).map(task=>task.taskId);
       if(blockedTaskIds.length){await client.query('ROLLBACK');res.status(422).json({error:'SEASON_ADJUSTMENT_REQUIRES_REGENERATION',taskIds:blockedTaskIds});return;}
       const state=applySeasonGoalAdjustment(season.state,preview);
       const parsed=learningStateSchema.safeParse(state);
-      if(!parsed.success){await client.query('ROLLBACK');res.status(422).json({error:'SEASON_ADJUSTMENT_INVALID'});return;}
+      if(!parsed.success){await client.query('ROLLBACK');res.status(422).json({error:'SEASON_ADJUSTMENT_INVALID',fields:parsed.error.issues.map(issue=>issue.path.join('.'))});return;}
       const updated=await client.query<Row>(`UPDATE seasons SET state=$1,title=$2,revision=revision+1,updated_at=now()
         WHERE id=$3 AND owner_user_id=$4 AND revision=$5
         RETURNING id,campaign_id,title,revision,state,created_at,updated_at,lifecycle_status`,[JSON.stringify(parsed.data),parsed.data.campaign.title,req.params.id,ownerOf(req),revision]);
       if(!updated.rows[0]){await client.query('ROLLBACK');res.status(409).json({error:'REVISION_CONFLICT'});return;}
       const collectible=parsed.data.campaign.seasonalCollectible;
       if(collectible){
-        const rule=await client.query<{item_id:string;claimed_at:Date|null}>('SELECT item_id,claimed_at FROM season_collectibles WHERE season_id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
+        const rule=await client.query<{item_id:string;claimed_at:Date|null;definition:Record<string,unknown>}>('SELECT item_id,claimed_at,definition FROM season_collectibles WHERE season_id=$1 AND owner_user_id=$2 FOR UPDATE',[req.params.id,ownerOf(req)]);
         if(rule.rows[0]?.item_id===collectible.id&&!rule.rows[0].claimed_at){
           const gateTaskIds=parsed.data.campaign.stages.flatMap(stage=>stage.gateTaskIds??[]);
-          await client.query('UPDATE season_collectibles SET final_task_id=$1,gate_task_ids=$2 WHERE season_id=$3 AND owner_user_id=$4 AND claimed_at IS NULL',[collectible.finalTaskId,gateTaskIds,req.params.id,ownerOf(req)]);
+          const definition={...rule.rows[0].definition,name:collectible.name,description:`${collectible.story}\n\n${collectible.appearance}\n\n对应学习成果：${collectible.abilityOutcome}`};
+          await client.query('UPDATE season_collectibles SET definition=$1,final_task_id=$2,gate_task_ids=$3 WHERE season_id=$4 AND owner_user_id=$5 AND claimed_at IS NULL',[JSON.stringify(definition),collectible.finalTaskId,gateTaskIds,req.params.id,ownerOf(req)]);
         }
       }
       await client.query(`INSERT INTO season_goal_adjustments(id,owner_user_id,season_id,revision_before,revision_after,previous_goal,next_goal,previous_artifact,next_artifact,preview)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[randomUUID(),ownerOf(req),req.params.id,revision,updated.rows[0].revision,season.state.campaign.goal,parsed.data.campaign.goal,season.state.campaign.desiredArtifact??season.state.campaign.ultimateReward,parsed.data.campaign.desiredArtifact??parsed.data.campaign.ultimateReward,JSON.stringify(preview)]);
-      await client.query('COMMIT');res.json({season:publicSeason(updated.rows[0]),preview});
+      await client.query('COMMIT');goalPreviews.delete(`${String(ownerOf(req))}:${previewId}`);res.json({season:publicSeason(updated.rows[0]),preview});
     }catch(error){await client.query('ROLLBACK').catch(()=>undefined);next(error);}finally{client.release();}
   });
 

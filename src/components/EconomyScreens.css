@@ -102,6 +102,24 @@
 .profile-hero small { font-size:13px; color:#bdc9c1; }
 .profile-hero-stats span,.profile-metrics article span { font-size:13px; }
 .profile-hero-stats strong,.profile-metrics strong { font-size:17px; }
+.profile-edit-shortcut { margin-top:8px; min-height:38px; }
+.profile-hero-stats progress { display:block; width:100%; height:7px; accent-color:#71b99a; }
+.profile-avatar-upload { display:flex; width:max-content; max-width:100%; align-items:center; gap:8px; min-height:42px; padding:8px 12px; border:1px solid #52645b; border-radius:6px; background:#202b29; color:#e2ebe4; cursor:pointer; }
+.profile-avatar-upload input { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.profile-avatar-upload:focus-within { outline:2px solid #87c4a5; outline-offset:2px; }
+.profile-field>small { color:#bdc9c1; font-size:13px; line-height:1.55; }
+.season-adjustment-campaign,.season-adjustment-collectible { display:grid; gap:8px; padding:14px 16px; border-left:3px solid #79a991; background:#15211e; }
+.season-adjustment-campaign>strong,.season-adjustment-collectible h4 { margin:0; font-size:1rem; }
+.season-adjustment-campaign p,.season-adjustment-collectible p { margin:0; color:#d2ddd5; line-height:1.6; overflow-wrap:anywhere; }
+.season-adjustment-campaign small,.season-adjustment-collectible small { color:#bdc9c1; font-size:13px; line-height:1.55; }
+.season-adjustment-capabilities { display:grid; gap:10px; padding:14px 16px; border:1px solid #40544e; border-radius:7px; background:#111b19; }
+.season-adjustment-capabilities h4,.season-adjustment-capabilities p { margin:0; }
+.season-adjustment-capabilities ul { display:grid; gap:7px; margin:0; padding-left:22px; }
+.season-adjustment-capabilities li { padding-left:3px; line-height:1.55; }
+.season-adjustment-capabilities li span { display:block; color:#bdc9c1; }
+.season-adjustment-capabilities>div { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.season-adjustment-capabilities>div article { display:grid; gap:5px; min-width:0; padding:10px; border:1px solid #344740; background:#14201c; }
+.season-adjustment-capabilities>div article span,.season-adjustment-capabilities>div article small { color:#bdc9c1; line-height:1.5; overflow-wrap:anywhere; }
 .profile-editor p,.profile-showcase>p,.profile-seasons>p { font-size:14px; line-height:1.65; color:#bdc9c1; }
 .profile-fields label { font-size:14px; }
 .profile-showcase b,.profile-showcase small,.profile-seasons header span { font-size:13px; }
@@ -138,6 +156,7 @@
   .profile-grid article b { font-size:12px; }
   .profile-grid article small,.profile-grid article span { font-size:11px; }
   .profile-final-artifact>strong,.profile-final-artifact>span,.profile-final-artifact p { font-size:12px; }
+  .season-adjustment-capabilities>div { grid-template-columns:1fr; }
 }
 
 /* Keep account-only routes connected to the full learning workspace. */

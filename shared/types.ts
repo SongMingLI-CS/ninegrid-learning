@@ -33,7 +33,7 @@ export interface Campaign {
   id: string; title: string; subtitle: string; goal: string; level: string; days: number;
   dailyMinutes: number; ultimateReward: string; createdAt: string;
   source: 'demo' | 'deepseek'; stages: Stage[]; prerequisites?: string[]; nineGrid?: GridOutcome[];
-  desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
+  desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string; learnerContext?: string;
   quickDiagnostic?: GoalInput['quickDiagnostic'];
   curriculumRulesVersion?: number; densityRationale?: string;
   goalCapabilities?: { id: string; title: string; description: string }[];
@@ -80,6 +80,6 @@ export interface LearningState {
 }
 export interface GoalInput {
   goal: string; level: string; days: number; dailyMinutes: number; ultimateReward: string;
-  desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string;
+  desiredArtifact?: string; language?: 'en' | 'zh' | 'mixed'; sourceMaterial?: string; learnerContext?: string;
   quickDiagnostic?: { version: 1; source?: 'self-report' | 'server-assessed'; items: Array<{ id: string; prompt: string; confidence: 'known' | 'needs-practice' | 'unknown'; response?: string }> };
 }

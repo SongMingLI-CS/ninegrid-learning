@@ -28,7 +28,7 @@ export const curriculumOutlineSchema = z.object({
   const capabilityIds = new Set(outline.goalCapabilities?.map(capability => capability.id) ?? []);
   if (capabilityIds.size !== (outline.goalCapabilities?.length ?? 0)) ctx.addIssue({ code: 'custom', path: ['goalCapabilities'], message: '目标能力 ID 必须唯一。' });
   const requiredCoverage = new Set<string>();
-  outline.stages.forEach(stage => [...stage.mainline, ...stage.branches.flatMap(branch => branch.tasks)].forEach(task => {
+  outline.stages.forEach(stage => stage.mainline.forEach(task => {
     for (const field of ['goalRelevance', 'action', 'deliverable', 'acceptance'] as const) {
       if (!task[field]?.trim()) ctx.addIssue({ code: 'custom', path: ['stages', stage.id, task.id, field], message: `课程版本 5 的任务必须说明 ${field}` });
     }
@@ -327,9 +327,6 @@ export function validateCurriculumOutline(outline: CurriculumOutline, input: { d
       task.goalCapabilityIds.forEach(id => mainlineCoverage.add(id));
     }
     if ([...capabilities].some(id => !mainlineCoverage.has(id))) return false;
-    for (const stage of outline.stages) for (const branch of stage.branches) for (const task of branch.tasks) {
-      if (!task.goalCapabilityIds?.length || task.goalCapabilityIds.some(id => !capabilities.has(id)) || !task.goalRelevance?.trim() || !task.action?.trim() || !task.deliverable?.trim() || !task.acceptance?.trim()) return false;
-    }
   }
   const tasks = outline.stages.flatMap(stage => [
     ...stage.mainline.map(task => ({ ...task, track: 'main' as const, chainId: `${stage.id}-main`, stageId: stage.id })),

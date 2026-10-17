@@ -20,6 +20,59 @@ export function mountAttachmentRoutes(app: Express, options: Options): void {
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
   const calls = new Map<string, { count: number; resetAt: number }>();
 
+  app.post('/api/profile/avatar', (req, res, next) => {
+    upload.single('image')(req, res, error => {
+      if (!error) { next(); return; }
+      res.status(error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: 'INVALID_AVATAR_UPLOAD' });
+    });
+  }, async (req, res, next) => {
+    const file = req.file;
+    if (!file) { res.status(400).json({ error: 'IMAGE_REQUIRED' }); return; }
+    let storageKey: string | undefined;
+    let client: PoolClient | undefined;
+    try {
+      const detected = await fileTypeFromBuffer(file.buffer);
+      if (!detected || !['image/jpeg', 'image/png', 'image/webp'].includes(detected.mime)) { res.status(415).json({ error: 'UNSUPPORTED_IMAGE_FORMAT' }); return; }
+      const image = sharp(file.buffer, { limitInputPixels: 80_000_000 });
+      const metadata = await image.metadata();
+      if (!metadata.width || !metadata.height || metadata.width > 8192 || metadata.height > 8192 || !['jpeg', 'png', 'webp'].includes(metadata.format ?? '')) { res.status(415).json({ error: 'INVALID_IMAGE_DIMENSIONS' }); return; }
+      const optimized = await image.rotate().resize(512, 512, { fit: 'cover', position: 'centre' }).webp({ quality: 82 }).toBuffer({ resolveWithObject: true });
+      if (optimized.data.byteLength > 512 * 1024) { res.status(413).json({ error: 'AVATAR_TOO_LARGE_AFTER_PROCESSING' }); return; }
+      const id = randomUUID(); storageKey = `${randomUUID()}.webp`;
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(resolve(directory, storageKey), optimized.data, { flag: 'wx', mode: 0o600 });
+      client = await pool.connect(); await client.query('BEGIN');
+      await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [owner(req)]);
+      const previous = await client.query<{ storage_key: string }>('SELECT storage_key FROM profile_avatars WHERE owner_user_id=$1 FOR UPDATE', [owner(req)]);
+      const previousKey = previous.rows[0]?.storage_key;
+      await client.query(`INSERT INTO profile_avatars(id,owner_user_id,storage_key,mime_type,byte_size,width,height,sha256)
+        VALUES($1,$2,$3,'image/webp',$4,512,512,$5)
+        ON CONFLICT(owner_user_id) DO UPDATE SET id=EXCLUDED.id,storage_key=EXCLUDED.storage_key,mime_type=EXCLUDED.mime_type,byte_size=EXCLUDED.byte_size,width=512,height=512,sha256=EXCLUDED.sha256,created_at=now()`,
+        [id, owner(req), storageKey, optimized.data.byteLength, createHash('sha256').update(optimized.data).digest('hex')]);
+      const avatarUrl = `/api/profile/avatar/${id}`;
+      await client.query(`INSERT INTO user_profiles(user_id,nickname,avatar_url,bio,is_public) VALUES($1,'行动者',$2,'',false)
+        ON CONFLICT(user_id) DO UPDATE SET avatar_url=EXCLUDED.avatar_url,updated_at=now()`, [owner(req), avatarUrl]);
+      await client.query('COMMIT');
+      if (previousKey && previousKey !== storageKey && /^[0-9a-f-]{36}\.webp$/i.test(previousKey)) await unlink(resolve(directory, previousKey)).catch(() => undefined);
+      res.status(201).json({ avatarUrl, byteSize: optimized.data.byteLength, width: 512, height: 512 });
+    } catch (error) {
+      await client?.query('ROLLBACK').catch(() => undefined);
+      if (storageKey) await unlink(resolve(directory, storageKey)).catch(() => undefined);
+      next(error);
+    } finally { client?.release(); }
+  });
+
+  app.get('/api/profile/avatar/:id', async (req, res, next) => {
+    if (!uuid.test(req.params.id)) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
+    try {
+      const result = await pool.query<{ storage_key: string }>('SELECT storage_key FROM profile_avatars WHERE id=$1 AND owner_user_id=$2', [req.params.id, owner(req)]);
+      const key = result.rows[0]?.storage_key;
+      if (!key || !/^[0-9a-f-]{36}\.webp$/i.test(key)) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
+      const bytes = await readFile(resolve(directory, key));
+      res.setHeader('Cache-Control', 'private, no-store'); res.type('image/webp').send(bytes);
+    } catch (error) { next(error); }
+  });
+
   app.get('/api/seasons/:seasonId/tasks/:taskId/attachments', async (req, res, next) => {
     if (!uuid.test(req.params.seasonId)) { res.status(404).json({ error: 'NOT_FOUND' }); return; }
     try {

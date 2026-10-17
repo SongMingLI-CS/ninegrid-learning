@@ -3,7 +3,7 @@ import { ArrowLeft, ArrowDownWideNarrow, ArrowUpDown, Check, ChevronLeft, Chevro
 import { COLLECTION_CATALOG, CATALOG_RARITY_COUNTS, GENERATED_CATALOG_IMAGE_IDS, type CollectionItem, type CollectionRarity } from '../../shared/catalog';
 import { apiFetch } from '../lib/api';
 import { AccountFeatureNavigation } from './AccountFeatureNavigation';
-import { formatHafverCoins } from '../../shared/economy';
+import { formatHafverCoins, type BoxId } from '../../shared/economy';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Button } from '@/components/ui/button';
@@ -20,7 +20,7 @@ const rarityLabels: Record<CollectionRarity, string> = { 'small-purple': '小紫
 const rarityOrder: Record<CollectionRarity, number> = { 'small-purple': 1, 'small-gold': 2, 'large-gold': 3, 'small-red': 4, 'large-red': 5 };
 const money = formatHafverCoins;
 const dateText = (value?: string) => value ? new Date(value).toLocaleDateString('zh-CN') : '暂无记录';
-const boxIdFromItem=(id:string):'small-safe'|'large-safe'|undefined=>id.startsWith('box-small-safe-')?'small-safe':id.startsWith('box-large-safe-')?'large-safe':undefined;
+const boxIdFromItem=(id:string):BoxId|undefined=>(['training-cache','small-safe','large-safe'] as const).find(boxId=>id.startsWith(`box-${boxId}-`));
 
 function Artwork({ item, dim = false, fullSize = false }: { item: Pick<CollectionItem, 'id' | 'name' | 'imageKey' | 'rarity'> & { category: string }; dim?: boolean; fullSize?: boolean }) {
   const n = [...item.id].reduce((sum, char) => sum + char.charCodeAt(0), 0);

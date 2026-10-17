@@ -17,9 +17,10 @@ beforeEach(()=>{
  api.mockImplementation(async(url:string,init?:RequestInit)=>{
   if(url==='/api/profile')return reply(data);
   if(url==='/api/inventory')return reply({items:stock});
+  if(url==='/api/profile/avatar')return reply({avatarUrl:'/api/profile/avatar/00000000-0000-4000-8000-000000000001',byteSize:1024,width:512,height:512},201);
   if(url.endsWith('/lifecycle')){const body=JSON.parse(String(init?.body));data.seasons[0]={...data.seasons[0],status:body.status,revision:9};return reply({season:{id:'a',revision:9,lifecycleStatus:body.status,state:{}},currentSeasonId:'a',selectionRevision:3});}
   if(url==='/api/seasons/a')return reply({season:{id:'a',revision:8,lifecycleStatus:'active',state:{campaign:{goal:'Build a timer',desiredArtifact:'Timer tool',ultimateReward:'Timer tool'}}}});
-  if(url.endsWith('/goal-preview'))return reply({preview:{previewId:'1234abcd',baseRevision:8,campaignId:'campaign-a',goal:'IELTS goal',desiredArtifact:'IELTS archive',stageChanges:[{stageId:'stage-a',titleBefore:'雅思认知与最小工具骨架',titleAfter:'雅思认知与四科训练',descriptionBefore:'工具骨架',descriptionAfter:'听说读写训练',reason:'阶段名称仍包含工具开发内容'}],tasks:[{taskId:'tool',title:'Build timer',stageId:'stage-a',stageTitle:'第一阶段',action:'replace',originalTaskDisposition:'move-to-optional-branch',reason:'编程偏题',minutes:20,preservesEvidence:true,replacement:{id:'new-task',title:'雅思阅读：主旨与证据定位',brief:'阅读',acceptance:'主旨和证据',deliverable:'阅读证据',minutes:20},dependencyChanges:['阅读证据']}],budget:{mainlineMinutesBefore:60,mainlineMinutesAfter:60,movedToOptionalMinutes:20,dailyMinutesBefore:145,dailyMinutes:80,daysBefore:28,days:60},notice:'旧答案和奖励流水保留。'}});
+  if(url.endsWith('/goal-preview'))return reply({preview:{previewId:'1234abcd',baseRevision:8,campaignId:'campaign-a',goal:'IELTS goal',desiredArtifact:'IELTS archive',stageChanges:[{stageId:'stage-a',titleBefore:'雅思认知与最小工具骨架',titleAfter:'雅思认知与四科训练',descriptionBefore:'工具骨架',descriptionAfter:'听说读写训练',reason:'阶段名称仍包含工具开发内容'}],tasks:[{taskId:'tool',title:'Build timer',stageId:'stage-a',stageTitle:'第一阶段',action:'replace',originalTaskDisposition:'move-to-optional-branch',reason:'编程偏题',minutes:20,preservesEvidence:true,replacement:{id:'new-task',title:'雅思阅读：主旨与证据定位',brief:'阅读',acceptance:'主旨和证据',deliverable:'阅读证据',minutes:20},dependencyChanges:['阅读证据']}],seasonalCollectibleChange:{before:{name:'旧章',story:'旧收藏说明。',appearance:'旧样式。',abilityOutcome:'旧结果。'},after:{name:'雅思能力章',story:'新收藏说明：四科训练',appearance:'听说读写徽章。',abilityOutcome:'雅思练习证据。'},reason:'收藏成果需与目标保持一致。'},budget:{mainlineMinutesBefore:60,mainlineMinutesAfter:60,movedToOptionalMinutes:20,dailyMinutesBefore:145,dailyMinutes:80,daysBefore:28,days:60},notice:'旧答案和奖励流水保留。'}});
   if(url.endsWith('/goal-adjustment')){const body=JSON.parse(String(init?.body));data.seasons[0]={...data.seasons[0],goal:body.goal,desiredArtifact:body.desiredArtifact,revision:9};return reply({season:{id:'a',revision:9,lifecycleStatus:'active',state:{campaign:{goal:body.goal,desiredArtifact:body.desiredArtifact}}}});}
   if(url==='/api/inventory/preferences')return reply({saved:2});
   throw Error(url);
@@ -27,6 +28,18 @@ beforeEach(()=>{
 });
 afterEach(()=>{cleanup();api.mockReset();if(!originalScrollIntoView)delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView});
 describe('server profile actions',()=>{
+ it('shows an explicit XP based action level instead of an unexplained zero pair',async()=>{
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  await screen.findByRole('heading',{name:'个人学习档案'});
+  expect(screen.getByText('Lv. 1')).toBeTruthy();
+  expect(screen.getByText(/累计 0 XP · 本级 0\/1000/)).toBeTruthy();
+ });
+ it('keeps profile editing discoverable from the profile header',async()=>{
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  await screen.findByRole('heading',{name:'个人学习档案'});
+  fireEvent.click(screen.getByRole('button',{name:'编辑个人资料'}));
+  expect(document.activeElement).toBe(screen.getByLabelText('昵称'));
+ });
  it('keeps verified capability outcomes before the showcase and historical activity',async()=>{
   const {container}=render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
   await screen.findByRole('heading',{name:'个人学习档案'});
@@ -75,6 +88,16 @@ describe('server profile actions',()=>{
   expect(avatar.textContent).toContain('野外行动');
   expect(api.mock.calls.some(call=>String(call[0]).includes('/preferences'))).toBe(false);
  });
+ it('uploads a custom avatar through the private profile endpoint',async()=>{
+  render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+  await screen.findByRole('heading',{name:'个人学习档案'});
+  const file=new File([new Uint8Array([137,80,78,71])],'avatar.png',{type:'image/png'});
+  fireEvent.change(screen.getByLabelText('上传自己的头像'),{target:{files:[file]}});
+  expect(await screen.findByText('自定义头像已压缩并安全保存在本机档案。')).toBeTruthy();
+  const upload=api.mock.calls.find(call=>call[0]==='/api/profile/avatar');
+  expect(upload?.[1].body).toBeInstanceOf(FormData);
+  expect(upload?.[1].body.get('image').name).toBe('avatar.png');
+ });
  it('requires a visible preview and a separate apply action before changing a season goal',async()=>{
   const flush=vi.fn(async()=>8),adjusted=vi.fn(async()=>{});
   render(<ProfileScreen account="a@example.test" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}} onFlushSeason={flush} onSeasonAdjusted={adjusted}/>);
@@ -88,6 +111,8 @@ describe('server profile actions',()=>{
   fireEvent.click(screen.getByRole('button',{name:'生成调整预览'}));
   expect(await screen.findByText(/移入可选支线并替换/)).toBeTruthy();
   expect(await screen.findByText('雅思认知与最小工具骨架 → 雅思认知与四科训练')).toBeTruthy();
+  expect(await screen.findByText('旧收藏说明。')).toBeTruthy();
+  expect(await screen.findByText('新收藏说明：四科训练')).toBeTruthy();
   expect(await screen.findByText('赛季周期 28 → 60 天')).toBeTruthy();
   expect(await screen.findByText('每日预算 145 → 80 分钟')).toBeTruthy();
   expect(adjusted).not.toHaveBeenCalled();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applySeasonGoalAdjustment, buildSeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
+import { applySeasonGoalAdjustment, buildAssessedSeasonGoalAdjustmentPreview, buildSeasonGoalAdjustmentPreview } from '../shared/seasonAdjustment';
 import { learningStateSchema } from '../shared/schema';
 import type { LearningState, Task } from '../shared/types';
 
@@ -35,6 +35,71 @@ function existingState(): LearningState {
 }
 
 describe('season target adjustment preview', () => {
+  it('applies one reviewed assessment to campaign labels, stage outcomes, task content and dependent records', () => {
+    const original = existingState();
+    original.campaign.seasonalCollectible = {
+      id: 'season-award', name: '雅思小工具徽章', story: '完成原有工具目标。', appearance: '一枚计时器徽章。',
+      abilityOutcome: '能够制作学习工具。', rewardKey: 'a'.repeat(64), finalTaskId: 'reading-evidence', displayValue: 1_600_000,
+    };
+    const assessment = {
+      campaign: { title: '雅思四科与目标分数训练', subtitle: '按阶段完成听说读写，并整理真实练习证据。' },
+      rationale: '新目标聚焦英语能力与分数提升。',
+      capabilities: [
+        { id: 'ielts-reading', title: '阅读', description: '提取主旨并定位证据。' },
+      ],
+      stages: [{ stageId: 'stage-one', title: '雅思阅读与写作基础', description: '建立题型认知并完成有证据的读写练习。', reason: '阶段主题已对齐新目标。' }],
+      seasonalCollectible: { name: '雅思阅读证据章', story: '记录主旨判断与原文定位的首次独立完成。', appearance: '深蓝珐琅章，中央为书页与定位标记。', abilityOutcome: '完成目标阅读任务并通过独立核验。', reason: '原收藏说明仍指向旧的计时器目标。' },
+      tasks: [
+        { taskId: 'setup-script', action: 'replace' as const, reason: '原任务要求运行脚本，与目标能力无关。', evidence: ['交付物要求部署工具'], goalCapabilityIds: ['ielts-reading'], goalRelevance: '直接训练雅思阅读证据定位。', replacement: { title: '雅思阅读：主旨与证据定位', brief: '阅读一段材料并概括主旨。', action: '定位主旨并找出原文依据。', objective: '准确概括主旨并定位两处证据。', steps: ['通读材料。', '定位证据。'], acceptance: '提交主旨、两处原文证据及其关系。', deliverable: '阅读主旨与证据记录', recallQuestion: '哪处证据最能支持你的主旨？', hint: '先判断作者主要观点。', hints: ['关注重复观点。'], curiosity: '不同材料中如何快速定位主旨？' } },
+        { taskId: 'reading-evidence', action: 'keep' as const, reason: '任务内容已符合阅读目标。', evidence: [], goalCapabilityIds: ['ielts-reading'], goalRelevance: '直接训练雅思阅读证据定位。' },
+      ],
+      nineGrid: Array.from({ length: 9 }, (_, index) => ({ id: `grid-${index + 1}`, title: `能力 ${index + 1}`, ability: `雅思能力 ${index + 1}`, value: '可用新材料验证', taskIds: ['setup-script', 'reading-evidence'] })),
+    };
+    original.campaign.nineGrid = assessment.nineGrid.map(item => ({ ...item, unlockTaskIds: item.taskIds }));
+
+    const preview = buildAssessedSeasonGoalAdjustmentPreview(original, {
+      goal: '提升雅思阅读能力。', desiredArtifact: '有主旨与证据的阅读练习记录。',
+    }, assessment, { baseRevision: 4 });
+
+    expect(preview.campaignChange).toMatchObject({ titleBefore: 'IELTS action', titleAfter: assessment.campaign.title });
+    expect(preview.seasonalCollectibleChange).toMatchObject({ before: { name: '雅思小工具徽章' }, after: { name: '雅思阅读证据章' } });
+    expect(preview.tasks.find(item => item.taskId === 'setup-script')).toMatchObject({ action: 'replace', replacement: { title: '雅思阅读：主旨与证据定位' } });
+    const updated = applySeasonGoalAdjustment(original, preview);
+    expect(updated.campaign.title).toBe(assessment.campaign.title);
+    expect(updated.campaign.subtitle).toBe(assessment.campaign.subtitle);
+    expect(updated.campaign.seasonalCollectible).toMatchObject({
+      id: 'season-award', rewardKey: 'a'.repeat(64), name: '雅思阅读证据章',
+      story: '记录主旨判断与原文定位的首次独立完成。', finalTaskId: 'reading-evidence',
+    });
+    expect(updated.campaign.goalCapabilities).toEqual(assessment.capabilities);
+    expect(updated.campaign.stages[0].title).toBe(assessment.stages[0].title);
+    const replacementId = preview.tasks.find(item => item.taskId === 'setup-script')!.replacement!.id;
+    expect(updated.campaign.stages[0].mainlineTaskIds).toContain(replacementId);
+    expect(updated.campaign.stages[0].tasks.find(item => item.id === replacementId)?.goalCapabilityIds).toEqual(['ielts-reading']);
+    expect(updated.campaign.nineGrid?.[0].unlockTaskIds).toContain(replacementId);
+    expect(updated.progress['setup-script'].evidence).toContain('Old script answer');
+    expect(updated.progress[replacementId].status).toBe('idle');
+    expect(updated.wallet).toEqual(original.wallet);
+    expect(updated.rewardLedger).toEqual(original.rewardLedger);
+  });
+
+  it('does not apply an assessment that leaves a task uncertain or references unknown tasks', () => {
+    const original = existingState();
+    const assessment = {
+      campaign: { title: 'Updated title', subtitle: 'Updated subtitle' }, rationale: 'Changed target.',
+      capabilities: [{ id: 'cap-1', title: 'Reading', description: 'Read accurately.' }],
+      stages: [{ stageId: 'stage-one', title: 'Reading', description: 'Reading work.', reason: 'Target alignment.' }],
+      tasks: [
+        { taskId: 'setup-script', action: 'review' as const, reason: 'Need confirmation.', evidence: [], goalCapabilityIds: ['cap-1'], goalRelevance: 'Unclear.' },
+        { taskId: 'reading-evidence', action: 'keep' as const, reason: 'Relevant.', evidence: [], goalCapabilityIds: ['cap-1'], goalRelevance: 'Reading.' },
+      ],
+      nineGrid: Array.from({ length: 9 }, (_, index) => ({ id: `grid-${index + 1}`, title: `Slot ${index + 1}`, ability: 'Reading', value: 'Evidence', taskIds: ['reading-evidence'] })),
+    };
+    const preview = buildAssessedSeasonGoalAdjustmentPreview(original, { goal: 'Improve reading.', desiredArtifact: 'Reading evidence.' }, assessment);
+    expect(preview.tasks.find(item => item.taskId === 'setup-script')?.action).toBe('review');
+    expect(() => applySeasonGoalAdjustment(original, preview)).toThrow(/待确认/);
+  });
+
   it('previews and applies the requested two-month IELTS schedule instead of retaining stale timing', () => {
     const original = existingState();
     original.campaign.days = 28;

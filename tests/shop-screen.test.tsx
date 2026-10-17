@@ -32,7 +32,19 @@ describe('independent safe shop page',()=>{
     serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
     await screen.findByRole('heading',{name:'保险箱补给'});
     expect(screen.queryByText(/金额超出安全范围/)).toBeNull();
-    expect(screen.getAllByText(/按整币取整/)).toHaveLength(2);
+    expect(screen.getAllByText(/按整币取整/)).toHaveLength(3);
+    expect(screen.getByRole('heading', { name: '训练补给箱' })).toBeTruthy();
+  });
+  it('lets the learner review and buy the low-cost training cache',async()=>{
+    serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);
+    await screen.findByRole('heading',{name:'训练补给箱'});
+    const product=screen.getByRole('heading',{name:'训练补给箱'}).closest('article')!;
+    fireEvent.click(within(product).getByRole('button',{name:/购买 ×1/}));
+    const dialog=await screen.findByRole('dialog',{name:'确认购买 训练补给箱'});
+    expect(dialog.textContent).toContain(formatHafverCoins(80_000));
+    fireEvent.click(within(dialog).getByRole('button',{name:'确认扣币并购买'}));
+    await screen.findByRole('status');
+    expect(calls.find(call=>call.url==='/api/shop/purchase')?.body.boxId).toBe('training-cache');
   });
   it('shows quantity and total in a review dialog, and cancellation does not submit a purchase',async()=>{
     serve();render(<ShopScreen account="learner@example.com" onExit={()=>{}} onLogout={()=>{}} onNavigate={()=>{}}/>);

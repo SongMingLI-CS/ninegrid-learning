@@ -1,5 +1,6 @@
 import type { Campaign, LearningState, Stage, Task } from './types';
 import { analyzeCurriculumGoalScope } from './curriculum';
+import { seasonGoalAdjustmentAssessmentSchema, type SeasonGoalAdjustmentAssessment } from './seasonAdjustmentAssessment';
 
 export type SeasonGoalAdjustmentInput = { goal: string; desiredArtifact: string };
 export type SeasonGoalAdjustmentPreviewTask = {
@@ -14,6 +15,7 @@ export type SeasonGoalAdjustmentPreviewTask = {
   minutes: number;
   preservesEvidence: true;
   replacement?: Pick<Task, 'id' | 'title' | 'brief' | 'acceptance' | 'deliverable' | 'minutes'>;
+  replacementTask?: Task;
   dependencyChanges: string[];
 };
 export type SeasonGoalAdjustmentPreviewStage = {
@@ -30,6 +32,13 @@ export type SeasonGoalAdjustmentPreview = {
   campaignId: string;
   goal: string;
   desiredArtifact: string;
+  campaignChange?: { titleBefore: string; titleAfter: string; subtitleBefore: string; subtitleAfter: string; reason: string };
+  seasonalCollectibleChange?: {
+    before: Pick<NonNullable<Campaign['seasonalCollectible']>, 'name' | 'story' | 'appearance' | 'abilityOutcome'>;
+    after: Pick<NonNullable<Campaign['seasonalCollectible']>, 'name' | 'story' | 'appearance' | 'abilityOutcome'>;
+    reason: string;
+  };
+  assessment?: SeasonGoalAdjustmentAssessment;
   stageChanges: SeasonGoalAdjustmentPreviewStage[];
   tasks: SeasonGoalAdjustmentPreviewTask[];
   budget: { mainlineMinutesBefore: number; mainlineMinutesAfter: number; movedToOptionalMinutes: number; dailyMinutesBefore: number; dailyMinutes: number; daysBefore: number; days: number };
@@ -195,14 +204,135 @@ export function buildSeasonGoalAdjustmentPreview(state: LearningState, input: Se
   };
 }
 
+/** Builds a reviewable plan from one validated AI assessment. */
+export function buildAssessedSeasonGoalAdjustmentPreview(
+  state: LearningState,
+  input: SeasonGoalAdjustmentInput,
+  rawAssessment: unknown,
+  options: { baseRevision?: number } = {},
+): SeasonGoalAdjustmentPreview {
+  const parsed = seasonGoalAdjustmentAssessmentSchema.safeParse(rawAssessment);
+  if (!parsed.success) throw new Error('课程目标评估返回了不完整或无效的结构。');
+  const assessment = parsed.data;
+  const stages = state.campaign.stages;
+  const currentCollectible = state.campaign.seasonalCollectible;
+  if (Boolean(currentCollectible) !== Boolean(assessment.seasonalCollectible)) throw new Error('课程目标评估必须保留并重评现有赛季收藏，不能静默创建或删除奖励。');
+  const mainline = stages.flatMap(stage => {
+    const mainlineIds = new Set(stage.mainlineTaskIds ?? stage.tasks.filter(task => (task.track ?? 'main') === 'main').map(task => task.id));
+    return stage.tasks.filter(task => mainlineIds.has(task.id)).map(task => ({ stage, task }));
+  });
+  const sameIds = (left: string[], right: string[]) => left.length === right.length && left.every(id => right.includes(id));
+  if (!sameIds(assessment.stages.map(item => item.stageId), stages.map(stage => stage.id))) throw new Error('课程目标评估遗漏或更改了阶段 ID。');
+  if (!sameIds(assessment.tasks.map(item => item.taskId), mainline.map(row => row.task.id))) throw new Error('课程目标评估遗漏或新增了主线任务。');
+  const mainlineIds = new Set(mainline.map(row => row.task.id));
+  if (assessment.nineGrid.some(slot => slot.taskIds.some(taskId => !mainlineIds.has(taskId)))) throw new Error('九格能力引用了不存在的主线任务。');
+  const knownSlots = state.campaign.nineGrid?.map(slot => slot.id) ?? [];
+  if (knownSlots.length === 9 && !sameIds(assessment.nineGrid.map(slot => slot.id), knownSlots)) throw new Error('课程目标评估更改了九格 ID，无法安全保留已有证据。');
+  const coveredCapabilities = new Set(assessment.tasks.flatMap(task => task.goalCapabilityIds));
+  if (assessment.capabilities.some(capability => !coveredCapabilities.has(capability.id))) throw new Error('课程目标评估包含没有主线任务覆盖的能力。');
+
+  const goal = input.goal.trim();
+  const desiredArtifact = input.desiredArtifact.trim();
+  if (!goal || !desiredArtifact) throw new Error('请填写学习目标和最终成果。');
+  const base = buildSeasonGoalAdjustmentPreview(state, input, options);
+  const staticRows = new Map(base.tasks.map(row => [row.taskId, row]));
+  const allTaskRows = stages.flatMap(stage => stage.tasks.map(task => ({ stage, task })));
+  const capabilityIds = new Set(assessment.capabilities.map(capability => capability.id));
+  const assessedTasks = new Map(assessment.tasks.map(item => [item.taskId, item]));
+  const tasks: SeasonGoalAdjustmentPreviewTask[] = mainline.map(({ stage, task }) => {
+    const reviewed = assessedTasks.get(task.id)!;
+    const staticFinding = staticRows.get(task.id);
+    const hardMismatch = staticFinding?.action === 'blocked';
+    const action: SeasonGoalAdjustmentPreviewTask['action'] = hardMismatch && reviewed.action === 'keep' ? 'blocked' : reviewed.action;
+    if (reviewed.goalCapabilityIds.some(id => !capabilityIds.has(id))) throw new Error(`任务 ${task.title} 引用了未声明的目标能力。`);
+    const dependents = allTaskRows.filter(row => row.task.prerequisites.includes(task.id) || (row.task.unlockAfter ?? []).includes(task.id));
+    let replacementTask: Task | undefined;
+    if (action === 'replace' && reviewed.replacement) {
+      const replacementId = `goal_${fingerprint([state.campaign.id, stage.id, task.id, goal, desiredArtifact, reviewed.replacement])}`;
+      replacementTask = {
+        id: replacementId, title: reviewed.replacement.title, brief: reviewed.replacement.brief,
+        kind: task.kind, minutes: task.minutes, xp: 0, prerequisites: [...task.prerequisites],
+        objectives: [{ id: `${replacementId}_objective`, text: reviewed.replacement.objective }],
+        curiosity: reviewed.replacement.curiosity, steps: [...reviewed.replacement.steps],
+        acceptance: reviewed.replacement.acceptance, recallQuestion: reviewed.replacement.recallQuestion,
+        hint: reviewed.replacement.hint, hints: [...reviewed.replacement.hints], resources: [],
+        track: 'main', chainId: task.chainId, goalCapabilityIds: [...reviewed.goalCapabilityIds],
+        goalRelevance: reviewed.goalRelevance, action: reviewed.replacement.action,
+        deliverable: reviewed.replacement.deliverable, reward: { xp: 0, coins: 0, items: [] },
+      };
+    }
+    const deterministicConflict = hardMismatch && reviewed.action === 'keep';
+    return {
+      taskId: task.id, title: task.title, stageId: stage.id, stageTitle: stage.title, action,
+      ...(action === 'replace' ? { originalTaskDisposition: 'move-to-optional-branch' as const } : {}),
+      reason: deterministicConflict
+        ? `确定性规则发现该任务包含目标外的必需内容；评估建议保留，不能自动应用。${staticFinding?.reason ?? ''}`
+        : reviewed.reason,
+      evidence: reviewed.evidence.length ? reviewed.evidence : staticFinding?.evidence,
+      minutes: task.minutes, preservesEvidence: true,
+      ...(replacementTask ? {
+        replacement: { id: replacementTask.id, title: replacementTask.title, brief: replacementTask.brief, acceptance: replacementTask.acceptance, deliverable: replacementTask.deliverable ?? '', minutes: replacementTask.minutes },
+        replacementTask,
+      } : {}),
+      dependencyChanges: action === 'replace' ? dependents.map(row => row.task.title) : [],
+    };
+  });
+
+  const stageChanges = assessment.stages.flatMap(item => {
+    const before = stages.find(stage => stage.id === item.stageId)!;
+    return before.title === item.title && before.description === item.description ? [] : [{
+      stageId: item.stageId, titleBefore: before.title, titleAfter: item.title,
+      descriptionBefore: before.description, descriptionAfter: item.description, reason: item.reason,
+    }];
+  });
+  const campaignChange = state.campaign.title === assessment.campaign.title && state.campaign.subtitle === assessment.campaign.subtitle ? undefined : {
+    titleBefore: state.campaign.title, titleAfter: assessment.campaign.title,
+    subtitleBefore: state.campaign.subtitle, subtitleAfter: assessment.campaign.subtitle,
+    reason: assessment.rationale,
+  };
+  const assessedCollectible = assessment.seasonalCollectible;
+  const seasonalCollectibleChange = currentCollectible && assessedCollectible && (
+    currentCollectible.name !== assessedCollectible.name || currentCollectible.story !== assessedCollectible.story ||
+    currentCollectible.appearance !== assessedCollectible.appearance || currentCollectible.abilityOutcome !== assessedCollectible.abilityOutcome
+  ) ? {
+    before: { name: currentCollectible.name, story: currentCollectible.story, appearance: currentCollectible.appearance, abilityOutcome: currentCollectible.abilityOutcome },
+    after: { name: assessedCollectible.name, story: assessedCollectible.story, appearance: assessedCollectible.appearance, abilityOutcome: assessedCollectible.abilityOutcome },
+    reason: assessedCollectible.reason,
+  } : undefined;
+  const mainlineMinutes = mainline.reduce((sum, row) => sum + row.task.minutes, 0);
+  const replacementMinutes = tasks.filter(row => row.action === 'replace').reduce((sum, row) => sum + row.minutes, 0);
+  const budget = { ...base.budget, mainlineMinutesBefore: mainlineMinutes, mainlineMinutesAfter: mainlineMinutes, movedToOptionalMinutes: replacementMinutes };
+  const plan = { campaignId: state.campaign.id, baseRevision: options.baseRevision, goal, desiredArtifact, campaignChange, seasonalCollectibleChange, assessment, stageChanges, tasks, budget };
+  const blockedCount = tasks.filter(row => row.action === 'blocked').length;
+  const reviewCount = tasks.filter(row => row.action === 'review').length;
+  return {
+    previewId: fingerprint({ state, plan }), baseRevision: options.baseRevision, campaignId: state.campaign.id,
+    goal, desiredArtifact, campaignChange, seasonalCollectibleChange, assessment, stageChanges, tasks, budget,
+    notice: blockedCount
+      ? `有 ${blockedCount} 项主线任务与新目标存在明确冲突，此预览不能应用。`
+      : reviewCount
+        ? `有 ${reviewCount} 项任务的目标关联仍不确定；补充目标或材料后重新评估，不能默认作为必需主线。`
+        : `评估覆盖了赛季名称、${stageChanges.length} 个阶段、${tasks.length} 项主线任务、${assessment.capabilities.length} 项目标能力和九格成果${seasonalCollectibleChange ? '及赛季收藏说明' : ''}。旧任务、答案、证据及奖励流水保留；替换任务使用新 ID 和空进度。未领取收藏会同步更新；已领取收藏保留历史描述。`,
+  };
+}
+
 export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonGoalAdjustmentPreview): LearningState {
   if (preview.campaignId !== state.campaign.id) throw new Error('预览不属于当前赛季。');
-  const current = buildSeasonGoalAdjustmentPreview(state, preview, { baseRevision: preview.baseRevision });
+  const current = preview.assessment
+    ? buildAssessedSeasonGoalAdjustmentPreview(state, preview, preview.assessment, { baseRevision: preview.baseRevision })
+    : buildSeasonGoalAdjustmentPreview(state, preview, { baseRevision: preview.baseRevision });
   if (current.previewId !== preview.previewId) throw new Error('赛季内容已变化，请重新生成调整预览。');
   if (preview.tasks.some(item => item.action === 'blocked')) throw new Error('该调整含有明确偏离目标且尚无替代的主线任务；请重新生成任务后再创建预览。');
+  if (preview.assessment && preview.tasks.some(item => item.action === 'review')) throw new Error('仍有任务的目标关联待确认，不能应用。');
   const projectedCampaign: Campaign = { ...state.campaign, goal: preview.goal, desiredArtifact: preview.desiredArtifact, ultimateReward: preview.desiredArtifact };
   const scopeFindings = analyzeCurriculumGoalScope(projectedCampaign, { goal: preview.goal, desiredArtifact: preview.desiredArtifact, ultimateReward: preview.desiredArtifact });
-  const replacements = eligibleReplacements(state, `${preview.goal}\n${preview.desiredArtifact}`, preview.goal, scopeFindings);
+  const replacements = preview.assessment
+    ? new Map(preview.tasks.filter(item => item.action === 'replace').map(item => {
+      const row = state.campaign.stages.flatMap((stage, stageIndex) => stage.tasks.map(task => ({ stageIndex, task }))).find(candidate => candidate.task.id === item.taskId)!;
+      if (!item.replacementTask) throw new Error('替换任务内容缺失，请重新生成预览。');
+      return [item.taskId, { stageIndex: row.stageIndex, task: row.task, replacement: item.replacementTask }] as const;
+    }))
+    : eligibleReplacements(state, `${preview.goal}\n${preview.desiredArtifact}`, preview.goal, scopeFindings);
   const next = structuredClone(state);
   const replacedIds = new Map([...replacements].map(([id, value]) => [id, value.replacement.id]));
   const branchIdsByStage = new Map<number, string[]>();
@@ -210,6 +340,38 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
   next.campaign.goal = preview.goal;
   next.campaign.desiredArtifact = preview.desiredArtifact;
   next.campaign.ultimateReward = preview.desiredArtifact;
+  if (preview.campaignChange) {
+    next.campaign.title = preview.campaignChange.titleAfter;
+    next.campaign.subtitle = preview.campaignChange.subtitleAfter;
+  }
+  if (preview.assessment) {
+    next.campaign.goalCapabilities = structuredClone(preview.assessment.capabilities);
+    const assessedTasks = new Map(preview.assessment.tasks.map(item => [item.taskId, item]));
+    for (const stage of next.campaign.stages) for (const task of stage.tasks) {
+      const assessed = assessedTasks.get(task.id);
+      if (!assessed || assessed.action === 'replace') continue;
+      task.goalCapabilityIds = [...assessed.goalCapabilityIds];
+      task.goalRelevance = assessed.goalRelevance;
+    }
+    const replacementIds = new Map(preview.tasks.filter(item => item.action === 'replace' && item.replacement).map(item => [item.taskId, item.replacement!.id]));
+    next.campaign.nineGrid = preview.assessment.nineGrid.map(slot => ({
+      id: slot.id, title: slot.title, ability: slot.ability, value: slot.value,
+      unlockTaskIds: slot.taskIds.map(id => replacementIds.get(id) ?? id),
+      ...(state.campaign.nineGrid?.find(existing => existing.id === slot.id)?.artifact ? { artifact: state.campaign.nineGrid.find(existing => existing.id === slot.id)!.artifact } : {}),
+    }));
+    if (next.campaign.seasonalCollectible && preview.assessment.seasonalCollectible) {
+      const collectible = next.campaign.seasonalCollectible;
+      const reassessed = preview.assessment.seasonalCollectible;
+      next.campaign.seasonalCollectible = {
+        ...collectible,
+        name: reassessed.name,
+        story: reassessed.story,
+        appearance: reassessed.appearance,
+        abilityOutcome: reassessed.abilityOutcome,
+        finalTaskId: replacedIds.get(collectible.finalTaskId) ?? collectible.finalTaskId,
+      };
+    }
+  }
   next.campaign.days = preview.budget.days;
   next.campaign.dailyMinutes = preview.budget.dailyMinutes;
   for (const change of preview.stageChanges) {
@@ -256,14 +418,19 @@ export function applySeasonGoalAdjustment(state: LearningState, preview: SeasonG
       const taskIds = chain.taskIds.map(id => replacedIds.get(id) ?? id);
       return taskIds.length ? [{ ...chain, taskIds }] : [];
     });
-    if (!chains.some(chain => chain.id === mainReplacementChainId)) chains.push({ id: mainReplacementChainId, title: '雅思核心训练', track: 'main' as const, taskIds: stageReplacementIds.size ? stage.mainlineTaskIds?.map(id => replacedIds.get(id) ?? id) ?? tasks.filter(task => task.track === 'main').map(task => task.id) : [], completionReward: { xp: 0, coins: 0, items: [] } });
-    if (stageReplacementIds.size) chains.push({ id: branchChainId, title: '原工具开发任务（可选）', track: 'branch' as const, taskIds: [...stageReplacementIds], completionReward: { xp: 0, coins: 0, items: [] } });
+    if (!chains.some(chain => chain.id === mainReplacementChainId)) chains.push({ id: mainReplacementChainId, title: preview.assessment ? '目标核心训练' : '雅思核心训练', track: 'main' as const, taskIds: stageReplacementIds.size ? stage.mainlineTaskIds?.map(id => replacedIds.get(id) ?? id) ?? tasks.filter(task => task.track === 'main').map(task => task.id) : [], completionReward: { xp: 0, coins: 0, items: [] } });
+    if (stageReplacementIds.size) chains.push({ id: branchChainId, title: '原任务（可选）', track: 'branch' as const, taskIds: [...stageReplacementIds], completionReward: { xp: 0, coins: 0, items: [] } });
     return {
       ...stage, tasks, chains,
       ...(stage.mainlineTaskIds ? { mainlineTaskIds: stage.mainlineTaskIds.map(id => replacedIds.get(id) ?? id) } : {}),
       ...(stage.gateTaskIds ? { gateTaskIds: stage.gateTaskIds.map(id => replacedIds.get(id) ?? id) } : {}),
     };
   });
+  if (preview.assessment) for (const stage of next.campaign.stages) for (const task of stage.tasks) {
+    if (task.track !== 'branch') continue;
+    delete task.goalCapabilityIds;
+    delete task.goalRelevance;
+  }
 
   for (const [oldId, newId] of replacedIds) {
     const oldTask = state.campaign.stages.flatMap(stage => stage.tasks).find(task => task.id === oldId)!;
